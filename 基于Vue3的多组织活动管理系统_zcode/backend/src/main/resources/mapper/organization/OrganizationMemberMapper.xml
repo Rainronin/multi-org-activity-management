@@ -31,6 +31,13 @@
         WHERE id = #{id}
     </select>
 
+    <select id="findUsernameByMemberId" resultType="string">
+        SELECT a.username
+        FROM organization_member m
+        JOIN account a ON a.id = m.account_id
+        WHERE m.id = #{id}
+    </select>
+
     <select id="listActiveByAccountId" resultType="com.example.activity.modules.organization.OrganizationMember">
         SELECT id, org_id, account_id, role, status, joined_at
         FROM organization_member

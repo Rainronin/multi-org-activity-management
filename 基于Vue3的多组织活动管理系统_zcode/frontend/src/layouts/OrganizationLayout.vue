@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ArrowRight, HomeFilled, User } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, FolderOpened, HomeFilled, User } from '@element-plus/icons-vue'
 import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
 import { ApiError } from '../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../stores/session'
@@ -201,6 +201,16 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         >
           <HomeFilled />
           <span class="u-label">组织概览</span>
+        </RouterLink>
+        <RouterLink
+          class="u-item"
+          :class="{ active: route.name === 'org-activities' }"
+          :to="`/org/${orgId}/activities`"
+          aria-label="活动管理"
+          title="活动管理"
+        >
+          <FolderOpened />
+          <span class="u-label">活动管理</span>
         </RouterLink>
         <RouterLink
           class="u-item"

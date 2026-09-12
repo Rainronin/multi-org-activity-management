@@ -1,8 +1,12 @@
 spring:
   application:
     name: activity
+  config:
+    # 本机凭据放在 backend/config/application-local.yml（仓库外，.gitignore 已忽略文件名），
+    # 不进 classpath 也不进构建包（R08）。
+    additional-location: optional:file:./config/
   datasource:
-    # 默认指向本机开发库；实际凭据经 application-local.yml（不入库，且构建排除）或环境变量提供。
+    # 默认指向本机开发库；实际凭据经 config/application-local.yml 或环境变量提供。
     url: ${ACTIVITY_DB_URL:jdbc:mysql://127.0.0.1:3306/activity_dev?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
     username: ${ACTIVITY_DB_USERNAME:activity}
     password: ${ACTIVITY_DB_PASSWORD:}

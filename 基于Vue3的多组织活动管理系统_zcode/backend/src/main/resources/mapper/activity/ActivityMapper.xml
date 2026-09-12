@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.activity.ActivityMapper">
+
+    <sql id="baseColumns">
+        id, org_id, name, description, owner_member_id, status, start_time, end_time,
+        location, budget, registration_scope, capacity, registration_start,
+        registration_end, created_by, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO activity (org_id, name, description, owner_member_id, status, start_time,
+                              end_time, location, budget, registration_scope, capacity,
+                              registration_start, registration_end, created_by)
+        VALUES (#{orgId}, #{name}, #{description}, #{ownerMemberId}, #{status}, #{startTime},
+                #{endTime}, #{location}, #{budget}, #{registrationScope}, #{capacity},
+                #{registrationStart}, #{registrationEnd}, #{createdBy})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.activity.Activity">
+        SELECT <include refid="baseColumns" />
+        FROM activity
+        WHERE id = #{id}
+    </select>
+
+    <select id="listPage" resultType="com.example.activity.modules.activity.Activity">
+        SELECT <include refid="baseColumns" />
+        FROM activity
+        WHERE org_id = #{orgId}
+          AND status = #{status}
+          <if test="query != null and query != ''">
+            AND name LIKE CONCAT('%', #{query}, '%')
+          </if>
+        ORDER BY updated_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countPage" resultType="long">
+        SELECT COUNT(*)
+        FROM activity
+        WHERE org_id = #{orgId}
+          AND status = #{status}
+          <if test="query != null and query != ''">
+            AND name LIKE CONCAT('%', #{query}, '%')
+          </if>
+    </select>
+
+    <update id="updateDraft">
+        UPDATE activity
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="description != null">description = #{description},</if>
+            <if test="ownerMemberId != null">owner_member_id = #{ownerMemberId},</if>
+            <if test="startTime != null">start_time = #{startTime},</if>
+            <if test="endTime != null">end_time = #{endTime},</if>
+            <if test="location != null">location = #{location},</if>
+            <if test="budget != null">budget = #{budget},</if>
+            <if test="registrationScope != null">registration_scope = #{registrationScope},</if>
+            <if test="capacity != null">capacity = #{capacity},</if>
+            <if test="registrationStart != null">registration_start = #{registrationStart},</if>
+            <if test="registrationEnd != null">registration_end = #{registrationEnd},</if>
+        </set>
+        WHERE id = #{id}
+          AND org_id = #{orgId}
+          AND status = 'DRAFT'
+    </update>
+
+</mapper>

@@ -45,7 +45,7 @@
 
 ## 正式工程运行与检查
 
-前置：Node v24.16.0、JDK 21（Temurin 21.0.11）、MySQL 8.4.9（本机 `C:\Program Files\MySQL\MySQL Server 8.4\`）。开发数据库为独立数据目录实例（仅监听 127.0.0.1:3306，`activity_dev`/`activity_test` 两库，root 空密码仅限本机回环）；应用账号凭据在 `backend/src/main/resources/application-local.yml`（不入库，示例见 `application-local.example.yml`）。
+前置：Node v24.16.0、JDK 21（Temurin 21.0.11）、MySQL 8.4.9（本机 `C:\Program Files\MySQL\MySQL Server 8.4\`）。开发数据库为独立数据目录实例（仅监听 127.0.0.1:3306，`activity_dev`/`activity_test` 两库，root 空密码仅限本机回环）。**本地凭据文件为 `backend/config/application-local.yml`（仓库外目录，不入库不进构建包；示例见 `backend/src/main/resources/application-local.example.yml`）**，后端经 `spring.config.additional-location=optional:file:./config/` 加载；测试侧为 `backend/src/test/resources/application-local.yml`（示例同目录 `application-local.example.yml`），且 `ActivityTestBase` 强制测试连接 `activity_test`。
 
 ```powershell
 # 启动 MySQL 开发实例（数据目录在 C:\Users\MsRain\AppData\Local\activity-mysql-dev\）
@@ -67,7 +67,7 @@ npm run build      # 类型检查 + 产物构建
 
 浏览器打开 <http://127.0.0.1:5174>，未登录进入登录页，登录后进入账号及组织目录；`GET /api/health` 提供只读健康状态。注册、恢复和 CSRF 入口允许匿名访问，写请求仍需 CSRF，组织接口逐请求鉴权。锁定版本：Spring Boot 3.5.16、MyBatis Starter 3.0.4、Flyway 11.7.2、MySQL Connector/J 9.7.0、Vue 3.5.42、Element Plus 2.14.5、Vite 7.3.6。
 
-当前测试依赖本地测试资源配置；在运行前确认 URL 精确指向 `activity_test`。审核发现默认打包会包含主资源中的 `application-local.yml`，修复外部配置／打包排除前不要分发生成的 JAR；相关问题见开发进度审核报告 R08。
+审核 R08 已修复：主资源构建排除 `application-local.yml`，凭据经仓库外 `config/` 目录或环境变量注入；分发前可用 `jar tf target/activity-0.0.1-SNAPSHOT.jar | findstr application-local` 复核（应只见无凭据的 example 文件）。测试连接由 `ActivityTestBase` 强制指向 `activity_test`，无需人工确认 URL。
 
 ## 查看 UI 演示
 

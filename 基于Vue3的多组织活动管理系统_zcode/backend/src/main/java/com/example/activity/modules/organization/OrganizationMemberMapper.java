@@ -16,6 +16,8 @@ public interface OrganizationMemberMapper {
 
     OrganizationMember findById(@Param("id") Long id);
 
+    String findUsernameByMemberId(@Param("id") Long id);
+
     List<OrganizationMember> listActiveByAccountId(@Param("accountId") Long accountId);
 
     int countActiveOwners(@Param("orgId") Long orgId);

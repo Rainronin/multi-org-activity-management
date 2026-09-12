@@ -27,4 +27,11 @@
         FOR UPDATE
     </select>
 
+    <select id="lockOrganizationShared" resultType="long">
+        SELECT id
+        FROM organization
+        WHERE id = #{orgId}
+        FOR SHARE
+    </select>
+
 </mapper>
