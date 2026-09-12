@@ -60,6 +60,7 @@ npm run dev        # 127.0.0.1:5174，/api 代理到 8080；端口占用时报�
 npm run typecheck  # vue-tsc 严格类型检查
 npm run lint       # ESLint
 npm run test -- --run
+npm run check:ui   # UI 规范静态门禁（token 完整性与字面量检查）
 npm run build      # 类型检查 + 产物构建
 ```
 

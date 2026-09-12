@@ -1,0 +1,99 @@
+/* Element Plus 主题映射：仅引用 tokens.css 的值源（UI 规范 4.2）。
+   选择器使用 html:root 提高一级，保证懒加载追加的官方样式与传送到 body 的弹层仍被覆盖。 */
+html:root {
+  --el-color-primary: var(--ui-color-action);
+  --el-color-primary-dark-2: var(--ui-color-action-active);
+  --el-color-primary-light-3: var(--ui-color-action-tint-3);
+  --el-color-primary-light-5: var(--ui-color-action-tint-5);
+  --el-color-primary-light-7: var(--ui-color-action-tint-7);
+  --el-color-primary-light-8: var(--ui-color-action-tint-8);
+  --el-color-primary-light-9: var(--ui-color-selected-bg);
+  --el-color-primary-hover: var(--ui-color-action-hover);
+
+  --el-color-success: var(--ui-color-success);
+  --el-color-success-dark-2: var(--ui-color-success-dark);
+  --el-color-success-light-3: var(--ui-color-success-tint-3);
+  --el-color-success-light-5: var(--ui-color-success-tint-5);
+  --el-color-success-light-7: var(--ui-color-success-tint-7);
+  --el-color-success-light-8: var(--ui-color-success-tint-8);
+  --el-color-success-light-9: var(--ui-color-success-tint-9);
+  --el-color-warning: var(--ui-color-warning);
+  --el-color-warning-dark-2: var(--ui-color-warning-dark);
+  --el-color-warning-light-3: var(--ui-color-warning-tint-3);
+  --el-color-warning-light-5: var(--ui-color-warning-tint-5);
+  --el-color-warning-light-7: var(--ui-color-warning-tint-7);
+  --el-color-warning-light-8: var(--ui-color-warning-tint-8);
+  --el-color-warning-light-9: var(--ui-color-warning-tint-9);
+  --el-color-danger: var(--ui-color-danger);
+  --el-color-error: var(--ui-color-danger);
+  --el-color-danger-dark-2: var(--ui-color-danger-dark);
+  --el-color-danger-light-3: var(--ui-color-danger-tint-3);
+  --el-color-danger-light-5: var(--ui-color-danger-tint-5);
+  --el-color-danger-light-7: var(--ui-color-danger-tint-7);
+  --el-color-danger-light-8: var(--ui-color-danger-tint-8);
+  --el-color-danger-light-9: var(--ui-color-danger-tint-9);
+  --el-color-error-dark-2: var(--ui-color-danger-dark);
+  --el-color-error-light-3: var(--ui-color-danger-tint-3);
+  --el-color-error-light-5: var(--ui-color-danger-tint-5);
+  --el-color-error-light-7: var(--ui-color-danger-tint-7);
+  --el-color-error-light-8: var(--ui-color-danger-tint-8);
+  --el-color-error-light-9: var(--ui-color-danger-tint-9);
+  --el-color-info: var(--ui-color-info);
+  --el-color-info-dark-2: var(--ui-color-info-dark);
+  --el-color-info-light-3: var(--ui-color-info-tint-3);
+  --el-color-info-light-5: var(--ui-color-info-tint-5);
+  --el-color-info-light-7: var(--ui-color-info-tint-7);
+  --el-color-info-light-8: var(--ui-color-info-tint-8);
+  --el-color-info-light-9: var(--ui-color-info-tint-9);
+
+  --el-bg-color: var(--ui-color-surface);
+  --el-bg-color-page: var(--ui-color-canvas);
+  --el-bg-color-overlay: var(--ui-color-surface);
+  --el-text-color-primary: var(--ui-color-text);
+  --el-text-color-regular: var(--ui-color-text-secondary);
+  --el-text-color-secondary: var(--ui-color-text-muted);
+  --el-text-color-placeholder: var(--ui-color-text-muted);
+  --el-text-color-disabled: var(--ui-color-disabled-text);
+  --el-border-color: var(--ui-color-control-border);
+  --el-border-color-light: var(--ui-color-border);
+  --el-border-color-lighter: var(--ui-color-border);
+  --el-fill-color: var(--ui-color-disabled-bg);
+  --el-fill-color-blank: var(--ui-color-surface);
+  --el-fill-color-light: var(--ui-color-surface-muted);
+  --el-fill-color-lighter: var(--ui-color-surface-muted);
+  --el-mask-color: var(--ui-color-overlay);
+
+  --el-font-family: var(--ui-font-family-body);
+  --el-font-size-base: var(--ui-font-size-body);
+  --el-font-size-small: var(--ui-font-size-small);
+  --el-font-size-extra-small: var(--ui-font-size-caption);
+  --el-font-size-medium: var(--ui-font-size-emphasis);
+  --el-font-size-large: var(--ui-font-size-section);
+  --el-font-size-extra-large: var(--ui-font-size-card-title);
+  --el-border-radius-base: var(--ui-radius-control);
+  --el-border-radius-small: var(--ui-radius-small);
+  --el-border-radius-round: var(--ui-radius-pill);
+  --el-border-radius-circle: var(--ui-radius-circle);
+  --el-component-size: var(--ui-control-height);
+  --el-component-size-small: var(--ui-control-height-small);
+  --el-component-size-large: var(--ui-control-height-large);
+  --el-box-shadow: var(--ui-shadow-popover);
+  --el-box-shadow-light: var(--ui-shadow-glass);
+  --el-box-shadow-lighter: var(--ui-shadow-glass);
+  --el-box-shadow-dark: var(--ui-shadow-modal);
+  --el-transition-duration: var(--ui-motion-base);
+  --el-transition-duration-fast: var(--ui-motion-fast);
+
+  /* 首批接入组件的局部变量：Input、Skeleton 与表格骨架底色。 */
+  --el-input-text-color: var(--ui-color-text);
+  --el-input-border-color: var(--ui-color-control-border);
+  --el-input-hover-border-color: var(--ui-color-text-muted);
+  --el-input-focus-border-color: var(--ui-color-action);
+  --el-input-bg-color: var(--ui-color-surface);
+  --el-input-placeholder-color: var(--ui-color-text-muted);
+  --el-disabled-bg-color: var(--ui-color-disabled-bg);
+  --el-disabled-text-color: var(--ui-color-disabled-text);
+  --el-disabled-border-color: var(--ui-color-border);
+  --el-skeleton-color: var(--ui-color-skeleton);
+  --el-skeleton-to-color: var(--ui-color-skeleton-highlight);
+}

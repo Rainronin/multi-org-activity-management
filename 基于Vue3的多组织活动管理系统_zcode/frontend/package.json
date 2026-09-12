@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc -b",
     "lint": "eslint .",
-    "test": "vitest"
+    "test": "vitest",
+    "check:ui": "node scripts/check-ui.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

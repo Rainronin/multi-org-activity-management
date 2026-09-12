@@ -1,0 +1,33 @@
+/* 根字体、页面底色、焦点与少量重置；设计数值一律引用 tokens.css。 */
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: var(--ui-color-canvas);
+  color: var(--ui-color-text);
+  font-family: var(--ui-font-family-body);
+  font-size: var(--ui-font-size-body);
+  line-height: var(--ui-line-height-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--ui-font-size-page-title);
+  font-weight: var(--ui-font-weight-bold);
+  line-height: var(--ui-line-height-tight);
+  letter-spacing: var(--ui-letter-spacing-title);
+}
+
+:focus-visible {
+  outline: var(--ui-focus-ring);
+  outline-offset: var(--ui-focus-offset);
+}

@@ -100,6 +100,34 @@ AI 开发任何前端页面前，必须读取本文、演示说明及相关演�
   --ui-color-action-tint-5: color-mix(in srgb, var(--ui-color-action) 50%, var(--ui-color-surface));
   --ui-color-action-tint-7: color-mix(in srgb, var(--ui-color-action) 30%, var(--ui-color-surface));
   --ui-color-action-tint-8: color-mix(in srgb, var(--ui-color-action) 20%, var(--ui-color-surface));
+
+  /* Element Plus 语义色阶（Tag／Button 的浅色底与深色悬停）；
+     tint-N 对应 --el-color-*-light-N，dark 对应 dark-2。由正式工程 2026-09-12 主题接入新增。 */
+  --ui-color-success-tint-3: color-mix(in srgb, var(--ui-color-success) 70%, var(--ui-color-surface));
+  --ui-color-success-tint-5: color-mix(in srgb, var(--ui-color-success) 50%, var(--ui-color-surface));
+  --ui-color-success-tint-7: color-mix(in srgb, var(--ui-color-success) 30%, var(--ui-color-surface));
+  --ui-color-success-tint-8: color-mix(in srgb, var(--ui-color-success) 20%, var(--ui-color-surface));
+  --ui-color-success-tint-9: color-mix(in srgb, var(--ui-color-success) 10%, var(--ui-color-surface));
+  --ui-color-success-dark: color-mix(in srgb, var(--ui-color-success) 80%, #000);
+  --ui-color-warning-tint-3: color-mix(in srgb, var(--ui-color-warning) 70%, var(--ui-color-surface));
+  --ui-color-warning-tint-5: color-mix(in srgb, var(--ui-color-warning) 50%, var(--ui-color-surface));
+  --ui-color-warning-tint-7: color-mix(in srgb, var(--ui-color-warning) 30%, var(--ui-color-surface));
+  --ui-color-warning-tint-8: color-mix(in srgb, var(--ui-color-warning) 20%, var(--ui-color-surface));
+  --ui-color-warning-tint-9: color-mix(in srgb, var(--ui-color-warning) 10%, var(--ui-color-surface));
+  --ui-color-warning-dark: color-mix(in srgb, var(--ui-color-warning) 80%, #000);
+  --ui-color-danger-tint-3: color-mix(in srgb, var(--ui-color-danger) 70%, var(--ui-color-surface));
+  --ui-color-danger-tint-5: color-mix(in srgb, var(--ui-color-danger) 50%, var(--ui-color-surface));
+  --ui-color-danger-tint-7: color-mix(in srgb, var(--ui-color-danger) 30%, var(--ui-color-surface));
+  --ui-color-danger-tint-8: color-mix(in srgb, var(--ui-color-danger) 20%, var(--ui-color-surface));
+  --ui-color-danger-tint-9: color-mix(in srgb, var(--ui-color-danger) 10%, var(--ui-color-surface));
+  --ui-color-danger-dark: color-mix(in srgb, var(--ui-color-danger) 80%, #000);
+  --ui-color-info-tint-3: color-mix(in srgb, var(--ui-color-info) 70%, var(--ui-color-surface));
+  --ui-color-info-tint-5: color-mix(in srgb, var(--ui-color-info) 50%, var(--ui-color-surface));
+  --ui-color-info-tint-7: color-mix(in srgb, var(--ui-color-info) 30%, var(--ui-color-surface));
+  --ui-color-info-tint-8: color-mix(in srgb, var(--ui-color-info) 20%, var(--ui-color-surface));
+  --ui-color-info-tint-9: color-mix(in srgb, var(--ui-color-info) 10%, var(--ui-color-surface));
+  --ui-color-info-dark: color-mix(in srgb, var(--ui-color-info) 80%, #000);
+
   --ui-color-on-action: #ffffff;
   --ui-color-selected-bg: #fff0e5;
   --ui-color-selected-text: #a33713;
