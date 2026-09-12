@@ -21,3 +21,11 @@ logging:
 server:
   address: 127.0.0.1
   port: 8080
+  servlet:
+    session:
+      timeout: 30m
+      cookie:
+        same-site: lax
+        http-only: true
+        # 开发环境为 http；生产按部署协议调整（开发规范 2.4）。
+        secure: false

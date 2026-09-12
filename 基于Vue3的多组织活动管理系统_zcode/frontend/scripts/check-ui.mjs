@@ -68,7 +68,9 @@ const SIZE_PROPERTIES =
   'padding|margin|gap|border-radius|width|height|min-width|max-width|min-height|max-height|' +
   'top|right|bottom|left|inset|border-width|outline-width|outline-offset|translate|font-size|' +
   'line-height|letter-spacing|font-weight|box-shadow|text-shadow|z-index|flex-basis'
-const SIZE_LITERAL = new RegExp(`(?:${SIZE_PROPERTIES})\\s*:[^;{}]*\\d(?:\\.\\d+)?(?:px|rem|em|vh|vw|dvh|ms|s)\\b`, 'g')
+// 尺寸检查仅针对 px/rem/em/ms/s 等设计单位；视口单位（vh/vw/dvh）与百分比视为结构值，
+// 仅在 tokens.css 内部参与布局计算。0 与 auto 等结构值不受限。
+const SIZE_LITERAL = new RegExp(`(?:${SIZE_PROPERTIES})\\s*:[^;{}]*\\d(?:\\.\\d+)?(?:px|rem|em|ms|s)\\b`, 'g')
 const FONT_FAMILY_LITERAL = /font-family\s*:\s*(?!"?\s*var\()[^;{}]*[;'{}]/g
 const MOTION_LITERAL = /(?:transition|animation)(?:-duration)?\s*:[^;{}]*\d(?:\.\d+)?m?s\b/g
 const INLINE_STYLE_BYPASS = /(?:^|\s)style="[^"]*(?:px|#[0-9a-fA-F]{3}|rgb)/g

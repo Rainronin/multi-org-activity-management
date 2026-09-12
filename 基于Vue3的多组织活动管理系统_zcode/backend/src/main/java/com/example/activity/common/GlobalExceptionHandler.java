@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -32,7 +33,17 @@ public class GlobalExceptionHandler {
         problem.setTitle(ex.getTitle());
         problem.setDetail(ex.getDetail());
         problem.setProperty("code", ex.getCode());
+        if (!ex.getFieldErrors().isEmpty()) {
+            problem.setProperty("fieldErrors", ex.getFieldErrors());
+        }
         return enrich(problem);
+    }
+
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ProblemDetail> handleRateLimited(RateLimitedException ex) {
+        return ResponseEntity.status(ex.getStatus())
+            .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+            .body(handleApiException(ex));
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.account.AccountMapper">
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO account (username, password_hash, status, auth_version)
+        VALUES (#{username}, #{passwordHash}, #{status}, #{authVersion})
+    </insert>
+
+    <select id="findByUsername" resultType="com.example.activity.modules.account.Account">
+        SELECT id, username, password_hash, status, auth_version
+        FROM account
+        WHERE username = #{username}
+    </select>
+
+    <select id="findById" resultType="com.example.activity.modules.account.Account">
+        SELECT id, username, password_hash, status, auth_version
+        FROM account
+        WHERE id = #{id}
+    </select>
+
+    <select id="selectAuthVersionById" resultType="long">
+        SELECT auth_version
+        FROM account
+        WHERE id = #{id}
+    </select>
+
+    <update id="updatePasswordAndBumpVersion">
+        UPDATE account
+        SET password_hash = #{passwordHash},
+            auth_version = auth_version + 1
+        WHERE id = #{id}
+    </update>
+
+</mapper>

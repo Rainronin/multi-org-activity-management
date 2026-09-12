@@ -1,0 +1,18 @@
+package com.example.activity.modules.account;
+
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+
+@Mapper
+public interface AccountMapper {
+
+    int insert(Account account);
+
+    Account findByUsername(@Param("username") String username);
+
+    Account findById(@Param("id") Long id);
+
+    Long selectAuthVersionById(@Param("id") Long id);
+
+    int updatePasswordAndBumpVersion(@Param("id") Long id, @Param("passwordHash") String passwordHash);
+}
