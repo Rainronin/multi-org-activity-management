@@ -30,3 +30,6 @@ application-test-local.yaml
 *.iml
 .DS_Store
 Thumbs.db
+
+# 本地临时验证产物
+.local-*
