@@ -16,7 +16,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -37,7 +39,8 @@ public class ActivityController {
 
     public record ActivityResponse(
         String id, String name, String description, String ownerMemberId, String ownerUsername,
-        String status, OffsetDateTime startTime, OffsetDateTime endTime, String location,
+        String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
+        OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
@@ -123,6 +126,89 @@ public class ActivityController {
             .body(toResponse(activityService.get(principal.getAccountId(), orgId, activityId)));
     }
 
+    public record ProposalRequest(@NotBlank(message = "方案内容不能为空") @Size(max = 50000, message = "方案不超过 50000 字符") String content) {
+    }
+
+    public record ReviewRequest(@Size(max = 500, message = "审批说明不超过 500 字符") String note) {
+    }
+
+    public record RejectRequest(@NotBlank(message = "驳回须说明原因") @Size(max = 500, message = "驳回原因不超过 500 字符") String reason) {
+    }
+
+    public record WithdrawApprovalRequest(@Size(max = 500, message = "撤回原因不超过 500 字符") String reason) {
+    }
+
+    @PutMapping("/api/organizations/{orgId}/activities/{activityId}/proposal")
+    public ResponseEntity<ActivityResponse> saveProposal(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody ProposalRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.saveProposal(
+                principal.getAccountId(), orgId, activityId, request.content())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/submit")
+    public ResponseEntity<ActivityResponse> submit(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.submit(principal.getAccountId(), orgId, activityId)));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/withdraw")
+    public ResponseEntity<ActivityResponse> withdraw(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.withdraw(principal.getAccountId(), orgId, activityId)));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/approve")
+    public ResponseEntity<ActivityResponse> approve(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody(required = false) ReviewRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.approve(
+                principal.getAccountId(), orgId, activityId, request == null ? null : request.note())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/reject")
+    public ResponseEntity<ActivityResponse> reject(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody RejectRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.reject(
+                principal.getAccountId(), orgId, activityId, request.reason())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/withdraw-approval")
+    public ResponseEntity<ActivityResponse> withdrawApproval(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody(required = false) WithdrawApprovalRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.withdrawApproval(
+                principal.getAccountId(), orgId, activityId, request == null ? null : request.reason())));
+    }
+
+    @DeleteMapping("/api/organizations/{orgId}/activities/{activityId}")
+    public ResponseEntity<Void> deleteDraft(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId) {
+        activityService.deleteDraft(principal.getAccountId(), orgId, activityId);
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
+
     @PatchMapping("/api/organizations/{orgId}/activities/{activityId}")
     public ResponseEntity<ActivityResponse> updateDraft(
         @AuthenticationPrincipal AccountUserDetails principal,
@@ -151,8 +237,10 @@ public class ActivityController {
 
     private ActivityResponse toResponse(ActivityService.ActivityItem item) {
         return new ActivityResponse(
-            String.valueOf(item.activityId()), item.name(), null, item.ownerMemberId(), item.ownerUsername(),
-            item.status(), item.startTime(), item.endTime(), item.location(), item.budget(),
+            String.valueOf(item.activityId()), item.name(), item.description(), item.ownerMemberId(),
+            item.ownerUsername(), item.status(), item.proposal(), item.reviewNote(),
+            item.submittedBy(), item.confirmedBy(), item.confirmType(),
+            item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
             item.createdAt(), item.updatedAt());
     }

@@ -25,4 +25,23 @@ public interface ActivityMapper {
 
     /** 仅更新显式传入的字段（PATCH 语义），由 Service 组装非空字段。 */
     int updateDraft(Activity activity);
+
+    int updateProposal(@Param("id") Long id, @Param("orgId") Long orgId, @Param("proposal") String proposal);
+
+    /** 带状态前置条件的流转更新；返回 0 表示当前状态不允许。 */
+    int transitionStatus(
+        @Param("id") Long id,
+        @Param("orgId") Long orgId,
+        @Param("fromStatus") String fromStatus,
+        @Param("toStatus") String toStatus);
+
+    int updateReview(
+        @Param("id") Long id,
+        @Param("orgId") Long orgId,
+        @Param("reviewNote") String reviewNote,
+        @Param("submittedBy") Long submittedBy,
+        @Param("confirmedBy") Long confirmedBy,
+        @Param("confirmType") String confirmType);
+
+    int deleteDraft(@Param("id") Long id, @Param("orgId") Long orgId);
 }

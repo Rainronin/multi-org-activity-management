@@ -1,6 +1,6 @@
 import { ApiError, toProblemDetail } from './error'
 
-export type RequestMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
+export type RequestMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 
 export type ResponseMode = 'json' | 'blob' | 'none'
 

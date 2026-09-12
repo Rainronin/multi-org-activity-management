@@ -20,7 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class ActivityService {
 
     public record ActivityItem(
-        Long activityId, String name, String ownerMemberId, String ownerUsername, String status,
+        Long activityId, String name, String description, String ownerMemberId, String ownerUsername,
+        String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
         OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
         String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
@@ -116,6 +117,21 @@ public class ActivityService {
         if (!isOrgOwner && !isActivityOwner) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编辑草稿。");
         }
+        // 状态机（P2.2/P2.3）：待确认期不改字段；已确认活动仅组织负责人可改简介，关键内容须先撤回到草稿。
+        if ("PENDING_APPROVAL".equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动待确认中，请先撤回再修改。");
+        }
+        if ("APPROVED".equals(activity.getStatus())) {
+            boolean onlyDescription = patch.getName() == null && patch.getOwnerMemberId() == null
+                && patch.getStartTime() == null && patch.getEndTime() == null
+                && patch.getLocation() == null && patch.getBudget() == null
+                && patch.getRegistrationScope() == null && patch.getCapacity() == null
+                && patch.getRegistrationStart() == null && patch.getRegistrationEnd() == null;
+            if (!onlyDescription || !isOrgOwner) {
+                throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作",
+                    "已确认活动的关键内容须先撤回到草稿再修改。");
+            }
+        }
         if (patch.getOwnerMemberId() != null) {
             if (!isOrgOwner) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以变更活动负责人。");
@@ -131,6 +147,8 @@ public class ActivityService {
         if (patch.getCapacity() != null && patch.getCapacity() <= 0) {
             throw fieldError("capacity", "名额必须为正整数");
         }
+        // 状态守卫：按当前实际状态限定更新（草稿自由编辑；已确认仅简介）
+        patch.setStatus(activity.getStatus());
         if (activityMapper.updateDraft(patch) != 1) {
             throw notFound();
         }
@@ -216,8 +234,11 @@ public class ActivityService {
 
     private ActivityItem toItem(Activity activity) {
         return new ActivityItem(
-            activity.getId(), activity.getName(), String.valueOf(activity.getOwnerMemberId()),
+            activity.getId(), activity.getName(), activity.getDescription(),
+            String.valueOf(activity.getOwnerMemberId()),
             memberMapper.findUsernameByMemberId(activity.getOwnerMemberId()), activity.getStatus(),
+            activity.getProposal(), activity.getReviewNote(), activity.getSubmittedBy(),
+            activity.getConfirmedBy(), activity.getConfirmType(),
             activity.getStartTime(), activity.getEndTime(),
             activity.getLocation(), activity.getBudget() == null
                 ? "0.00" : activity.getBudget().setScale(2).toPlainString(),
@@ -229,6 +250,199 @@ public class ActivityService {
     private ApiException fieldError(String field, String message) {
         return new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "输入无效", "请求字段校验失败，请修改后重试。",
             List.of(new com.example.activity.common.FieldErrorItem(field, message)));
+    }
+
+
+    /** 保存方案文稿：草稿期由组织负责人或活动负责人编写（P2.2，不依赖 AI 也能完成）。 */
+    @Transactional
+    public ActivityItem saveProposal(Long accountId, Long orgId, Long activityId, String content) {
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !canSeeDraft(activity, accountId)
+            || !"DRAFT".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        boolean allowed = OrganizationMember.ROLE_OWNER.equals(actor.getRole())
+            || actor.getId().equals(activity.getOwnerMemberId());
+        if (!allowed) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编写方案。");
+        }
+        if (activityMapper.updateProposal(activityId, orgId, content) != 1) {
+            throw notFound();
+        }
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 提交确认：草稿信息完备后进入待确认；提交者可以是活动负责人或组织负责人。 */
+    @Transactional
+    public ActivityItem submit(Long accountId, Long orgId, Long activityId) {
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !canSeeDraft(activity, accountId)
+            || !"DRAFT".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        validateSubmission(activity);
+        if (activityMapper.transitionStatus(activityId, orgId, "DRAFT", "PENDING_APPROVAL") != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        activityMapper.updateReview(activityId, orgId, null, accountId, null, null);
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_SUBMITTED", "activity:" + activityId, null,
+            java.util.Map.of("name", activity.getName()));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 撤回：提交者或组织负责人把待确认活动撤回草稿。 */
+    @Transactional
+    public ActivityItem withdraw(Long accountId, Long orgId, Long activityId) {
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !canSeeDraft(activity, accountId)
+            || !"PENDING_APPROVAL".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        boolean allowed = OrganizationMember.ROLE_OWNER.equals(actor.getRole())
+            || accountId.equals(activity.getSubmittedBy());
+        if (!allowed) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅提交者或组织负责人可以撤回。");
+        }
+        if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "DRAFT") != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_WITHDRAWN", "activity:" + activityId, null, null);
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 通过：组织负责人确认（自行确认或审核他人提交均在此留痕）。 */
+    @Transactional
+    public ActivityItem approve(Long accountId, Long orgId, Long activityId, String note) {
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !"PENDING_APPROVAL".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "APPROVED") != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        String confirmType = accountId.equals(activity.getSubmittedBy()) ? "SELF" : "OTHER";
+        activityMapper.updateReview(activityId, orgId, note, activity.getSubmittedBy(), accountId, confirmType);
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_APPROVED", "activity:" + activityId,
+            note, java.util.Map.of("confirmType", confirmType));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 驳回：组织负责人写明原因后退回草稿。 */
+    @Transactional
+    public ActivityItem reject(Long accountId, Long orgId, Long activityId, String reason) {
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !"PENDING_APPROVAL".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "DRAFT") != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        activityMapper.updateReview(activityId, orgId, reason, activity.getSubmittedBy(), null, null);
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_REJECTED", "activity:" + activityId, reason, null);
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 撤回到草稿（P2.3 关键变更前置）：仅组织负责人。 */
+    @Transactional
+    public ActivityItem withdrawApproval(Long accountId, Long orgId, Long activityId, String reason) {
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !"APPROVED".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        if (activityMapper.transitionStatus(activityId, orgId, "APPROVED", "DRAFT") != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_APPROVAL_WITHDRAWN", "activity:" + activityId,
+            reason, null);
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 删除草稿：仅组织负责人，且仅未提交的草稿；随附件等依赖出现后在此叠加依赖检查。 */
+    @Transactional
+    public void deleteDraft(Long accountId, Long orgId, Long activityId) {
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !"DRAFT".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        if (activityMapper.deleteDraft(activityId, orgId) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_DRAFT_DELETED", "activity:" + activityId,
+            null, java.util.Map.of("name", activity.getName()));
+    }
+
+    /** 提交前完备性校验（P2.2）。 */
+    private void validateSubmission(Activity activity) {
+        List<String> missing = new java.util.ArrayList<>();
+        if (activity.getName() == null || activity.getName().isBlank()) missing.add("name");
+        if (activity.getStartTime() == null) missing.add("startTime");
+        if (activity.getEndTime() == null) missing.add("endTime");
+        if (activity.getLocation() == null || activity.getLocation().isBlank()) missing.add("location");
+        if (activity.getDescription() == null || activity.getDescription().isBlank()) missing.add("description");
+        if (activity.getProposal() == null || activity.getProposal().isBlank()) missing.add("proposal");
+        if (!missing.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "SUBMISSION_INCOMPLETE", "提交信息不完备",
+                "还有必填内容未填写：" + fieldLabels(missing),
+                missing.stream().map(f -> new com.example.activity.common.FieldErrorItem(f, "为提交所必需")).toList());
+        }
+        validateTimes(activity);
+        if (Activity.SCOPE_PUBLIC.equals(activity.getRegistrationScope())) {
+            List<String> publicMissing = new java.util.ArrayList<>();
+            if (activity.getCapacity() == null) publicMissing.add("capacity");
+            if (activity.getRegistrationStart() == null) publicMissing.add("registrationStart");
+            if (activity.getRegistrationEnd() == null) publicMissing.add("registrationEnd");
+            if (!publicMissing.isEmpty()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "SUBMISSION_INCOMPLETE", "提交信息不完备",
+                    "公开报名需要名额与报名时间窗：" + fieldLabels(publicMissing),
+                    publicMissing.stream().map(f -> new com.example.activity.common.FieldErrorItem(f, "公开报名所必需")).toList());
+            }
+        }
+    }
+
+    private String fieldLabels(List<String> fields) {
+        java.util.Map<String, String> labels = java.util.Map.ofEntries(
+            java.util.Map.entry("name", "活动主题"),
+            java.util.Map.entry("startTime", "开始时间"),
+            java.util.Map.entry("endTime", "结束时间"),
+            java.util.Map.entry("location", "地点"),
+            java.util.Map.entry("description", "活动简介"),
+            java.util.Map.entry("proposal", "活动方案"),
+            java.util.Map.entry("capacity", "名额"),
+            java.util.Map.entry("registrationStart", "报名开始"),
+            java.util.Map.entry("registrationEnd", "报名截止"));
+        return fields.stream().map(f -> labels.getOrDefault(f, f)).collect(java.util.stream.Collectors.joining("、"));
+    }
+
+    private void requireOwner(Long orgId, Long accountId) {
+        OrganizationMember member = requireActiveMember(orgId, accountId);
+        if (!OrganizationMember.ROLE_OWNER.equals(member.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以执行此操作。");
+        }
+    }
+
+    private ApiException conflict(String code, String title, String detail) {
+        return new ApiException(HttpStatus.CONFLICT, code, title, detail);
     }
 
     private ApiException notFound() {

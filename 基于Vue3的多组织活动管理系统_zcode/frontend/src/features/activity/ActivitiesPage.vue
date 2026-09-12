@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   ElButton,
   ElDialog,
@@ -25,6 +25,7 @@ import { formatDateTime, scopeLabel, type ActivityItem } from './types'
 const vLoading = ElLoading.directive
 
 const route = useRoute()
+const router = useRouter()
 const session = useSessionStore()
 
 const orgId = computed(() => String(route.params.orgId ?? ''))
@@ -34,6 +35,7 @@ const total = ref(0)
 const page = ref(1)
 const query = ref('')
 const appliedQuery = ref('')
+const statusFilter = ref('')
 const loading = ref(false)
 const errorText = ref('')
 const amOwner = ref(false)
@@ -72,6 +74,7 @@ async function loadActivities(): Promise<void> {
     const result = await fetchActivities(targetOrgId, {
       page: page.value,
       query: appliedQuery.value || undefined,
+      status: statusFilter.value || undefined,
     })
     if (seq !== requestSeq || targetOrgId !== orgId.value || gen !== session.generation) {
       return
@@ -155,6 +158,10 @@ function changePage(next: number) {
   void loadActivities()
 }
 
+function openDetail(row: ActivityItem) {
+  void router.push(`/org/${orgId.value}/activities/${row.id}`)
+}
+
 watch(orgId, () => {
   page.value = 1
   appliedQuery.value = ''
@@ -162,6 +169,7 @@ watch(orgId, () => {
   items.value = []
   total.value = 0
   amOwner.value = false
+  statusFilter.value = ''
   void loadActivities()
 })
 
@@ -258,6 +266,30 @@ async function submitCreate() {
           搜索
         </ElButton>
       </ElFormItem>
+      <ElFormItem>
+        <ElSelect
+          v-model="statusFilter"
+          class="activities-status"
+          @change="search"
+        >
+          <ElOption
+            label="全部状态"
+            value=""
+          />
+          <ElOption
+            label="草稿"
+            value="DRAFT"
+          />
+          <ElOption
+            label="待确认"
+            value="PENDING_APPROVAL"
+          />
+          <ElOption
+            label="已确认"
+            value="APPROVED"
+          />
+        </ElSelect>
+      </ElFormItem>
     </ElForm>
 
     <div
@@ -266,10 +298,18 @@ async function submitCreate() {
     >
       <ElTable :data="items">
         <ElTableColumn
-          prop="name"
           label="活动主题"
           min-width="200"
-        />
+        >
+          <template #default="{ row }">
+            <ElLink
+              type="primary"
+              @click="openDetail(row as ActivityItem)"
+            >
+              {{ (row as ActivityItem).name }}
+            </ElLink>
+          </template>
+        </ElTableColumn>
         <ElTableColumn
           label="状态"
           min-width="100"

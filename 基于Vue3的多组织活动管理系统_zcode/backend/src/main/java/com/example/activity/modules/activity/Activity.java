@@ -24,6 +24,12 @@ public class Activity {
     private Integer capacity;
     private OffsetDateTime registrationStart;
     private OffsetDateTime registrationEnd;
+    private String proposal;
+    private String reviewNote;
+    private Long submittedBy;
+    private Long confirmedBy;
+    private String confirmType;
+
     private Long createdBy;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
@@ -138,6 +144,46 @@ public class Activity {
 
     public void setRegistrationEnd(OffsetDateTime registrationEnd) {
         this.registrationEnd = registrationEnd;
+    }
+
+    public String getProposal() {
+        return proposal;
+    }
+
+    public void setProposal(String proposal) {
+        this.proposal = proposal;
+    }
+
+    public String getReviewNote() {
+        return reviewNote;
+    }
+
+    public void setReviewNote(String reviewNote) {
+        this.reviewNote = reviewNote;
+    }
+
+    public Long getSubmittedBy() {
+        return submittedBy;
+    }
+
+    public void setSubmittedBy(Long submittedBy) {
+        this.submittedBy = submittedBy;
+    }
+
+    public Long getConfirmedBy() {
+        return confirmedBy;
+    }
+
+    public void setConfirmedBy(Long confirmedBy) {
+        this.confirmedBy = confirmedBy;
+    }
+
+    public String getConfirmType() {
+        return confirmType;
+    }
+
+    public void setConfirmType(String confirmType) {
+        this.confirmType = confirmType;
     }
 
     public Long getCreatedBy() {

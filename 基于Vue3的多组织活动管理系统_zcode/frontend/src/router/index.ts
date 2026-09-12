@@ -49,6 +49,12 @@ export const router = createRouter({
           component: () => import('../features/activity/ActivitiesPage.vue'),
           meta: { title: '活动管理' },
         },
+        {
+          path: 'activities/:activityId',
+          name: 'org-activity-detail',
+          component: () => import('../features/activity/ActivityDetailPage.vue'),
+          meta: { title: '活动详情' },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

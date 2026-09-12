@@ -1,4 +1,4 @@
-export type ActivityStatus = 'DRAFT'
+export type ActivityStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED'
 export type RegistrationScope = 'INTERNAL' | 'PUBLIC'
 
 export interface ActivityItem {
@@ -8,6 +8,11 @@ export interface ActivityItem {
   ownerMemberId: string
   ownerUsername: string
   status: ActivityStatus
+  proposal: string | null
+  reviewNote: string | null
+  submittedBy: number | null
+  confirmedBy: number | null
+  confirmType: string | null
   startTime: string | null
   endTime: string | null
   location: string | null
@@ -19,6 +24,8 @@ export interface ActivityItem {
   createdAt: string
   updatedAt: string
 }
+
+export type ActivityDetail = ActivityItem
 
 export interface ActivityPage {
   items: ActivityItem[]
