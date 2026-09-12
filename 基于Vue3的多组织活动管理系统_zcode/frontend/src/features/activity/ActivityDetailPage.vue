@@ -24,6 +24,7 @@ import {
   withdrawApproval,
 } from './api'
 import { formatDateTime, scopeLabel, type ActivityDetail } from './types'
+import ActivityP3Sections from './ActivityP3Sections.vue'
 
 // 活动详情（P2.1 余项 + P2.2）：概览字段、方案编辑与状态流转操作。
 // 读取随路由与代次守卫；危险操作二次确认并固定目标。
@@ -377,6 +378,11 @@ async function confirmDelete() {
       >
         {{ actionError }}
       </p>
+      <ActivityP3Sections
+        v-if="activity.status !== 'DRAFT'"
+        :org-detail="activity"
+        @changed="loadActivity"
+      />
 
       <dl class="detail-grid">
         <div><dt>活动简介</dt><dd>{{ activity.description || '暂无' }}</dd></div>

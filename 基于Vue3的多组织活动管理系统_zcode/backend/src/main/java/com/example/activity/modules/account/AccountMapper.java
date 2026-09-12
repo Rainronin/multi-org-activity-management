@@ -10,6 +10,8 @@ public interface AccountMapper {
 
     Account findByUsername(@Param("username") String username);
 
+    String findUsernameById(@Param("id") Long id);
+
     Account findById(@Param("id") Long id);
 
     Long selectAuthVersionById(@Param("id") Long id);

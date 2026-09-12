@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ArrowRight, FolderOpened, HomeFilled, User } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, CircleCheck, FolderOpened, HomeFilled, User } from '@element-plus/icons-vue'
 import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
 import { ApiError } from '../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../stores/session'
@@ -211,6 +211,16 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         >
           <FolderOpened />
           <span class="u-label">活动管理</span>
+        </RouterLink>
+        <RouterLink
+          class="u-item"
+          :class="{ active: route.name === 'org-my-tasks' }"
+          :to="`/org/${orgId}/my-tasks`"
+          aria-label="我的任务"
+          title="我的任务"
+        >
+          <CircleCheck />
+          <span class="u-label">我的任务</span>
         </RouterLink>
         <RouterLink
           class="u-item"

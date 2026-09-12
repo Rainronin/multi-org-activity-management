@@ -50,6 +50,12 @@ export const router = createRouter({
           meta: { title: '活动管理' },
         },
         {
+          path: 'my-tasks',
+          name: 'org-my-tasks',
+          component: () => import('../features/activity/MyTasksPage.vue'),
+          meta: { title: '我的任务' },
+        },
+        {
           path: 'activities/:activityId',
           name: 'org-activity-detail',
           component: () => import('../features/activity/ActivityDetailPage.vue'),

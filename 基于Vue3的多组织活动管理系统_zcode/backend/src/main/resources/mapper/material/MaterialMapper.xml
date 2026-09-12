@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.material.MaterialMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, name, quantity, unit, assignee_member_id, status, note,
+        created_by, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO material (org_id, activity_id, name, quantity, unit, assignee_member_id,
+                              status, note, created_by)
+        VALUES (#{orgId}, #{activityId}, #{name}, #{quantity}, #{unit}, #{assigneeMemberId},
+                #{status}, #{note}, #{createdBy})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.material.Material">
+        SELECT <include refid="baseColumns" />
+        FROM material
+        WHERE id = #{id}
+    </select>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.material.Material">
+        SELECT <include refid="baseColumns" />
+        FROM material
+        WHERE activity_id = #{activityId}
+        ORDER BY FIELD(status, 'PENDING', 'IN_PROGRESS', 'READY', 'CANCELLED'), id ASC
+    </select>
+
+    <update id="update">
+        UPDATE material
+        SET name = #{name},
+            quantity = #{quantity},
+            unit = #{unit},
+            assignee_member_id = #{assigneeMemberId},
+            note = #{note}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE material
+        SET status = #{status}
+        WHERE id = #{id}
+    </update>
+
+    <select id="countOpenByAssignee" resultType="int">
+        SELECT COUNT(*)
+        FROM material
+        WHERE org_id = #{orgId}
+          AND assignee_member_id = #{assigneeMemberId}
+          AND status IN ('PENDING', 'IN_PROGRESS')
+    </select>
+
+</mapper>

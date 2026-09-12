@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.attachment.AttachmentMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, purpose, stored_name, original_name, content_type,
+        size_bytes, uploaded_by, created_at, deleted_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO attachment (org_id, activity_id, purpose, stored_name, original_name,
+                                content_type, size_bytes, uploaded_by)
+        VALUES (#{orgId}, #{activityId}, #{purpose}, #{storedName}, #{originalName},
+                #{contentType}, #{sizeBytes}, #{uploadedBy})
+    </insert>
+
+    <select id="findActiveById" resultType="com.example.activity.modules.attachment.Attachment">
+        SELECT <include refid="baseColumns" />
+        FROM attachment
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="listActiveByActivity" resultType="com.example.activity.modules.attachment.Attachment">
+        SELECT <include refid="baseColumns" />
+        FROM attachment
+        WHERE activity_id = #{activityId}
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <update id="markDeleted">
+        UPDATE attachment
+        SET deleted_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </update>
+
+</mapper>

@@ -7,7 +7,11 @@
         VALUES (#{username}, #{passwordHash}, #{status}, #{authVersion})
     </insert>
 
-    <select id="findByUsername" resultType="com.example.activity.modules.account.Account">
+        <select id="findUsernameById" resultType="string">
+        SELECT username FROM account WHERE id = #{id}
+    </select>
+
+<select id="findByUsername" resultType="com.example.activity.modules.account.Account">
         SELECT id, username, password_hash, status, auth_version
         FROM account
         WHERE username = #{username}

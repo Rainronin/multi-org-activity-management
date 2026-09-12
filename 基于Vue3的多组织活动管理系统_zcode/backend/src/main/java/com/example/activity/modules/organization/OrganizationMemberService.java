@@ -20,14 +20,21 @@ public class OrganizationMemberService {
     private final OrganizationMapper organizationMapper;
     private final OrganizationMemberMapper memberMapper;
     private final AuditService auditService;
+    // 只读职责查询：organization → task/material 单向依赖（后端架构 2.1）
+    private final com.example.activity.modules.task.TaskMapper taskMapper;
+    private final com.example.activity.modules.material.MaterialMapper materialMapper;
 
     public OrganizationMemberService(
         OrganizationMapper organizationMapper,
         OrganizationMemberMapper memberMapper,
-        AuditService auditService) {
+        AuditService auditService,
+        com.example.activity.modules.task.TaskMapper taskMapper,
+        com.example.activity.modules.material.MaterialMapper materialMapper) {
         this.organizationMapper = organizationMapper;
         this.memberMapper = memberMapper;
         this.auditService = auditService;
+        this.taskMapper = taskMapper;
+        this.materialMapper = materialMapper;
     }
 
     public record MemberItem(Long memberId, Long accountId, String username, String role, java.time.OffsetDateTime joinedAt) {
@@ -65,6 +72,7 @@ public class OrganizationMemberService {
             return;
         }
         ensureNotLastOwner(orgId, member.getId(), member.getRole());
+        ensureNoOpenDuties(orgId, member.getId());
         if (memberMapper.updateStatus(member.getId(), "LEFT") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
@@ -89,6 +97,7 @@ public class OrganizationMemberService {
             return;
         }
         ensureNotLastOwner(orgId, target.getId(), target.getRole());
+        ensureNoOpenDuties(orgId, target.getId());
         if (memberMapper.updateStatus(target.getId(), "REMOVED") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
@@ -174,6 +183,16 @@ public class OrganizationMemberService {
             throw notFound();
         }
         return target;
+    }
+
+    /** 退出/移除前的未结责任检查：未完成任务或未就绪物资须先移交（P1.4 联动）。 */
+    private void ensureNoOpenDuties(Long orgId, Long memberMemberId) {
+        int openTasks = taskMapper.countOpenByAssignee(orgId, memberMemberId);
+        int openMaterials = materialMapper.countOpenByAssignee(orgId, memberMemberId);
+        if (openTasks > 0 || openMaterials > 0) {
+            throw conflict("MEMBER_HAS_OPEN_DUTIES", "存在未完成任务或未就绪物资",
+                "该成员还有未完成任务或未就绪物资，请先改派或取消后再操作。");
+        }
     }
 
     private void ensureNotLastOwner(Long orgId, Long memberId, String role) {

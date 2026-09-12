@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.task.TaskMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, title, description, assignee_member_id, priority,
+        due_at, status, completed_at, created_by, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO task (org_id, activity_id, title, description, assignee_member_id,
+                          priority, due_at, status, created_by)
+        VALUES (#{orgId}, #{activityId}, #{title}, #{description}, #{assigneeMemberId},
+                #{priority}, #{dueAt}, #{status}, #{createdBy})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.task.Task">
+        SELECT <include refid="baseColumns" />
+        FROM task
+        WHERE id = #{id}
+    </select>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.task.Task">
+        SELECT <include refid="baseColumns" />
+        FROM task
+        WHERE activity_id = #{activityId}
+        ORDER BY FIELD(status, 'PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'), due_at ASC, id ASC
+    </select>
+
+    <select id="listMine" resultType="com.example.activity.modules.task.Task">
+        SELECT <include refid="baseColumns" />
+        FROM task
+        WHERE org_id = #{orgId}
+          AND assignee_member_id = #{assigneeMemberId}
+          AND status IN ('PENDING', 'IN_PROGRESS')
+        ORDER BY due_at ASC, id ASC
+    </select>
+
+    <update id="updateAssignment">
+        UPDATE task
+        SET title = #{title},
+            description = #{description},
+            assignee_member_id = #{assigneeMemberId},
+            priority = #{priority},
+            due_at = #{dueAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="transition">
+        UPDATE task
+        SET status = #{toStatus},
+            completed_at = <choose>
+                <when test="setCompletedAt">CURRENT_TIMESTAMP(6)</when>
+                <otherwise>NULL</otherwise>
+            </choose>
+        WHERE id = #{id}
+          AND status = #{fromStatus}
+    </update>
+
+    <select id="countOpenByAssignee" resultType="int">
+        SELECT COUNT(*)
+        FROM task
+        WHERE org_id = #{orgId}
+          AND assignee_member_id = #{assigneeMemberId}
+          AND status IN ('PENDING', 'IN_PROGRESS')
+    </select>
+
+</mapper>
