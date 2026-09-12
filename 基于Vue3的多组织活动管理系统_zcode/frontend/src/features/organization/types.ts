@@ -21,6 +21,36 @@ export interface CreateOrganizationInput {
   description?: string
 }
 
+export interface MemberItem {
+  memberId: string
+  username: string
+  role: OrganizationRole
+  joinedAt: string
+}
+
+export interface InvitationItem {
+  invitationId: string
+  createdBy: number
+  createdAt: string
+  expiresAt: string
+  maxUses: number
+  usedCount: number
+  status: string
+}
+
+export interface InvitationCreated {
+  invitationId: string
+  code: string
+  expiresAt: string
+  maxUses: number
+}
+
+export interface AcceptInvitationResult {
+  orgId: string
+  name: string
+  role: OrganizationRole
+}
+
 export function roleLabel(role: OrganizationRole): string {
   return role === 'OWNER' ? '组织负责人' : '成员'
 }

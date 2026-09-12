@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.organization.OrganizationInvitationMapper">
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO organization_invitation (org_id, code_hash, created_by, expires_at, max_uses, used_count, status)
+        VALUES (#{orgId}, #{codeHash}, #{createdBy}, #{expiresAt}, #{maxUses}, 0, #{status})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.organization.OrganizationInvitation">
+        SELECT id, org_id, code_hash, created_by, expires_at, max_uses, used_count, status, created_at
+        FROM organization_invitation
+        WHERE id = #{id}
+    </select>
+
+    <select id="findActiveByCodeHash" resultType="com.example.activity.modules.organization.OrganizationInvitation">
+        SELECT id, org_id, code_hash, created_by, expires_at, max_uses, used_count, status, created_at
+        FROM organization_invitation
+        WHERE code_hash = #{codeHash}
+          AND status = 'ACTIVE'
+        LIMIT 1
+    </select>
+
+    <select id="listActiveByOrgId" resultType="com.example.activity.modules.organization.OrganizationInvitation">
+        SELECT id, org_id, code_hash, created_by, expires_at, max_uses, used_count, status, created_at
+        FROM organization_invitation
+        WHERE org_id = #{orgId}
+          AND status = 'ACTIVE'
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <update id="incrementUsedCount">
+        UPDATE organization_invitation
+        SET used_count = used_count + 1
+        WHERE id = #{id}
+          AND status = 'ACTIVE'
+          AND expires_at > #{now}
+          AND used_count &lt; #{maxUses}
+    </update>
+
+    <update id="revoke">
+        UPDATE organization_invitation
+        SET status = 'REVOKED'
+        WHERE id = #{id}
+          AND status = 'ACTIVE'
+    </update>
+
+</mapper>

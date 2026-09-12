@@ -2,6 +2,7 @@ package com.example.activity.modules.account;
 
 import com.example.activity.common.ApiException;
 import com.example.activity.common.FieldErrorItem;
+import com.example.activity.common.SecureCodes;
 import com.example.activity.common.audit.AuditService;
 import java.util.List;
 import org.springframework.dao.DuplicateKeyException;
@@ -56,7 +57,7 @@ public class AccountService {
                 List.of(new FieldErrorItem("username", "该用户名已被注册")));
         }
 
-        String recoveryCode = RecoveryCodes.generate();
+        String recoveryCode = SecureCodes.generate();
         insertActiveCredential(account.getId(), recoveryCode);
         auditService.record(account.getId(), "ACCOUNT", "ACCOUNT_REGISTERED", "account:" + account.getId(), null,
             java.util.Map.of("username", username));
@@ -67,7 +68,7 @@ public class AccountService {
     public RecoveryResult recover(String username, String recoveryCode, String newPassword) {
         Account account = accountMapper.findByUsername(username);
         RecoveryCredential credential = account == null ? null : recoveryCredentialMapper.findActiveByAccountId(account.getId());
-        if (credential == null || !RecoveryCodes.hash(RecoveryCodes.normalize(recoveryCode)).equals(credential.getCodeHash())) {
+        if (credential == null || !SecureCodes.hash(SecureCodes.normalize(recoveryCode)).equals(credential.getCodeHash())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_INVALID_CREDENTIALS", "恢复失败", UNIFIED_RECOVERY_FAILURE);
         }
         // 并发消费保护：只有仍为 ACTIVE 的码能被消费。
@@ -87,7 +88,7 @@ public class AccountService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_INVALID_CREDENTIALS", "验证失败", "当前密码不正确。");
         }
         recoveryCredentialMapper.revokeActiveByAccountId(accountId);
-        String recoveryCode = RecoveryCodes.generate();
+        String recoveryCode = SecureCodes.generate();
         insertActiveCredential(accountId, recoveryCode);
         auditService.record(accountId, "ACCOUNT", "RECOVERY_CODE_REISSUED", "account:" + accountId, null, null);
         return new RecoveryResult(recoveryCode);
@@ -108,7 +109,7 @@ public class AccountService {
 
     private String issueNewCodeAfterPasswordChange(Long accountId, String newPassword) {
         accountMapper.updatePasswordAndBumpVersion(accountId, passwordEncoder.encode(newPassword));
-        String newCode = RecoveryCodes.generate();
+        String newCode = SecureCodes.generate();
         insertActiveCredential(accountId, newCode);
         return newCode;
     }
@@ -116,7 +117,7 @@ public class AccountService {
     private void insertActiveCredential(Long accountId, String plainCode) {
         RecoveryCredential credential = new RecoveryCredential();
         credential.setAccountId(accountId);
-        credential.setCodeHash(RecoveryCodes.hash(RecoveryCodes.normalize(plainCode)));
+        credential.setCodeHash(SecureCodes.hash(SecureCodes.normalize(plainCode)));
         credential.setStatus("ACTIVE");
         recoveryCredentialMapper.insert(credential);
     }

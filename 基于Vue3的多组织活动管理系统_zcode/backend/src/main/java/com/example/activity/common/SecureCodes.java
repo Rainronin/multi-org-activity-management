@@ -1,4 +1,4 @@
-package com.example.activity.modules.account;
+package com.example.activity.common;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -8,14 +8,14 @@ import java.util.HexFormat;
 import java.util.Locale;
 
 /**
- * 一次性恢复码：安全随机源 128 位，展示为分段十六进制；
- * 明文仅在发放响应中出现一次，持久层只保存规范化后的 SHA-256 摘要（后端架构 4.1）。
+ * 一次性分享码（恢复码、邀请码共用）：安全随机源 128 位，展示为分段十六进制；
+ * 持久层只保存规范化后的 SHA-256 摘要，明文仅在发放响应中出现一次。
  */
-public final class RecoveryCodes {
+public final class SecureCodes {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
-    private RecoveryCodes() {
+    private SecureCodes() {
     }
 
     public static String generate() {

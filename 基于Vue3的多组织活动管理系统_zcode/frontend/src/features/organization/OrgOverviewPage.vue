@@ -77,7 +77,7 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
         </div>
       </dl>
       <p class="overview-card__note">
-        成员邀请、活动管理等能力将随开发阶段逐项开放；当前已开放的信息以实际权限为准。
+        成员邀请与成员管理已开放；活动管理等能力将随开发阶段逐项开放。
       </p>
     </section>
 

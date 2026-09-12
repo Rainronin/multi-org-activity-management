@@ -10,6 +10,7 @@ import { roleLabel } from '../organization/types'
 import type { OrganizationDirectoryItem } from '../organization/types'
 import RecoveryCodeDialog from './RecoveryCodeDialog.vue'
 import CreateOrganizationDialog from '../organization/CreateOrganizationDialog.vue'
+import JoinByCodeDialog from '../organization/JoinByCodeDialog.vue'
 
 const session = useSessionStore()
 const directoryStore = useOrganizationsStore()
@@ -56,6 +57,7 @@ const codeDialogVisible = ref(false)
 const issuedRecoveryCode = ref('')
 
 const createDialogVisible = ref(false)
+const joinDialogVisible = ref(false)
 const directoryError = ref('')
 
 async function loadDirectory(): Promise<void> {
@@ -83,6 +85,12 @@ function enterOrganization(org: OrganizationDirectoryItem): void {
 function onOrganizationCreated(org: OrganizationDirectoryItem): void {
   directoryStore.fetchDirectory(true).finally(() => {
     void router.push(`/org/${org.id}`)
+  })
+}
+
+function onOrganizationJoined(org: { orgId: string; name: string }): void {
+  directoryStore.fetchDirectory(true).finally(() => {
+    void router.push(`/org/${org.orgId}`)
   })
 }
 
@@ -367,6 +375,11 @@ async function handleLogout() {
       v-model="createDialogVisible"
       @created="onOrganizationCreated"
     />
+
+    <JoinByCodeDialog
+      v-model="joinDialogVisible"
+      @joined="onOrganizationJoined"
+    />
   </main>
 </template>
 
@@ -397,6 +410,11 @@ async function handleLogout() {
   border-radius: var(--ui-radius-card);
   background: var(--ui-color-surface);
   box-shadow: var(--ui-shadow-glass);
+}
+
+.account-page__head-actions {
+  display: flex;
+  gap: var(--ui-space-3);
 }
 
 .account-page__card-head {

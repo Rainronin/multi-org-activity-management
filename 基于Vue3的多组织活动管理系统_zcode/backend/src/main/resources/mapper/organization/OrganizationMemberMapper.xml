@@ -16,6 +16,21 @@
         LIMIT 1
     </select>
 
+    <select id="findAny" resultType="com.example.activity.modules.organization.OrganizationMember">
+        SELECT id, org_id, account_id, role, status, joined_at
+        FROM organization_member
+        WHERE org_id = #{orgId}
+          AND account_id = #{accountId}
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findById" resultType="com.example.activity.modules.organization.OrganizationMember">
+        SELECT id, org_id, account_id, role, status, joined_at
+        FROM organization_member
+        WHERE id = #{id}
+    </select>
+
     <select id="listActiveByAccountId" resultType="com.example.activity.modules.organization.OrganizationMember">
         SELECT id, org_id, account_id, role, status, joined_at
         FROM organization_member
@@ -23,5 +38,40 @@
           AND status = 'ACTIVE'
         ORDER BY joined_at ASC, id ASC
     </select>
+
+    <select id="listMemberViews" resultType="com.example.activity.modules.organization.MemberView">
+        SELECT m.id AS memberId,
+               m.account_id AS accountId,
+               a.username AS username,
+               m.role AS role,
+               m.joined_at AS joinedAt
+        FROM organization_member m
+        JOIN account a ON a.id = m.account_id
+        WHERE m.org_id = #{orgId}
+          AND m.status = 'ACTIVE'
+        ORDER BY m.joined_at ASC, m.id ASC
+    </select>
+
+    <select id="countActiveOwners" resultType="int">
+        SELECT COUNT(*)
+        FROM organization_member
+        WHERE org_id = #{orgId}
+          AND status = 'ACTIVE'
+          AND role = 'OWNER'
+    </select>
+
+    <update id="updateStatus">
+        UPDATE organization_member
+        SET status = #{status}
+        WHERE id = #{id}
+          AND status = 'ACTIVE'
+    </update>
+
+    <update id="updateRole">
+        UPDATE organization_member
+        SET role = #{role}
+        WHERE id = #{id}
+          AND status = 'ACTIVE'
+    </update>
 
 </mapper>

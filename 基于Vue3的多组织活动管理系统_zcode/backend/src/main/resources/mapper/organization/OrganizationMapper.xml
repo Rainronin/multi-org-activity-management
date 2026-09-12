@@ -20,4 +20,11 @@
           AND status = 'ACTIVE'
     </select>
 
+    <select id="lockOrganization" resultType="long">
+        SELECT id
+        FROM organization
+        WHERE id = #{orgId}
+        FOR UPDATE
+    </select>
+
 </mapper>

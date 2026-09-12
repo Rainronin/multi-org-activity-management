@@ -37,6 +37,12 @@ export const router = createRouter({
           component: () => import('../features/organization/OrgOverviewPage.vue'),
           meta: { title: '组织概览' },
         },
+        {
+          path: 'members',
+          name: 'org-members',
+          component: () => import('../features/organization/OrgMembersPage.vue'),
+          meta: { title: '成员管理' },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
