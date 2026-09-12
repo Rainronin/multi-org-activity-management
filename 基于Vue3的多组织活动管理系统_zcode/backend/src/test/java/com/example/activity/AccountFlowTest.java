@@ -46,6 +46,12 @@ class AccountFlowTest {
 
     private MvcResult register(String username) throws Exception {
         return mockMvc.perform(post("/api/auth/register").with(csrf())
+                .with(request -> {
+                    // 注册限流按 IP 计数，测试身份使用独立 IP 保持用例独立。
+                    request.setRemoteAddr("10.%d.%d.%d".formatted(
+                        (username.hashCode() >> 8) & 0xFF, username.hashCode() & 0xFF, 7));
+                    return request;
+                })
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"username\":\"%s\",\"password\":\"%s\"}".formatted(username, PASSWORD)))
             .andExpect(status().isCreated())

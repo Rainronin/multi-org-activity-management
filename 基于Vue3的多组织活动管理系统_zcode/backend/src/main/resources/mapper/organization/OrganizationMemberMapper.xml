@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.organization.OrganizationMemberMapper">
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO organization_member (org_id, account_id, role, status)
+        VALUES (#{orgId}, #{accountId}, #{role}, #{status})
+    </insert>
+
+    <select id="findActive" resultType="com.example.activity.modules.organization.OrganizationMember">
+        SELECT id, org_id, account_id, role, status, joined_at
+        FROM organization_member
+        WHERE org_id = #{orgId}
+          AND account_id = #{accountId}
+          AND status = 'ACTIVE'
+        LIMIT 1
+    </select>
+
+    <select id="listActiveByAccountId" resultType="com.example.activity.modules.organization.OrganizationMember">
+        SELECT id, org_id, account_id, role, status, joined_at
+        FROM organization_member
+        WHERE account_id = #{accountId}
+          AND status = 'ACTIVE'
+        ORDER BY joined_at ASC, id ASC
+    </select>
+
+</mapper>

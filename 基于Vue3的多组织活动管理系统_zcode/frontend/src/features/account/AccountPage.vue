@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, type FormInstance, type FormRules } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElTag, type FormInstance, type FormRules } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
+import { useOrganizationsStore } from '../../stores/organizations'
 import { reissueRecoveryCode } from './api'
+import { roleLabel } from '../organization/types'
+import type { OrganizationDirectoryItem } from '../organization/types'
 import RecoveryCodeDialog from './RecoveryCodeDialog.vue'
+import CreateOrganizationDialog from '../organization/CreateOrganizationDialog.vue'
 
 const session = useSessionStore()
+const directoryStore = useOrganizationsStore()
 const router = useRouter()
 
 const passwordFormRef = ref<FormInstance>()
@@ -49,6 +54,37 @@ const reissueRules: FormRules = {
 
 const codeDialogVisible = ref(false)
 const issuedRecoveryCode = ref('')
+
+const createDialogVisible = ref(false)
+const directoryError = ref('')
+
+async function loadDirectory(): Promise<void> {
+  directoryError.value = ''
+  try {
+    await directoryStore.fetchDirectory(true)
+  } catch (error) {
+    if (session.observeUnauthorized(error)) {
+      return
+    }
+    directoryError.value = error instanceof ApiError && error.isTransportError
+      ? '网络连接失败，请检查网络后重试。'
+      : '组织目录加载失败，请重试。'
+  }
+}
+
+onMounted(() => {
+  void loadDirectory()
+})
+
+function enterOrganization(org: OrganizationDirectoryItem): void {
+  void router.push(`/org/${org.id}`)
+}
+
+function onOrganizationCreated(org: OrganizationDirectoryItem): void {
+  directoryStore.fetchDirectory(true).finally(() => {
+    void router.push(`/org/${org.id}`)
+  })
+}
 
 async function submitPasswordChange() {
   const valid = await passwordFormRef.value?.validate().catch(() => false)
@@ -137,9 +173,60 @@ async function handleLogout() {
     </header>
 
     <section class="account-page__card">
-      <p class="account-page__hint">
-        组织创建、加入与切换将在下一阶段开放；当前可管理本账号的密码与恢复码。
+      <div class="account-page__card-head">
+        <h2>我的组织</h2>
+        <ElButton
+          type="primary"
+          plain
+          @click="createDialogVisible = true"
+        >
+          创建组织
+        </ElButton>
+      </div>
+      <p
+        v-if="directoryError"
+        class="account-page__hint"
+        role="alert"
+      >
+        {{ directoryError }}
       </p>
+      <ul
+        v-else-if="directoryStore.items.length > 0"
+        class="account-page__orgs"
+      >
+        <li
+          v-for="org in directoryStore.items"
+          :key="org.id"
+        >
+          <div>
+            <span class="account-page__org-name">{{ org.name }}</span>
+            <ElTag
+              :type="org.role === 'OWNER' ? 'success' : 'info'"
+              size="small"
+            >
+              {{ roleLabel(org.role) }}
+            </ElTag>
+          </div>
+          <ElButton
+            size="small"
+            @click="enterOrganization(org)"
+          >
+            进入工作区
+          </ElButton>
+        </li>
+      </ul>
+      <p
+        v-else
+        class="account-page__hint"
+      >
+        尚未创建或加入任何组织。创建组织后即可开始协作。
+      </p>
+    </section>
+
+    <section class="account-page__card">
+      <div class="account-page__card-head">
+        <h2>账号安全</h2>
+      </div>
       <div class="account-page__actions">
         <ElButton @click="passwordDialogVisible = true">
           修改密码
@@ -275,6 +362,11 @@ async function handleLogout() {
       :code="issuedRecoveryCode"
       confirm-target="新恢复码"
     />
+
+    <CreateOrganizationDialog
+      v-model="createDialogVisible"
+      @created="onOrganizationCreated"
+    />
   </main>
 </template>
 
@@ -307,8 +399,48 @@ async function handleLogout() {
   box-shadow: var(--ui-shadow-glass);
 }
 
-.account-page__hint {
+.account-page__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
   margin-bottom: var(--ui-space-4);
+}
+
+.account-page__card-head h2 {
+  font-size: var(--ui-font-size-section);
+  font-weight: var(--ui-font-weight-semibold);
+}
+
+.account-page__orgs {
+  display: grid;
+  gap: var(--ui-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-page__orgs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-2) 0;
+}
+
+.account-page__orgs li > div {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+
+.account-page__org-name {
+  color: var(--ui-color-text);
+  overflow-wrap: anywhere;
+}
+
+.account-page__hint {
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-small);
 }

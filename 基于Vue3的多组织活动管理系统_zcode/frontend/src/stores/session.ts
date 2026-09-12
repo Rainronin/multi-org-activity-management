@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { request, setCsrfHeaderProvider } from '../shared/http/client'
 import { ApiError } from '../shared/http/error'
 import { changePassword as apiChangePassword, login as apiLogin, logout as apiLogout, type MeResponse } from '../features/account/api'
+import { useOrganizationsStore } from './organizations'
 
 export type SessionStatus = 'unknown' | 'authenticated' | 'guest'
 
@@ -83,6 +84,8 @@ export const useSessionStore = defineStore('session', () => {
     status.value = 'guest'
     account.value = null
     invalidateCsrfCredential()
+    // 退出同时清空本人组织目录（前端架构 5.1：目录属于会话范围）。
+    useOrganizationsStore().clear()
   }
 
   async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
