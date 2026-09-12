@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.registration.RegistrationMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, account_id, display_name, note, status,
+        decided_by, decided_at, cancel_reason, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO registration (org_id, activity_id, account_id, display_name, note, status)
+        VALUES (#{orgId}, #{activityId}, #{accountId}, #{displayName}, #{note}, #{status})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.registration.Registration">
+        SELECT <include refid="baseColumns" />
+        FROM registration
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByActivityAndAccount" resultType="com.example.activity.modules.registration.Registration">
+        SELECT <include refid="baseColumns" />
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND account_id = #{accountId}
+    </select>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.registration.Registration">
+        SELECT <include refid="baseColumns" />
+        FROM registration
+        WHERE activity_id = #{activityId}
+          <if test="status != null and status != ''">
+            AND status = #{status}
+          </if>
+        ORDER BY created_at ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByActivity" resultType="long">
+        SELECT COUNT(*)
+        FROM registration
+        WHERE activity_id = #{activityId}
+          <if test="status != null and status != ''">
+            AND status = #{status}
+          </if>
+    </select>
+
+    <select id="listByAccount" resultType="com.example.activity.modules.registration.Registration">
+        SELECT <include refid="baseColumns" />
+        FROM registration
+        WHERE account_id = #{accountId}
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <update id="review">
+        UPDATE registration
+        SET status = #{toStatus},
+            decided_by = #{decidedBy},
+            decided_at = CURRENT_TIMESTAMP(6),
+            cancel_reason = #{reason}
+        WHERE id = #{id}
+          AND status = 'PENDING'
+    </update>
+
+    <select id="countApproved" resultType="int">
+        SELECT COUNT(*)
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND status = 'APPROVED'
+    </select>
+
+    <update id="reapply">
+        UPDATE registration
+        SET display_name = #{displayName},
+            note = #{note},
+            status = 'PENDING',
+            decided_by = NULL,
+            decided_at = NULL,
+            cancel_reason = NULL
+        WHERE id = #{id}
+    </update>
+
+</mapper>
