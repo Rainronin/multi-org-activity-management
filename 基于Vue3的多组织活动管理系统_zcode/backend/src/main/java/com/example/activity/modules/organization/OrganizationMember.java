@@ -15,6 +15,7 @@ public class OrganizationMember {
     private String role;
     private String status;
     private OffsetDateTime joinedAt;
+    private OffsetDateTime updatedAt;
 
     public Long getId() {
         return id;
@@ -62,5 +63,13 @@ public class OrganizationMember {
 
     public void setJoinedAt(OffsetDateTime joinedAt) {
         this.joinedAt = joinedAt;
+    }
+
+    public OffsetDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(OffsetDateTime updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

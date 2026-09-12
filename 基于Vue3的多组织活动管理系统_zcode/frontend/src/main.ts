@@ -18,4 +18,11 @@ session.bindRedirect((target) => {
   void router.push(target)
 })
 
+// 切回标签页时重新验证会话（开发规范 2.4 / 审核 R02）。
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && session.status === 'authenticated') {
+    void session.revalidate()
+  }
+})
+
 app.mount('#app')

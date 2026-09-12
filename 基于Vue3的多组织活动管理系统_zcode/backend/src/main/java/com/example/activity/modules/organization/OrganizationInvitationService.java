@@ -47,6 +47,8 @@ public class OrganizationInvitationService {
 
     @Transactional
     public InvitationCreated create(Long actorAccountId, Long orgId, int expiresInDays, int maxUses) {
+        // 组织行排他锁 + 锁内重验身份：撤权与创建竞争时，撤权先生效则本次创建被拒绝（R04）。
+        organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, actorAccountId);
         // 邀请码需要分享给被邀请人，明文仅创建响应返回一次（存哈希，之后不可再查看）。
         String plainCode = SecureCodes.generate();
@@ -73,6 +75,7 @@ public class OrganizationInvitationService {
 
     @Transactional
     public void revoke(Long actorAccountId, Long orgId, Long invitationId) {
+        organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, actorAccountId);
         OrganizationInvitation invitation = invitationMapper.findById(invitationId);
         if (invitation == null || !invitation.getOrgId().equals(orgId)) {
@@ -85,22 +88,45 @@ public class OrganizationInvitationService {
 
     @Transactional
     public Accepted accept(Long accountId, String code) {
-        OrganizationInvitation invitation =
-            invitationMapper.findActiveByCodeHash(SecureCodes.hash(SecureCodes.normalize(code)));
-        if (invitation == null) {
+        String codeHash = SecureCodes.hash(SecureCodes.normalize(code));
+        OrganizationInvitation lookup = invitationMapper.findActiveByCodeHash(codeHash);
+        if (lookup == null) {
             throw invalid();
         }
-        // 组织行排他锁：同一组织的邀请接受与成员变更串行。
-        organizationMapper.lockOrganization(invitation.getOrgId());
+        // 组织行排他锁：同一组织的邀请接受与成员变更串行（后端架构 5.1）。
+        organizationMapper.lockOrganization(lookup.getOrgId());
+        // 锁内重读当前状态：READ COMMITTED 下可见竞争事务的已提交结果（R01）。
+        OrganizationInvitation invitation = invitationMapper.findById(lookup.getId());
+        if (invitation == null || !OrganizationInvitation.STATUS_ACTIVE.equals(invitation.getStatus())) {
+            throw invalid();
+        }
 
         OrganizationMember existing = memberMapper.findActive(invitation.getOrgId(), accountId);
         if (existing != null) {
             // 重复接受幂等：返回现有关系，不重复计数、不重复入组。
             return new Accepted(invitation.getOrgId(), orgName(invitation.getOrgId()), existing.getRole());
         }
+        OrganizationMember history = memberMapper.findAny(invitation.getOrgId(), accountId);
+        if (history != null && "REMOVED".equals(history.getStatus())) {
+            // 被移除成员只能凭"移除之后创建"的邀请重新加入；移除前发出的旧邀请对其无效。
+            if (!invitation.getCreatedAt().isAfter(history.getUpdatedAt())) {
+                throw invalid();
+            }
+        }
         if (invitationMapper.incrementUsedCount(invitation.getId(), OffsetDateTime.now(), invitation.getMaxUses()) != 1) {
             throw invalid();
         }
+
+        if (history != null && !"ACTIVE".equals(history.getStatus())) {
+            // 重新加入复用主关系行（memberId 稳定，见 数据设计.md 组织成员关系）。
+            if (memberMapper.reactivate(history.getId()) != 1) {
+                throw invalid();
+            }
+            auditService.record(accountId, "ORGANIZATION", "MEMBER_JOINED", "organization:" + invitation.getOrgId(),
+                "重新加入", java.util.Map.of("memberId", history.getId(), "invitationId", invitation.getId()));
+            return new Accepted(invitation.getOrgId(), orgName(invitation.getOrgId()), OrganizationMember.ROLE_MEMBER);
+        }
+
         OrganizationMember member = new OrganizationMember();
         member.setOrgId(invitation.getOrgId());
         member.setAccountId(accountId);
@@ -109,7 +135,7 @@ public class OrganizationInvitationService {
         try {
             memberMapper.insert(member);
         } catch (org.springframework.dao.DuplicateKeyException ex) {
-            // 并发兜底：唯一约束保证不产生第二条有效关系。
+            // 并发兜底：锁内 READ COMMITTED 重读可见已提交关系，正常流程不会到达此处。
             OrganizationMember concurrent = memberMapper.findActive(invitation.getOrgId(), accountId);
             if (concurrent == null) {
                 throw ex;

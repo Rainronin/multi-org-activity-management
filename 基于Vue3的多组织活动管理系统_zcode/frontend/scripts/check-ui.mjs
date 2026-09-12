@@ -74,6 +74,9 @@ const SIZE_LITERAL = new RegExp(`(?:${SIZE_PROPERTIES})\\s*:[^;{}]*\\d(?:\\.\\d+
 const FONT_FAMILY_LITERAL = /font-family\s*:\s*(?!"?\s*var\()[^;{}]*[;'{}]/g
 const MOTION_LITERAL = /(?:transition|animation)(?:-duration)?\s*:[^;{}]*\d(?:\.\d+)?m?s\b/g
 const INLINE_STYLE_BYPASS = /(?:^|\s)style="[^"]*(?:px|#[0-9a-fA-F]{3}|rgb)/g
+// 组件数值 props 同样承载设计数值（R06）：width／height 等属性不允许像素字面量，
+// 应绑定 token（width="var(--ui-dialog-width)" 之类不受限）。SVG 绘图尺寸不在检查范围。
+const COMPONENT_SIZE_PROP = /<(?!svg)(?:[A-Za-z][\w.-]*)[^>]*?\s(?::)?(min-width|max-width|width|height|min-height|max-height)="(\d+(?:\.\d+)?(?:px)?)"/g
 
 function scanCss(text, file, offset = 0) {
   for (const match of text.matchAll(COLOR_LITERAL)) {
@@ -107,6 +110,9 @@ for (const file of businessFiles) {
   scanCss(text, file)
   for (const match of text.matchAll(INLINE_STYLE_BYPASS)) {
     addProblem(file, lineOf(text, match.index), `内联 style 疑似绕过 token：${match[0].trim().slice(0, 60)}`)
+  }
+  for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
+    addProblem(file, lineOf(text, match.index), `组件尺寸 props 字面量 ${match[0].slice(-40)}，应绑定 token`)
   }
 }
 

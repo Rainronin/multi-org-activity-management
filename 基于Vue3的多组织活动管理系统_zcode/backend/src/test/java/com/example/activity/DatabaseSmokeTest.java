@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import com.example.activity.support.ActivityTestBase;
 import org.springframework.test.context.ActiveProfiles;
 
 import com.example.activity.common.HealthService;
@@ -19,7 +20,7 @@ import com.example.activity.common.HealthService;
  */
 @SpringBootTest
 @ActiveProfiles("local")
-class DatabaseSmokeTest {
+class DatabaseSmokeTest extends ActivityTestBase {
 
     @Autowired
     private DataSource dataSource;

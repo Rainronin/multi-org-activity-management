@@ -40,7 +40,13 @@ try {
   const oldInvite = await call(member, 'POST', '/api/invitations/accept', { code: invitation.code })
   const after = await (await call(owner, 'GET', `/api/organizations/${org1.id}/members`)).json()
   const nextId = after.items.find(x => x.username === memberName)?.memberId
-  console.log(JSON.stringify({ check: '实际 HTTP 成员链路', repeatedRemovalStatus: repeatedRemoval.status(), oldInviteRejoinStatus: oldInvite.status(), membershipIdChanged: memberId !== nextId }))
+  console.log(JSON.stringify({ check: '实际 HTTP 成员链路', repeatedRemovalStatus: repeatedRemoval.status(), oldInviteRejoinStatus: oldInvite.status(), removedMemberInActiveList: nextId !== undefined }))
+  // 语义修正后：被移除成员凭"移除之后创建"的新邀请重新加入，主关系 id 保持不变（R05）
+  const freshInvitation = await (await call(owner, 'POST', `/api/organizations/${org1.id}/invitations`, {})).json()
+  assert.equal((await call(member, 'POST', '/api/invitations/accept', { code: freshInvitation.code })).status(), 200)
+  const rejoined = await (await call(owner, 'GET', `/api/organizations/${org1.id}/members`)).json()
+  const rejoinedId = rejoined.items.find(x => x.username === memberName)?.memberId
+  console.log(JSON.stringify({ check: '新邀请重新加入主关系稳定', membershipIdChanged: memberId !== rejoinedId }))
 
   const invitation2 = await (await call(owner, 'POST', `/api/organizations/${org2.id}/invitations`, {})).json()
   // 测试库短暂锁住新建组织，确保两个真实请求都在首次读邀请后等待同一组织锁。
@@ -78,22 +84,24 @@ try {
     const session = useSessionStore(pinia)
     const directory = useOrganizationsStore(pinia)
     const originalFetch = window.fetch
+    // A 代次内挂起目录请求
     let release
     window.fetch = async (path, options) => String(path).includes('/api/me/organizations')
       ? new Promise(resolve => { release = () => resolve(new Response(JSON.stringify({ items: [{ id: 'old-account-org', name: '旧账号组织', role: 'OWNER', joinedAt: '2026-09-12' }] }), { headers: { 'Content-Type': 'application/json' } })) })
       : originalFetch(path, options)
     const loading = directory.fetchDirectory(true)
     await new Promise(resolve => setTimeout(resolve, 0))
-    directory.clear()
+    // 会话切换（等价登出）：代次递增并清空目录，随后旧目录响应才返回
+    await session.logout()
     release()
     await loading
     window.fetch = originalFetch
-    const oldDataRestoredAfterClear = directory.items.some(x => x.id === 'old-account-org')
+    const oldDataRestoredAfterSessionChange = directory.items.some(x => x.id === 'old-account-org')
+    // 切换后的旧 401（代次不匹配）被忽略，不再清除新会话状态
     const old401 = new ApiError({ kind: 'server', status: 401, code: 'AUTH_REQUIRED', detail: '旧请求测试' })
-    await session.bootstrap()
     const beforeStatus = session.status
-    session.observeUnauthorized(old401)
-    return { oldDataRestoredAfterClear, beforeStatus, afterLate401: session.status, directoryClearedOn401: directory.items.length === 0 }
+    const lateHandled = session.observeUnauthorized(old401)
+    return { oldDataRestoredAfterSessionChange, beforeStatus, lateHandled, afterLate401: session.status, directoryClearedOnSessionChange: directory.items.length === 0 }
   })
   console.log(JSON.stringify({ check: '会话与目录迟到响应（浏览器内定向控制响应）', ...stale }))
   console.log(JSON.stringify({ check: '测试数据边界', database: 'activity_test', accountsCreated: 2, organizationsCreated: 2, realBackendAuth: true }))

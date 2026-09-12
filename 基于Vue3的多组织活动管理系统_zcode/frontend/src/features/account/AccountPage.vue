@@ -62,10 +62,11 @@ const directoryError = ref('')
 
 async function loadDirectory(): Promise<void> {
   directoryError.value = ''
+  const gen = session.capture()
   try {
     await directoryStore.fetchDirectory(true)
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     directoryError.value = error instanceof ApiError && error.isTransportError
@@ -99,7 +100,8 @@ async function submitPasswordChange() {
   if (!valid) {
     return
   }
-  passwordSubmitting.value = true
+    const gen = session.capture()
+passwordSubmitting.value = true
   passwordError.value = ''
   try {
     await session.changePassword(passwordFields.currentPassword, passwordFields.newPassword)
@@ -108,7 +110,7 @@ async function submitPasswordChange() {
     passwordFields.newPassword = ''
     passwordFields.confirmPassword = ''
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     if (error instanceof ApiError && !error.isTransportError) {
@@ -133,7 +135,8 @@ async function submitReissue() {
   if (!valid) {
     return
   }
-  reissueSubmitting.value = true
+    const gen = session.capture()
+reissueSubmitting.value = true
   reissueError.value = ''
   try {
     const result = await reissueRecoveryCode(reissueFields.currentPassword)
@@ -142,7 +145,7 @@ async function submitReissue() {
     issuedRecoveryCode.value = result.recoveryCode
     codeDialogVisible.value = true
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     if (error instanceof ApiError && !error.isTransportError) {

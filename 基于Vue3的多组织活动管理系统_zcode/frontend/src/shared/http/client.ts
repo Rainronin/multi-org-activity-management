@@ -61,6 +61,11 @@ async function resolveHeaders(request: ClientRequest, method: RequestMethod): Pr
 export async function request<T = unknown>(path: string, options: ClientRequest = {}): Promise<ClientResponse<T>> {
   const method = options.method ?? 'GET'
   const responseMode: ResponseMode = options.response ?? 'json'
+  // 发起前已取消的请求直接失败，不进入网络（开发规范 2.3：主动取消不冒充业务错误）。
+  if (options.signal?.aborted) {
+    throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。' })
+  }
+
   const headers = await resolveHeaders(options, method)
 
   const timeoutController = new AbortController()
@@ -75,64 +80,67 @@ export async function request<T = unknown>(path: string, options: ClientRequest 
   const onExternalAbort = () => timeoutController.abort()
   options.signal?.addEventListener('abort', onExternalAbort)
 
-  let response: Response
+  // 超时与取消保护覆盖响应体的完整读取：头到达即解除监听会让正文读取脱离保护（R08 审核项）。
   try {
-    response = await fetch(options.query ? `${path}?${options.query.toString()}` : path, {
-      method,
-      headers,
-      body: options.json !== undefined ? JSON.stringify(options.json) : options.form ?? options.blob ?? null,
-      signal: timeoutController.signal,
-      credentials: 'same-origin',
-    })
-  } catch (cause) {
-    if (timedOut) {
-      throw new ApiError({ kind: 'transport', code: 'REQUEST_TIMEOUT', detail: '请求超时，请稍后重试。', cause })
+    let response: Response
+    try {
+      response = await fetch(options.query ? `${path}?${options.query.toString()}` : path, {
+        method,
+        headers,
+        body: options.json !== undefined ? JSON.stringify(options.json) : options.form ?? options.blob ?? null,
+        signal: timeoutController.signal,
+        credentials: 'same-origin',
+      })
+    } catch (cause) {
+      if (timedOut) {
+        throw new ApiError({ kind: 'transport', code: 'REQUEST_TIMEOUT', detail: '请求超时，请稍后重试。', cause })
+      }
+      if (options.signal?.aborted) {
+        throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。', cause })
+      }
+      throw new ApiError({ kind: 'transport', code: 'NETWORK_ERROR', detail: '网络连接失败，请检查网络后重试。', cause })
     }
-    if (options.signal?.aborted) {
-      throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。', cause })
+
+    const requestId = response.headers.get('X-Request-Id') ?? undefined
+
+    if (!response.ok) {
+      const problem = toProblemDetail(await parseJsonBody(response))
+      throw new ApiError({
+        kind: 'server',
+        status: response.status,
+        code: problem?.code ?? `HTTP_${response.status}`,
+        detail: problem?.detail ?? `请求失败（HTTP ${response.status}）。`,
+        requestId: problem?.requestId ?? requestId,
+        fieldErrors: problem?.fieldErrors ?? [],
+      })
     }
-    throw new ApiError({ kind: 'transport', code: 'NETWORK_ERROR', detail: '网络连接失败，请检查网络后重试。', cause })
+
+    if (responseMode === 'none' || response.status === 204) {
+      return { status: response.status, headers: response.headers, data: null as T }
+    }
+
+    if (responseMode === 'blob') {
+      const blob = await response.blob()
+      return { status: response.status, headers: response.headers, data: blob as T }
+    }
+
+    const contentType = response.headers.get('Content-Type') ?? ''
+    if (!contentType.includes('application/json')) {
+      throw new ApiError({
+        kind: 'transport',
+        code: 'UNEXPECTED_CONTENT_TYPE',
+        detail: '服务端返回了意外的内容类型。',
+        requestId,
+      })
+    }
+    const data = (await response.json()) as T
+    return { status: response.status, headers: response.headers, data }
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId)
     }
     options.signal?.removeEventListener('abort', onExternalAbort)
   }
-
-  const requestId = response.headers.get('X-Request-Id') ?? undefined
-
-  if (!response.ok) {
-    const problem = toProblemDetail(await parseJsonBody(response))
-    throw new ApiError({
-      kind: 'server',
-      status: response.status,
-      code: problem?.code ?? `HTTP_${response.status}`,
-      detail: problem?.detail ?? `请求失败（HTTP ${response.status}）。`,
-      requestId: problem?.requestId ?? requestId,
-      fieldErrors: problem?.fieldErrors ?? [],
-    })
-  }
-
-  if (responseMode === 'none' || response.status === 204) {
-    return { status: response.status, headers: response.headers, data: null as T }
-  }
-
-  if (responseMode === 'blob') {
-    const blob = await response.blob()
-    return { status: response.status, headers: response.headers, data: blob as T }
-  }
-
-  const contentType = response.headers.get('Content-Type') ?? ''
-  if (!contentType.includes('application/json')) {
-    throw new ApiError({
-      kind: 'transport',
-      code: 'UNEXPECTED_CONTENT_TYPE',
-      detail: '服务端返回了意外的内容类型。',
-      requestId,
-    })
-  }
-  const data = (await response.json()) as T
-  return { status: response.status, headers: response.headers, data }
 }
 
 async function parseJsonBody(response: Response): Promise<unknown> {

@@ -67,6 +67,15 @@
   </dependencies>
 
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <!-- 本地凭据文件只供本机运行，不进入构建包（R08）；发布前用 jar tf 复核。 -->
+        <excludes>
+          <exclude>application-local.yml</exclude>
+        </excludes>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

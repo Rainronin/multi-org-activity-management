@@ -18,12 +18,22 @@ public interface OrganizationMemberMapper {
 
     List<OrganizationMember> listActiveByAccountId(@Param("accountId") Long accountId);
 
-    List<MemberView> listMemberViews(@Param("orgId") Long orgId);
-
     int countActiveOwners(@Param("orgId") Long orgId);
 
     /** 仅当仍为 ACTIVE 时更新；返回 0 表示并发下已被处理。 */
     int updateStatus(@Param("id") Long id, @Param("status") String status);
+
+    /** 重新加入：把 LEFT 历史主关系重新激活为普通成员（主关系复用，见 数据设计.md）。 */
+    int reactivate(@Param("id") Long id);
+
+    /** 成员列表分页：按用户名过滤（可空），稳定排序 joined_at, id。 */
+    List<MemberView> listMemberViewsPage(
+        @Param("orgId") Long orgId,
+        @Param("query") String query,
+        @Param("offset") long offset,
+        @Param("limit") int limit);
+
+    int countMemberViews(@Param("orgId") Long orgId, @Param("query") String query);
 
     /** 仅当仍为 ACTIVE 时更新角色；返回 0 表示关系已变化。 */
     int updateRole(@Param("id") Long id, @Param("role") String role);

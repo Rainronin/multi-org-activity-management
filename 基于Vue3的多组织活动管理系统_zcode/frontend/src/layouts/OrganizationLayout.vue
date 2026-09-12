@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, ArrowRight, HomeFilled, User } from '@element-plus/icons-vue'
-import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
+import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
 import { ApiError } from '../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../stores/session'
 import { useOrganizationsStore } from '../stores/organizations'
@@ -36,6 +36,7 @@ const avatarInitial = computed(() => username.value.charAt(0))
 async function loadOrganization(targetOrgId: string): Promise<void> {
   requestedOrgId = targetOrgId
   orgState.value = 'loading'
+  const gen = session.capture()
   try {
     const detail = await fetchOrganization(targetOrgId)
     if (requestedOrgId !== targetOrgId) {
@@ -44,7 +45,7 @@ async function loadOrganization(targetOrgId: string): Promise<void> {
     orgDetail.value = detail
     orgState.value = 'ready'
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     if (requestedOrgId !== targetOrgId) {
@@ -69,13 +70,14 @@ const loadError = ref('')
 async function loadDirectory(): Promise<void> {
   directoryLoading.value = true
   const requestId = ++directoryRequestId
+  const gen = session.capture()
   try {
     await directoryStore.fetchDirectory()
     if (directoryRequestId === requestId) {
       directoryLoading.value = false
     }
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     directoryLoading.value = false
@@ -111,6 +113,11 @@ watch(orgId, (value) => {
     void loadOrganization(value)
   }
 })
+
+function reloadOrganization(): void {
+  void loadOrganization(orgId.value)
+  void directoryStore.fetchDirectory(true)
+}
 
 onMounted(() => {
   void loadDirectory()
@@ -244,15 +251,39 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         </div>
       </header>
       <main class="org-main">
-        <RouterView v-slot="{ Component }">
-          <component
-            :is="Component"
-            :org-detail="orgDetail"
-            :state="orgState"
-            :error-text="loadError"
-            @retry="loadOrganization(orgId)"
-          />
-        </RouterView>
+        <!-- 组织不可访问时不渲染子页，避免子页继续加载受限数据（R03） -->
+        <template v-if="orgState !== 'missing'">
+          <RouterView v-slot="{ Component }">
+            <component
+              :is="Component"
+              :org-detail="orgDetail"
+              :state="orgState"
+              :error-text="loadError"
+              @retry="loadOrganization(orgId)"
+              @changed="reloadOrganization"
+            />
+          </RouterView>
+        </template>
+        <section
+          v-else
+          class="org-missing"
+        >
+          <p
+            class="org-missing__text"
+            role="alert"
+          >
+            {{ loadError || '组织不存在或无权访问。' }}
+          </p>
+          <ElButton @click="loadOrganization(orgId)">
+            重新加载
+          </ElButton>
+          <RouterLink
+            class="org-missing__back"
+            to="/"
+          >
+            返回账号页
+          </RouterLink>
+        </section>
       </main>
     </div>
   </div>
@@ -508,6 +539,27 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
 .breadcrumb-separator {
   color: var(--ui-color-text-muted);
   margin: 0 var(--ui-space-4);
+}
+
+.org-missing {
+  display: grid;
+  justify-items: start;
+  gap: var(--ui-space-3);
+  margin-top: var(--ui-space-8);
+}
+
+.org-missing__text {
+  color: var(--ui-color-text-secondary);
+}
+
+.org-missing__back {
+  color: var(--ui-color-selected-text);
+  font-size: var(--ui-font-size-small);
+  text-decoration: none;
+}
+
+.org-missing__back:hover {
+  text-decoration: underline;
 }
 
 .org-main {

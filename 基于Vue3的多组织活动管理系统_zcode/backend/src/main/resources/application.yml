@@ -2,10 +2,13 @@ spring:
   application:
     name: activity
   datasource:
-    # 默认指向本机开发库；实际凭据经 application-local.yml（不入库）或环境变量提供。
+    # 默认指向本机开发库；实际凭据经 application-local.yml（不入库，且构建排除）或环境变量提供。
     url: ${ACTIVITY_DB_URL:jdbc:mysql://127.0.0.1:3306/activity_dev?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
     username: ${ACTIVITY_DB_USERNAME:activity}
     password: ${ACTIVITY_DB_PASSWORD:}
+    hikari:
+      # 后端架构 5.1：业务事务统一 READ COMMITTED，配合组织行锁协议保证名额与并发正确。
+      transaction-isolation: TRANSACTION_READ_COMMITTED
   flyway:
     locations: classpath:db/migration
 

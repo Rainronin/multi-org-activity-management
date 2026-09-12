@@ -32,9 +32,27 @@ export async function fetchOrganization(orgId: string): Promise<OrganizationDeta
   return response.data
 }
 
-export async function fetchMembers(orgId: string): Promise<MemberItem[]> {
-  const response = await request<{ items: MemberItem[] }>(`/api/organizations/${encodeURIComponent(orgId)}/members`)
-  return response.data.items
+export interface MemberPage {
+  items: MemberItem[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+export async function fetchMembers(
+  orgId: string,
+  params: { page?: number; pageSize?: number; query?: string } = {},
+): Promise<MemberPage> {
+  const search = new URLSearchParams()
+  search.set('page', String(params.page ?? 1))
+  search.set('pageSize', String(params.pageSize ?? 20))
+  if (params.query) {
+    search.set('query', params.query)
+  }
+  const response = await request<MemberPage>(
+    `/api/organizations/${encodeURIComponent(orgId)}/members?${search.toString()}`,
+  )
+  return response.data
 }
 
 export async function createInvitation(

@@ -11,11 +11,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
+import com.example.activity.support.ActivityTestBase;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -27,7 +29,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
-class OrganizationMemberFlowTest {
+class OrganizationMemberFlowTest extends ActivityTestBase {
 
     private static final String PASSWORD = "Passw0rd123";
 
@@ -36,6 +38,9 @@ class OrganizationMemberFlowTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -221,13 +226,13 @@ class OrganizationMemberFlowTest {
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isNotFound());
 
-        // 正常移除； Outsider 从未加入 → 404
+        // 正常移除；重复移除对已授权操作者幂等返回 204（R07）；从未加入与不存在 → 404
         mockMvc.perform(delete("/api/organizations/" + orgId + "/members/" + memberMemberId)
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isNoContent());
         mockMvc.perform(delete("/api/organizations/" + orgId + "/members/" + memberMemberId)
                 .with(csrf()).session(owner.session()))
-            .andExpect(status().isNotFound());
+            .andExpect(status().isNoContent());
         mockMvc.perform(delete("/api/organizations/" + orgId + "/members/999999999")
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isNotFound());
@@ -286,5 +291,200 @@ class OrganizationMemberFlowTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"toMemberId\":%d}".formatted(memberMemberId)))
             .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void concurrentAcceptSameAccountIsIdempotent() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession invitee = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String code = createInvitation(owner, orgId, 2);
+
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            results.add(pool.submit(() -> {
+                barrier.await();
+                return mockMvc.perform(post("/api/invitations/accept").with(csrf()).session(invitee.session())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"%s\"}".formatted(code)))
+                    .andReturn().getResponse().getStatus();
+            }));
+        }
+        for (java.util.concurrent.Future<Integer> future : results) {
+            assertThat(future.get()).isEqualTo(200);
+        }
+        pool.shutdownNow();
+
+        // 组织内 ACTIVE 成员 = 负责人 + 被邀请人；被邀请人恰有一条有效关系
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_member WHERE org_id = ? AND status = 'ACTIVE'",
+            Integer.class, orgId)).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT used_count FROM organization_invitation WHERE org_id = ? AND status = 'ACTIVE'",
+            Integer.class, orgId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_member m JOIN account a ON a.id = m.account_id "
+                + "WHERE m.org_id = ? AND m.status = 'ACTIVE' AND a.username = ?",
+            Integer.class, orgId, invitee.username())).isEqualTo(1);
+
+        // 主关系复用（R05）：退出后凭有效邀请再加入，memberId 不变
+        Long firstMemberId = jdbcTemplate.queryForObject(
+            "SELECT id FROM organization_member WHERE org_id = ? AND status = 'ACTIVE' "
+                + "AND account_id = (SELECT id FROM account WHERE username = ?)",
+            Long.class, orgId, invitee.username());
+        mockMvc.perform(delete("/api/organizations/" + orgId + "/members/me").with(csrf()).session(invitee.session()))
+            .andExpect(status().isNoContent());
+        acceptInvitation(invitee, code);
+        Long reJoinedId = jdbcTemplate.queryForObject(
+            "SELECT id FROM organization_member WHERE org_id = ? AND status = 'ACTIVE' "
+                + "AND account_id = (SELECT id FROM account WHERE username = ?)",
+            Long.class, orgId, invitee.username());
+        assertThat(reJoinedId).isEqualTo(firstMemberId);
+    }
+
+    @Test
+    void concurrentAcceptRacesLastUse() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession a = registerAndLogin();
+        TestSession b = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String code = createInvitation(owner, orgId, 1);
+
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+        for (TestSession invitee : java.util.List.of(a, b)) {
+            results.add(pool.submit(() -> {
+                barrier.await();
+                return mockMvc.perform(post("/api/invitations/accept").with(csrf()).session(invitee.session())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"%s\"}".formatted(code)))
+                    .andReturn().getResponse().getStatus();
+            }));
+        }
+        int ok = 0;
+        for (java.util.concurrent.Future<Integer> future : results) {
+            int status = future.get();
+            assertThat(status).isIn(200, 400);
+            if (status == 200) {
+                ok++;
+            }
+        }
+        pool.shutdownNow();
+        assertThat(ok).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT used_count FROM organization_invitation WHERE org_id = ? AND status = 'ACTIVE'",
+            Integer.class, orgId)).isEqualTo(1);
+        // 组织内 ACTIVE 成员 = 负责人 + 恰好一名被邀请人
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_member WHERE org_id = ? AND status = 'ACTIVE'",
+            Integer.class, orgId)).isEqualTo(2);
+    }
+
+    @Test
+    void concurrentRevokeKeepsAtLeastOneOwner() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession coOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        acceptInvitation(coOwner, createInvitation(owner, orgId, null));
+        Long coOwnerMemberId = memberIdOf(orgId, coOwner.username());
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/" + coOwnerMemberId + "/promote-owner")
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+        results.add(pool.submit(() -> {
+            barrier.await();
+            return mockMvc.perform(
+                    post("/api/organizations/" + orgId + "/members/" + coOwnerMemberId + "/revoke-owner")
+                        .with(csrf()).session(owner.session()))
+                .andReturn().getResponse().getStatus();
+        }));
+        results.add(pool.submit(() -> {
+            barrier.await();
+            return mockMvc.perform(
+                    post("/api/organizations/" + orgId + "/members/" + memberIdOf(orgId, owner.username()) + "/revoke-owner")
+                        .with(csrf()).session(coOwner.session()))
+                .andReturn().getResponse().getStatus();
+        }));
+        int success = 0;
+        for (java.util.concurrent.Future<Integer> future : results) {
+            if (future.get() == 200) {
+                success++;
+            }
+        }
+        pool.shutdownNow();
+        assertThat(success).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_member WHERE org_id = ? AND status = 'ACTIVE' AND role = 'OWNER'",
+            Integer.class, orgId)).isEqualTo(1);
+    }
+
+    @Test
+    void demotionRacesInvitationCreation() throws Exception {
+        // 撤权与创建邀请竞争（R04）：先持组织行锁，持锁期间把负责人降级；
+        // 锁释放后被阻塞的创建请求到达，必须在锁内重验身份并以 403 失败。
+        TestSession owner = registerAndLogin();
+        TestSession coOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        acceptInvitation(coOwner, createInvitation(owner, orgId, null));
+        Long coOwnerMemberId = memberIdOf(orgId, coOwner.username());
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/" + coOwnerMemberId + "/promote-owner")
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+
+        javax.sql.DataSource dataSource = applicationContext.getBean(javax.sql.DataSource.class);
+        java.util.concurrent.CountDownLatch lockHeld = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        Thread holder = new Thread(() -> {
+            try (java.sql.Connection connection = dataSource.getConnection()) {
+                connection.setAutoCommit(false);
+                connection.createStatement()
+                    .execute("SELECT id FROM organization WHERE id = " + orgId + " FOR UPDATE");
+                lockHeld.countDown();
+                release.await();
+                // 持锁事务内降级并提交：锁与撤权对后续请求原子生效
+                connection.createStatement().executeUpdate(
+                    "UPDATE organization_member SET role = 'MEMBER' WHERE id = " + coOwnerMemberId);
+                connection.commit();
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        holder.start();
+        assertThat(lockHeld.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        java.util.concurrent.atomic.AtomicReference<Integer> createStatus =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        Thread creator = new Thread(() -> {
+            try {
+                MvcResult result = mockMvc.perform(post("/api/organizations/" + orgId + "/invitations")
+                        .with(csrf()).session(coOwner.session())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                    .andReturn();
+                createStatus.set(result.getResponse().getStatus());
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        creator.start();
+        Thread.sleep(300);
+        release.countDown();
+        creator.join();
+        holder.join();
+
+        assertThat(createStatus.get()).isEqualTo(403);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_invitation WHERE org_id = ? AND created_by = ("
+                + "SELECT account_id FROM organization_member WHERE id = " + coOwnerMemberId + ")",
+            Integer.class, orgId)).isEqualTo(0);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM organization_member WHERE org_id = ? AND status = 'ACTIVE' AND role = 'OWNER'",
+            Integer.class, orgId)).isEqualTo(1);
     }
 }

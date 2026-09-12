@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElButton,
   ElDialog,
   ElForm,
   ElFormItem,
+  ElInput,
   ElInputNumber,
   ElLoading,
   ElMessageBox,
+  ElPagination,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -18,70 +20,150 @@ import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { useOrganizationsStore } from '../../stores/organizations'
 import {
   createInvitation,
+  fetchInvitations,
   fetchMembers,
   leaveOrganization,
   promoteOwner,
   removeMember,
+  revokeInvitation,
   revokeOwner,
   transferOwnership,
 } from './api'
-import { roleLabel, type InvitationCreated, type MemberItem } from './types'
+import { roleLabel, type InvitationCreated, type InvitationItem, type MemberItem } from './types'
 
-// 显式导入模式下 v-loading 指令需本地注册（未全局安装 Element Plus）。
+// 成员管理（P1.3 / 审核 R03、R06、R07）：
+// 读取随路由 orgId 重建并核对请求序号与会话代次；失败清空旧数据；
+// 确认框固定发起时的组织与目标；OWNER 可邀请、管理已发邀请、授予/撤销/移交与移除。
 const vLoading = ElLoading.directive
 
-// 成员管理（P1.3）：OWNER 可邀请、授予/撤销负责人、移交与移除；所有成员可退出。
-// 危险操作走 ElMessageBox 二次确认；后端为唯一授权与最后负责人保护来源。
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const directoryStore = useOrganizationsStore()
 
+const emit = defineEmits<{
+  changed: []
+}>()
+
 const orgId = computed(() => String(route.params.orgId ?? ''))
+
 const members = ref<MemberItem[]>([])
+const memberTotal = ref(0)
+const memberPage = ref(1)
+const memberQuery = ref('')
+const appliedQuery = ref('')
 const loading = ref(false)
 const errorText = ref('')
 const actionError = ref('')
 const actingMemberId = ref('')
+
+const invitations = ref<InvitationItem[]>([])
+const inviteVisible = ref(false)
+const inviteSubmitting = ref(false)
+const inviteForm = ref({ expiresInDays: 7, maxUses: 10 })
+const issuedInvitation = ref<InvitationCreated | null>(null)
+const revokingInvitationId = ref('')
 
 const amOwner = computed(() => {
   const me = session.account?.username
   return members.value.some((m) => m.username === me && m.role === 'OWNER')
 })
 
-const inviteVisible = ref(false)
-const inviteSubmitting = ref(false)
-const inviteForm = ref({ expiresInDays: 7, maxUses: 10 })
-const issuedInvitation = ref<InvitationCreated | null>(null)
+// R03：读取随路由重建；请求序号 + 会话代次双守卫，迟到响应与旧组织数据不渲染。
+let requestSeq = 0
 
 async function loadMembers(): Promise<void> {
   if (!orgId.value) {
     return
   }
+  const seq = ++requestSeq
+  const targetOrgId = orgId.value
+  const gen = session.capture()
   loading.value = true
   errorText.value = ''
   try {
-    members.value = await fetchMembers(orgId.value)
+    const page = await fetchMembers(targetOrgId, {
+      page: memberPage.value,
+      pageSize: 20,
+      query: appliedQuery.value || undefined,
+    })
+    if (seq !== requestSeq || targetOrgId !== orgId.value || gen !== session.generation) {
+      return
+    }
+    members.value = page.items
+    memberTotal.value = page.total
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (seq !== requestSeq || targetOrgId !== orgId.value || gen !== session.generation) {
+      return
+    }
+    // 失败清空旧组织数据，不残留
+    members.value = []
+    memberTotal.value = 0
+    if (session.observeUnauthorized(error, gen)) {
       return
     }
     errorText.value = error instanceof ApiError && error.isTransportError
       ? '网络连接失败，请检查网络后重试。'
       : '成员列表加载失败，请重试。'
   } finally {
-    loading.value = false
+    if (seq === requestSeq) {
+      loading.value = false
+    }
   }
 }
 
-onMounted(loadMembers)
+async function loadInvitations(): Promise<void> {
+  if (!orgId.value || !amOwner.value) {
+    return
+  }
+  const seq = requestSeq
+  const gen = session.capture()
+  try {
+    const items = await fetchInvitations(orgId.value)
+    if (seq === requestSeq && gen === session.generation) {
+      invitations.value = items
+    }
+  } catch {
+    // 邀请列表加载失败不影响成员列表
+  }
+}
+
+function reloadAll(): void {
+  void loadMembers()
+  void loadInvitations()
+}
+
+watch(orgId, () => {
+  memberPage.value = 1
+  appliedQuery.value = ''
+  memberQuery.value = ''
+  members.value = []
+  memberTotal.value = 0
+  invitations.value = []
+  errorText.value = ''
+  actionError.value = ''
+  reloadAll()
+})
+
+onMounted(reloadAll)
+
+function search() {
+  memberPage.value = 1
+  appliedQuery.value = memberQuery.value.trim()
+  void loadMembers()
+}
+
+function changePage(page: number) {
+  memberPage.value = page
+  void loadMembers()
+}
 
 async function guard(fn: () => Promise<void>): Promise<void> {
   actionError.value = ''
   try {
     await fn()
   } catch (error) {
-    if (session.observeUnauthorized(error)) {
+    if (session.observeUnauthorized(error, session.capture())) {
       return
     }
     if (error instanceof ApiError && !error.isTransportError) {
@@ -108,6 +190,7 @@ async function submitInvite() {
       expiresInDays: inviteForm.value.expiresInDays,
       maxUses: inviteForm.value.maxUses,
     })
+    await loadInvitations()
   })
   inviteSubmitting.value = false
 }
@@ -122,71 +205,75 @@ async function copyInvitationCode() {
 function closeInviteDialog() {
   issuedInvitation.value = null
   inviteVisible.value = false
-  void loadMembers()
 }
 
-function confirmPromote(member: MemberItem) {
-  actingMemberId.value = member.memberId
-  void ElMessageBox.confirm(
-    `确定把「${member.username}」设为组织负责人？负责人可以管理成员、邀请与活动。`,
-    '授予负责人',
-    { confirmButtonText: '授予', cancelButtonText: '取消', type: 'warning' },
-  )
-    .then(() => guard(async () => {
-      await promoteOwner(orgId.value, member.memberId)
-      await loadMembers()
-    }))
+function confirmRevokeInvitation(invitation: InvitationItem) {
+  const targetOrgId = orgId.value
+  void ElMessageBox.confirm('确定撤销该邀请？撤销后邀请码立即失效。', '撤销邀请', {
+    confirmButtonText: '撤销',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+    .then(() =>
+      guard(async () => {
+        if (orgId.value !== targetOrgId) {
+          return
+        }
+        revokingInvitationId.value = invitation.invitationId
+        await revokeInvitation(targetOrgId, invitation.invitationId)
+        await loadInvitations()
+      }),
+    )
     .catch(() => undefined)
     .finally(() => {
-      actingMemberId.value = ''
+      revokingInvitationId.value = ''
     })
 }
 
-function confirmRevoke(member: MemberItem) {
+// 危险操作在打开确认框时固定组织与目标成员；确认期间切页则放弃提交（R03）。
+function roleAction(member: MemberItem, action: 'promote' | 'revoke' | 'transfer' | 'remove') {
+  const targetOrgId = orgId.value
+  const titles = {
+    promote: '授予负责人',
+    revoke: '撤销负责人',
+    transfer: '移交负责人',
+    remove: '移除成员',
+  } as const
+  const messages = {
+    promote: `确定把「${member.username}」设为组织负责人？负责人可以管理成员、邀请与活动。`,
+    revoke: `确定撤销「${member.username}」的负责人身份？`,
+    transfer: `确定把负责人移交给「${member.username}」？你将降为普通成员。`,
+    remove: `确定把「${member.username}」移出组织？移除后其需要新的邀请才能再加入。`,
+  } as const
   actingMemberId.value = member.memberId
-  void ElMessageBox.confirm(
-    `确定撤销「${member.username}」的负责人身份？`,
-    '撤销负责人',
-    { confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning' },
-  )
-    .then(() => guard(async () => {
-      await revokeOwner(orgId.value, member.memberId)
-      await loadMembers()
-    }))
-    .catch(() => undefined)
-    .finally(() => {
-      actingMemberId.value = ''
-    })
-}
-
-function confirmTransfer(member: MemberItem) {
-  actingMemberId.value = member.memberId
-  void ElMessageBox.confirm(
-    `确定把负责人移交给「${member.username}」？你将降为普通成员。`,
-    '移交负责人',
-    { confirmButtonText: '移交', cancelButtonText: '取消', type: 'warning' },
-  )
-    .then(() => guard(async () => {
-      await transferOwnership(orgId.value, member.memberId)
-      await loadMembers()
-    }))
-    .catch(() => undefined)
-    .finally(() => {
-      actingMemberId.value = ''
-    })
-}
-
-function confirmRemove(member: MemberItem) {
-  actingMemberId.value = member.memberId
-  void ElMessageBox.confirm(
-    `确定把「${member.username}」移出组织？移除后其需要新的邀请才能再加入。`,
-    '移除成员',
-    { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' },
-  )
-    .then(() => guard(async () => {
-      await removeMember(orgId.value, member.memberId)
-      await loadMembers()
-    }))
+  void ElMessageBox.confirm(messages[action], titles[action], {
+    confirmButtonText: titles[action],
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+    .then(() =>
+      guard(async () => {
+        // 确认期间组织已切换则放弃，避免旧目标与新组织上下文混用
+        if (orgId.value !== targetOrgId) {
+          actionError.value = '组织已切换，操作已取消。'
+          return
+        }
+        if (action === 'promote') {
+          await promoteOwner(targetOrgId, member.memberId)
+        } else if (action === 'revoke') {
+          await revokeOwner(targetOrgId, member.memberId)
+        } else if (action === 'transfer') {
+          await transferOwnership(targetOrgId, member.memberId)
+        } else {
+          await removeMember(targetOrgId, member.memberId)
+        }
+        // 角色变化后同步侧栏身份与组织目录（审核第 3 节）
+        if (action !== 'remove') {
+          emit('changed')
+        }
+        await loadMembers()
+      }),
+    )
     .catch(() => undefined)
     .finally(() => {
       actingMemberId.value = ''
@@ -194,6 +281,7 @@ function confirmRemove(member: MemberItem) {
 }
 
 async function confirmLeave() {
+  const targetOrgId = orgId.value
   try {
     await ElMessageBox.confirm(
       '确定退出该组织？退出后立即失去组织内部数据访问，需要新的邀请才能再加入。',
@@ -204,7 +292,10 @@ async function confirmLeave() {
     return
   }
   await guard(async () => {
-    await leaveOrganization(orgId.value)
+    if (orgId.value !== targetOrgId) {
+      return
+    }
+    await leaveOrganization(targetOrgId)
     await directoryStore.fetchDirectory(true)
     await router.replace('/')
   })
@@ -212,9 +303,9 @@ async function confirmLeave() {
 </script>
 
 <template>
-  <div>
+  <div class="members-page">
     <div class="page-heading">
-      <div>
+      <div class="page-heading__title">
         <p class="page-eyebrow">
           组织协作 / 成员管理
         </p>
@@ -256,76 +347,162 @@ async function confirmLeave() {
       {{ actionError }}
     </p>
 
-    <ElTable
+    <ElForm
+      class="members-search"
+      :inline="true"
+      @submit.prevent="search"
+    >
+      <ElFormItem>
+        <ElInput
+          v-model="memberQuery"
+          placeholder="按用户名搜索"
+          clearable
+          @clear="search"
+        />
+      </ElFormItem>
+      <ElFormItem>
+        <ElButton native-type="submit">
+          搜索
+        </ElButton>
+      </ElFormItem>
+    </ElForm>
+
+    <div
       v-loading="loading"
-      :data="members"
       class="members-table"
     >
-      <ElTableColumn
-        prop="username"
-        label="用户名"
-        min-width="180"
-      />
-      <ElTableColumn
-        label="角色"
-        width="140"
-      >
-        <template #default="{ row }">
-          <ElTag :type="row.role === 'OWNER' ? 'success' : 'info'">
-            {{ roleLabel(row.role) }}
-          </ElTag>
+      <ElTable :data="members">
+        <ElTableColumn
+          prop="username"
+          label="用户名"
+          min-width="160"
+        />
+        <ElTableColumn
+          label="角色"
+          min-width="110"
+        >
+          <template #default="{ row }">
+            <ElTag :type="row.role === 'OWNER' ? 'success' : 'info'">
+              {{ roleLabel((row as MemberItem).role) }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="加入时间"
+          min-width="110"
+        >
+          <template #default="{ row }">
+            {{ (row as MemberItem).joinedAt.slice(0, 10) }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          v-if="amOwner"
+          label="操作"
+          min-width="240"
+        >
+          <template #default="{ row }">
+            <template v-if="row.role === 'MEMBER'">
+              <ElButton
+                size="small"
+                @click="roleAction(row as MemberItem, 'promote')"
+              >
+                授予负责人
+              </ElButton>
+              <ElButton
+                size="small"
+                @click="roleAction(row as MemberItem, 'transfer')"
+              >
+                移交负责人
+              </ElButton>
+            </template>
+            <ElButton
+              v-else
+              size="small"
+              @click="roleAction(row as MemberItem, 'revoke')"
+            >
+              撤销负责人
+            </ElButton>
+            <ElButton
+              size="small"
+              type="danger"
+              plain
+              @click="roleAction(row as MemberItem, 'remove')"
+            >
+              移除
+            </ElButton>
+          </template>
+        </ElTableColumn>
+        <template #empty>
+          <span class="members-note">{{ appliedQuery ? '没有匹配的成员。' : '暂无其他成员，可通过邀请添加。' }}</span>
         </template>
-      </ElTableColumn>
-      <ElTableColumn
-        label="加入时间"
-        width="140"
+      </ElTable>
+    </div>
+
+    <ElPagination
+      v-if="memberTotal > 20"
+      class="members-pagination"
+      layout="prev, pager, next"
+      :total="memberTotal"
+      :page-size="20"
+      :current-page="memberPage"
+      @current-change="changePage"
+    />
+
+    <template v-if="amOwner">
+      <h2 class="invitations-title">
+        已发邀请
+      </h2>
+      <div
+        v-loading="loading"
+        class="members-table"
       >
-        <template #default="{ row }">
-          {{ row.joinedAt.slice(0, 10) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn
-        v-if="amOwner"
-        label="操作"
-        min-width="260"
-      >
-        <template #default="{ row }">
-          <ElButton
-            v-if="row.role === 'MEMBER'"
-            size="small"
-            :loading="actingMemberId === row.memberId"
-            @click="confirmPromote(row as MemberItem)"
+        <ElTable :data="invitations">
+          <ElTableColumn
+            label="创建时间"
+            min-width="110"
           >
-            授予负责人
-          </ElButton>
-          <ElButton
-            v-if="row.role === 'OWNER'"
-            size="small"
-            :loading="actingMemberId === row.memberId"
-            @click="confirmRevoke(row as MemberItem)"
+            <template #default="{ row }">
+              {{ (row as InvitationItem).createdAt.slice(0, 10) }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn
+            label="有效期至"
+            min-width="110"
           >
-            撤销负责人
-          </ElButton>
-          <ElButton
-            v-if="row.role === 'MEMBER'"
-            size="small"
-            :loading="actingMemberId === row.memberId"
-            @click="confirmTransfer(row as MemberItem)"
+            <template #default="{ row }">
+              {{ (row as InvitationItem).expiresAt.slice(0, 10) }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn
+            label="使用情况"
+            min-width="100"
           >
-            移交负责人
-          </ElButton>
-          <ElButton
-            size="small"
-            type="danger"
-            plain
-            :loading="actingMemberId === row.memberId"
-            @click="confirmRemove(row as MemberItem)"
+            <template #default="{ row }">
+              {{ (row as InvitationItem).usedCount }} / {{ (row as InvitationItem).maxUses }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn
+            label="操作"
+            min-width="100"
           >
-            移除
-          </ElButton>
-        </template>
-      </ElTableColumn>
-    </ElTable>
+            <template #default="{ row }">
+              <ElButton
+                size="small"
+                type="danger"
+                plain
+                :loading="revokingInvitationId === (row as InvitationItem).invitationId"
+                @click="confirmRevokeInvitation(row as InvitationItem)"
+              >
+                撤销
+              </ElButton>
+            </template>
+          </ElTableColumn>
+          <template #empty>
+            <span class="members-note">暂无有效邀请。</span>
+          </template>
+        </ElTable>
+      </div>
+    </template>
 
     <ElDialog
       v-model="inviteVisible"
@@ -401,11 +578,21 @@ async function confirmLeave() {
 </template>
 
 <style scoped>
+.members-page {
+  min-width: 0;
+}
+
+/* 小屏重排仅用结构换行（wrap），断点仍由 tokens 集中管理。 */
 .page-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--ui-space-6);
+  flex-wrap: wrap;
+}
+
+.page-heading__title {
+  min-width: 0;
 }
 
 .page-eyebrow {
@@ -430,7 +617,7 @@ async function confirmLeave() {
 .members-actions {
   display: flex;
   gap: var(--ui-space-3);
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .members-error {
@@ -443,9 +630,17 @@ async function confirmLeave() {
   font-size: var(--ui-font-size-small);
 }
 
+.members-search {
+  margin-top: var(--ui-space-6);
+}
+
 .members-table {
-  margin-top: var(--ui-space-8);
+  margin-top: var(--ui-space-6);
   width: 100%;
+}
+
+.members-pagination {
+  margin-top: var(--ui-space-4);
 }
 
 .members-note {
@@ -465,5 +660,11 @@ async function confirmLeave() {
   letter-spacing: var(--ui-letter-spacing-eyebrow);
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+.invitations-title {
+  margin-top: var(--ui-space-10);
+  font-size: var(--ui-font-size-section);
+  font-weight: var(--ui-font-weight-semibold);
 }
 </style>

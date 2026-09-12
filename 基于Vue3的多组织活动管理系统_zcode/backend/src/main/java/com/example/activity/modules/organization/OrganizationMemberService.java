@@ -33,14 +33,23 @@ public class OrganizationMemberService {
     public record MemberItem(Long memberId, Long accountId, String username, String role, java.time.OffsetDateTime joinedAt) {
     }
 
+    public record MemberPage(java.util.List<MemberItem> items, int page, int pageSize, long total) {
+    }
+
     public record RoleChangeResult(Long memberId, String role) {
     }
 
-    public List<MemberItem> listMembers(Long accountId, Long orgId) {
+    /** 成员列表：小规模组织按分页合同返回；query 按用户名过滤，排序固定为加入时间。 */
+    public MemberPage listMembers(Long accountId, Long orgId, int page, int pageSize, String query) {
         requireActiveMember(orgId, accountId);
-        return memberMapper.listMemberViews(orgId).stream()
+        String filter = query == null || query.isBlank() ? null : query.trim();
+        long total = memberMapper.countMemberViews(orgId, filter);
+        List<MemberItem> items = memberMapper
+            .listMemberViewsPage(orgId, filter, (long) (page - 1) * pageSize, pageSize)
+            .stream()
             .map(view -> new MemberItem(view.getMemberId(), view.getAccountId(), view.getUsername(), view.getRole(), view.getJoinedAt()))
             .toList();
+        return new MemberPage(items, page, pageSize, total);
     }
 
     @Transactional
@@ -68,12 +77,16 @@ public class OrganizationMemberService {
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, actorAccountId);
         OrganizationMember target = memberMapper.findById(memberId);
-        if (target == null || !target.getOrgId().equals(orgId) || !"ACTIVE".equals(target.getStatus())) {
+        if (target == null || !target.getOrgId().equals(orgId)) {
             throw notFound();
         }
         if (target.getAccountId().equals(actorAccountId)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "MEMBER_SELF_REMOVAL", "不能移除自己",
                 "如需离开组织，请使用退出组织。");
+        }
+        if (!"ACTIVE".equals(target.getStatus())) {
+            // 已退出／已移除：对已授权操作者幂等返回，不重复变更、不泄露历史细节。
+            return;
         }
         ensureNotLastOwner(orgId, target.getId(), target.getRole());
         if (memberMapper.updateStatus(target.getId(), "REMOVED") != 1) {

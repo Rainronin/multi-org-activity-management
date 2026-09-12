@@ -2,6 +2,8 @@ package com.example.activity.modules.organization;
 
 import com.example.activity.security.AccountUserDetails;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +13,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
@@ -27,7 +30,7 @@ public class OrganizationMemberController {
         this.memberService = memberService;
     }
 
-    public record MembersResponse(List<MemberItemResponse> items) {
+    public record MembersResponse(java.util.List<MemberItemResponse> items, int page, int pageSize, long total) {
     }
 
     public record MemberItemResponse(String memberId, String username, String role, java.time.OffsetDateTime joinedAt) {
@@ -42,12 +45,18 @@ public class OrganizationMemberController {
     @GetMapping("/api/organizations/{orgId}/members")
     public ResponseEntity<MembersResponse> list(
         @AuthenticationPrincipal AccountUserDetails principal,
-        @PathVariable("orgId") Long orgId) {
-        List<MemberItemResponse> items = memberService.listMembers(principal.getAccountId(), orgId).stream()
+        @PathVariable("orgId") Long orgId,
+        @RequestParam(name = "page", defaultValue = "1") @Min(value = 1, message = "页码从 1 开始") int page,
+        @RequestParam(name = "pageSize", defaultValue = "20") @Min(value = 1, message = "每页至少 1 条") @Max(value = 100, message = "每页最多 100 条") int pageSize,
+        @RequestParam(name = "query", required = false) String query) {
+        OrganizationMemberService.MemberPage result =
+            memberService.listMembers(principal.getAccountId(), orgId, page, pageSize, query);
+        List<MemberItemResponse> items = result.items().stream()
             .map(item -> new MemberItemResponse(
                 String.valueOf(item.memberId()), item.username(), item.role(), item.joinedAt()))
             .toList();
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new MembersResponse(items));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(new MembersResponse(items, result.page(), result.pageSize(), result.total()));
     }
 
     @DeleteMapping("/api/organizations/{orgId}/members/me")

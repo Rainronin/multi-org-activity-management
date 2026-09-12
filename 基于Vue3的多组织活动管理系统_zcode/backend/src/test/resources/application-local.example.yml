@@ -1,0 +1,6 @@
+# 复制为 src/test/resources/application-local.yml 并填写本机密码；该文件不进入版本库。
+# URL 由 ActivityTestBase 强制为 activity_test，此处只需提供测试库凭据。
+spring:
+  datasource:
+    username: activity
+    password: "本机测试库密码"
