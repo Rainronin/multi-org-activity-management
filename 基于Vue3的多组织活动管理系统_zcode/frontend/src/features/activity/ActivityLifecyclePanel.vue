@@ -17,6 +17,7 @@ import {
 import {
   averageLabel, fetchFeedback, submitFeedback, type FeedbackSummary,
 } from '../feedback/feedback'
+import AiDraftPanel from '../ai/AiDraftPanel.vue'
 
 // P6 生命周期区块：执行、取消、执行记录、反馈、总结与归档。
 // 权限仍由后端逐请求判定：负责人或组织负责人可执行／记录／总结；确认、归档与重新打开仅组织负责人。
@@ -70,6 +71,9 @@ const canManage = computed(() => props.orgRole === 'OWNER'
 const isOrgOwner = computed(() => props.orgRole === 'OWNER')
 /** 取消与归档都是组织负责人的最终确认动作（计划书 7.4）。 */
 const canFinalize = computed(() => isOrgOwner.value)
+/** P8.2：总结生成与后端一致——只在复盘期或取消后的遗留处理期可用，归档后只读。 */
+const summaryWritable = computed(() => (status.value === 'REVIEWING' || status.value === 'CANCELLED')
+  && !everArchived.value)
 
 const statusLabel: Record<ActivityLifecycleStatus, string> = {
   DRAFT: '草稿',
@@ -256,6 +260,12 @@ function confirmSummaryDraft() {
     emit('changed')
     await loadAll()
   })
+}
+
+/** P8.2：采用 AI 草稿只替换输入框内容，保存与确认仍由用户点击按钮完成。 */
+function applySummaryDraft(draft: string) {
+  summaryDraft.value = draft
+  summaryDirty.value = true
 }
 
 function archive() {
@@ -539,6 +549,15 @@ defineExpose({ reload: loadAll })
           确认总结
         </ElButton>
       </div>
+
+      <!-- P8.2：总结生成；草稿只进入上面的输入框，确认与归档仍走原有流程 -->
+      <AiDraftPanel
+        :org-id="orgId"
+        :activity-id="activityId"
+        type="ACTIVITY_SUMMARY"
+        :disabled="!summaryWritable"
+        @apply="applySummaryDraft"
+      />
     </section>
   </section>
 </template>

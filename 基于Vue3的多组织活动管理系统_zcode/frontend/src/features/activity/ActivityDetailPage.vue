@@ -28,6 +28,7 @@ import ActivityP3Sections from './ActivityP3Sections.vue'
 import RegistrationPanel from './RegistrationPanel.vue'
 import ExpenseSection from '../expense/ExpenseSection.vue'
 import ActivityLifecyclePanel from './ActivityLifecyclePanel.vue'
+import AiDraftPanel from '../ai/AiDraftPanel.vue'
 
 const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' } | null }>()
 
@@ -149,6 +150,12 @@ async function guard(fn: () => Promise<void>): Promise<void> {
 
 function onProposalInput() {
   proposalDirty.value = proposalDraft.value !== (activity.value?.proposal ?? '')
+}
+
+/** P8.3：采用 AI 草稿只替换编辑区内容，保存仍由用户点击“保存方案”。 */
+function applyProposalDraft(draft: string) {
+  proposalDraft.value = draft
+  onProposalInput()
 }
 
 async function saveProposalDraft() {
@@ -464,6 +471,15 @@ async function confirmDelete() {
         >
           {{ activity.proposal || '未填写方案' }}
         </p>
+
+        <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
+        <AiDraftPanel
+          v-if="activity.status === 'DRAFT'"
+          :org-id="orgId"
+          :activity-id="activityId"
+          type="ACTIVITY_PLAN"
+          @apply="applyProposalDraft"
+        />
       </section>
     </section>
     <p

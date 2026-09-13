@@ -62,6 +62,12 @@ export const router = createRouter({
           meta: { title: '成员管理' },
         },
         {
+          path: 'settings',
+          name: 'org-settings',
+          component: () => import('../features/organization/OrgSettingsPage.vue'),
+          meta: { title: '组织设置' },
+        },
+        {
           path: 'activities',
           name: 'org-activities',
           component: () => import('../features/activity/ActivitiesPage.vue'),
