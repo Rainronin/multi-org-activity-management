@@ -26,6 +26,11 @@ import {
 import { formatDateTime, scopeLabel, type ActivityDetail } from './types'
 import ActivityP3Sections from './ActivityP3Sections.vue'
 
+const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' } | null }>()
+
+/** 本人在当前组织的角色（由组织布局下发），用于决定 P3 区块按钮展示；权限仍由后端判定。 */
+const orgRole = computed(() => props.orgDetail?.role ?? null)
+
 // 活动详情（P2.1 余项 + P2.2）：概览字段、方案编辑与状态流转操作。
 // 读取随路由与代次守卫；危险操作二次确认并固定目标。
 const route = useRoute()
@@ -381,6 +386,7 @@ async function confirmDelete() {
       <ActivityP3Sections
         v-if="activity.status !== 'DRAFT'"
         :org-detail="activity"
+        :org-role="orgRole"
         @changed="loadActivity"
       />
 

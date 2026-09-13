@@ -4,15 +4,19 @@ import { useRoute } from 'vue-router'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
+import { fetchMembers } from '../organization/api'
 import {
-  changeMaterialStatus, createMaterial, createTask, deleteAttachment,
-  downloadAttachment, fetchAttachments, fetchMaterials, fetchTasks,
-  transitionTask,
+  advanceTask, changeMaterialStatus, createMaterial, createTask, deleteAttachment,
+  downloadAttachment, fetchAttachments, fetchMaterials, fetchTasks, resolveMyMemberId,
+  transitionTask, updateMaterial, updateTask,
 } from './p3'
 import type { AttachmentItem, MaterialItem, TaskItem } from './p3'
 
-// 活动详情的 P3 区块：任务 / 物资 / 资料（附件）。后端逐请求鉴权。
-defineProps<{ orgDetail: { id: string } | null }>()
+// 活动详情的 P3 区块：任务 / 物资 / 资料（附件）。后端逐请求鉴权，这里只决定按钮展示。
+const props = defineProps<{
+  orgDetail: { id: string; ownerMemberId?: string; status?: string } | null
+  orgRole?: 'OWNER' | 'MEMBER' | null
+}>()
 const emit = defineEmits<{ changed: [] }>()
 
 const route = useRoute()
@@ -24,16 +28,21 @@ const tasks = ref<TaskItem[]>([])
 const materials = ref<MaterialItem[]>([])
 const attachments = ref<AttachmentItem[]>([])
 const members = ref<{ memberId: string; username: string }[]>([])
+const myMemberId = ref<string | null>(null)
 const errorText = ref('')
 const loading = ref(false)
 const acting = ref('')
 
 const taskDialogVisible = ref(false)
 const taskSubmitting = ref(false)
-const taskForm = ref({ title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' })
+const editingTask = ref<TaskItem | null>(null)
+const taskForm = ref({
+  title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '',
+})
 
 const materialDialogVisible = ref(false)
 const materialSubmitting = ref(false)
+const editingMaterial = ref<MaterialItem | null>(null)
 const materialForm = ref({ name: '', quantity: 1, unit: '个', assigneeMemberId: '', note: '' })
 
 const uploadInput = ref<HTMLInputElement>()
@@ -45,6 +54,18 @@ const statusLabel: Record<string, string> = {
 }
 const materialStatusLabel: Record<string, string> = {
   PENDING: '待准备', IN_PROGRESS: '准备中', READY: '已就绪', CANCELLED: '已取消',
+}
+const priorityLabel: Record<string, string> = { HIGH: '高', MEDIUM: '中', LOW: '低' }
+
+/** 组织负责人或本活动负责人可管理任务与物资；普通成员只能推进本人任务。 */
+const canManage = computed(() => props.orgRole === 'OWNER'
+  || (myMemberId.value !== null && myMemberId.value === props.orgDetail?.ownerMemberId))
+
+/** 调整期待确认期间后端对筹备数据只读（S07-A），前端同步隐藏写操作。 */
+const frozen = computed(() => props.orgDetail?.status === 'DRAFT')
+
+function canAdvance(task: TaskItem): boolean {
+  return !canManage.value && !frozen.value && task.assigneeMemberId === myMemberId.value
 }
 
 let requestSeq = 0
@@ -58,10 +79,11 @@ async function loadAll(): Promise<void> {
   loading.value = true
   errorText.value = ''
   try {
-    const [t, m, a] = await Promise.all([
+    const [t, m, a, mine] = await Promise.all([
       fetchTasks(orgId.value, activityId.value),
       fetchMaterials(orgId.value, activityId.value),
       fetchAttachments(orgId.value, activityId.value),
+      resolveMyMemberId(orgId.value, session.account?.username ?? ''),
     ])
     if (seq !== requestSeq || gen !== session.generation) {
       return
@@ -69,6 +91,13 @@ async function loadAll(): Promise<void> {
     tasks.value = t
     materials.value = m
     attachments.value = a
+    myMemberId.value = mine
+    if (canManage.value && members.value.length === 0) {
+      const page = await fetchMembers(orgId.value, { pageSize: 100 })
+      if (seq === requestSeq && gen === session.generation) {
+        members.value = page.items.map((item) => ({ memberId: item.memberId, username: item.username }))
+      }
+    }
   } catch (error) {
     if (seq !== requestSeq || gen !== session.generation) {
       return
@@ -117,26 +146,74 @@ function usernameOf(memberId: string): string {
   return (
     tasks.value.find((t) => t.assigneeMemberId === memberId)?.assigneeUsername
     ?? materials.value.find((m) => m.assigneeMemberId === memberId)?.assigneeUsername
-    ?? ''
+    ?? members.value.find((m) => m.memberId === memberId)?.username
+    ?? '—'
   )
+}
+
+function toLocalInput(value: string | null): string {
+  if (!value) {
+    return ''
+  }
+  // 后端返回 UTC 偏移时间；datetime-local 需要本地无偏移写法
+  const date = new Date(value)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function openCreateTask() {
+  editingTask.value = null
+  taskForm.value = { title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' }
+  taskDialogVisible.value = true
+}
+
+function openEditTask(task: TaskItem) {
+  editingTask.value = task
+  taskForm.value = {
+    title: task.title,
+    description: task.description ?? '',
+    assigneeMemberId: task.assigneeMemberId,
+    priority: task.priority,
+    dueAt: toLocalInput(task.dueAt),
+  }
+  taskDialogVisible.value = true
 }
 
 async function submitTask() {
   taskSubmitting.value = true
+  const target = editingTask.value
   await guard(async () => {
-    await createTask(orgId.value, activityId.value, {
+    const payload = {
       title: taskForm.value.title.trim(),
       description: taskForm.value.description.trim() || undefined,
       assigneeMemberId: Number(taskForm.value.assigneeMemberId),
       priority: taskForm.value.priority,
       dueAt: taskForm.value.dueAt ? `${taskForm.value.dueAt}:00+08:00` : undefined,
-    })
+      ...(target ? { version: target.version } : {}),
+    }
+    if (target) {
+      await updateTask(orgId.value, activityId.value, target.taskId, payload)
+    } else {
+      await createTask(orgId.value, activityId.value, payload)
+    }
     taskDialogVisible.value = false
+    editingTask.value = null
     taskForm.value = { title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' }
     await loadAll()
     emit('changed')
   })
   taskSubmitting.value = false
+}
+
+function advanceOwnTask(task: TaskItem, toStatus: 'IN_PROGRESS' | 'COMPLETED') {
+  acting.value = task.taskId
+  void guard(async () => {
+    await advanceTask(orgId.value, activityId.value, task.taskId, toStatus)
+    await loadAll()
+    emit('changed')
+  }).finally(() => {
+    acting.value = ''
+  })
 }
 
 function reopenTask(task: TaskItem) {
@@ -147,6 +224,39 @@ function reopenTask(task: TaskItem) {
   }).finally(() => {
     acting.value = ''
   })
+}
+
+function cancelTask(task: TaskItem) {
+  acting.value = task.taskId
+  void ElMessageBox.confirm(`确定取消任务「${task.title}」？`, '取消任务', {
+    confirmButtonText: '取消任务', cancelButtonText: '返回', type: 'warning',
+  })
+    .then(() => guard(async () => {
+      await transitionTask(orgId.value, activityId.value, task.taskId, 'CANCELLED')
+      await loadAll()
+    }))
+    .catch(() => undefined)
+    .finally(() => {
+      acting.value = ''
+    })
+}
+
+function openCreateMaterial() {
+  editingMaterial.value = null
+  materialForm.value = { name: '', quantity: 1, unit: '个', assigneeMemberId: '', note: '' }
+  materialDialogVisible.value = true
+}
+
+function openEditMaterial(material: MaterialItem) {
+  editingMaterial.value = material
+  materialForm.value = {
+    name: material.name,
+    quantity: material.quantity,
+    unit: material.unit,
+    assigneeMemberId: material.assigneeMemberId ?? '',
+    note: material.note ?? '',
+  }
+  materialDialogVisible.value = true
 }
 
 async function setMaterialStatus(material: MaterialItem, toStatus: string) {
@@ -203,15 +313,24 @@ function confirmDeleteAttachment(attachment: AttachmentItem) {
 
 async function submitMaterial() {
   materialSubmitting.value = true
+  const target = editingMaterial.value
   await guard(async () => {
-    await createMaterial(orgId.value, activityId.value, {
+    const payload = {
       name: materialForm.value.name.trim(),
       quantity: Number(materialForm.value.quantity),
       unit: materialForm.value.unit.trim(),
-      assigneeMemberId: materialForm.value.assigneeMemberId ? Number(materialForm.value.assigneeMemberId) : undefined,
+      assigneeMemberId: materialForm.value.assigneeMemberId
+        ? Number(materialForm.value.assigneeMemberId) : undefined,
       note: materialForm.value.note.trim() || undefined,
-    })
+      ...(target ? { version: target.version } : {}),
+    }
+    if (target) {
+      await updateMaterial(orgId.value, activityId.value, target.materialId, payload)
+    } else {
+      await createMaterial(orgId.value, activityId.value, payload)
+    }
     materialDialogVisible.value = false
+    editingMaterial.value = null
     await loadAll()
   })
   materialSubmitting.value = false
@@ -233,15 +352,22 @@ defineExpose({ reload: loadAll })
     >
       {{ errorText }}
     </p>
+    <p
+      v-if="frozen"
+      class="p3-note"
+    >
+      活动安排调整中：任务与物资在重新确认前为只读。
+    </p>
 
     <section class="p3-block">
       <div class="p3-block__head">
         <h2>任务</h2>
         <ElButton
+          v-if="canManage"
           size="small"
           type="primary"
           plain
-          @click="taskDialogVisible = true"
+          @click="openCreateTask"
         >
           新建任务
         </ElButton>
@@ -264,31 +390,80 @@ defineExpose({ reload: loadAll })
           </template>
         </ElTableColumn>
         <ElTableColumn
+          label="优先级"
+          min-width="80"
+        >
+          <template #default="{ row }">
+            {{ priorityLabel[row.priority] ?? row.priority }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
           label="状态"
           min-width="100"
         >
           <template #default="{ row }">
             <ElTag
               size="small"
-              :type="row.status === 'COMPLETED' ? 'success' : 'info'"
+              :type="row.status === 'COMPLETED' ? 'success' : (row.overdue ? 'danger' : 'info')"
             >
-              {{ statusLabel[row.status] ?? row.status }}
+              {{ statusLabel[row.status] ?? row.status }}{{ row.overdue ? '（逾期）' : '' }}
             </ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="110"
+          min-width="220"
         >
           <template #default="{ row }">
-            <ElButton
-              v-if="row.status === 'COMPLETED'"
-              size="small"
-              :loading="acting === row.taskId"
-              @click="reopenTask(row as TaskItem)"
-            >
-              重新打开
-            </ElButton>
+            <template v-if="canManage">
+              <ElButton
+                v-if="row.status !== 'COMPLETED' && row.status !== 'CANCELLED' && !frozen"
+                size="small"
+                :loading="acting === row.taskId"
+                @click="openEditTask(row as TaskItem)"
+              >
+                编辑/改派
+              </ElButton>
+              <ElButton
+                v-if="row.status === 'COMPLETED' && !frozen"
+                size="small"
+                :loading="acting === row.taskId"
+                @click="reopenTask(row as TaskItem)"
+              >
+                重新打开
+              </ElButton>
+              <ElButton
+                v-if="row.status !== 'COMPLETED' && row.status !== 'CANCELLED' && !frozen"
+                size="small"
+                type="danger"
+                plain
+                :loading="acting === row.taskId"
+                @click="cancelTask(row as TaskItem)"
+              >
+                取消
+              </ElButton>
+            </template>
+            <template v-else-if="canAdvance(row as TaskItem)">
+              <ElButton
+                v-if="row.status === 'PENDING'"
+                size="small"
+                type="primary"
+                plain
+                :loading="acting === row.taskId"
+                @click="advanceOwnTask(row as TaskItem, 'IN_PROGRESS')"
+              >
+                开始处理
+              </ElButton>
+              <ElButton
+                v-if="row.status === 'PENDING' || row.status === 'IN_PROGRESS'"
+                size="small"
+                type="primary"
+                :loading="acting === row.taskId"
+                @click="advanceOwnTask(row as TaskItem, 'COMPLETED')"
+              >
+                标记完成
+              </ElButton>
+            </template>
           </template>
         </ElTableColumn>
         <template #empty>
@@ -301,10 +476,11 @@ defineExpose({ reload: loadAll })
       <div class="p3-block__head">
         <h2>物资</h2>
         <ElButton
+          v-if="canManage"
           size="small"
           type="primary"
           plain
-          @click="materialDialogVisible = true"
+          @click="openCreateMaterial"
         >
           添加物资
         </ElButton>
@@ -349,37 +525,47 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="180"
+          min-width="260"
         >
           <template #default="{ row }">
             <ElButton
-              v-if="row.status === 'PENDING'"
+              v-if="canManage && row.status !== 'CANCELLED' && !frozen"
               size="small"
               :loading="acting === row.materialId"
-              @click="setMaterialStatus(row as MaterialItem, 'IN_PROGRESS')"
+              @click="openEditMaterial(row as MaterialItem)"
             >
-              开始准备
+              编辑
             </ElButton>
-            <ElButton
-              v-if="row.status === 'IN_PROGRESS'"
-              size="small"
-              type="primary"
-              plain
-              :loading="acting === row.materialId"
-              @click="setMaterialStatus(row as MaterialItem, 'READY')"
-            >
-              标记就绪
-            </ElButton>
-            <ElButton
-              v-if="row.status !== 'CANCELLED' && row.status !== 'READY'"
-              size="small"
-              type="danger"
-              plain
-              :loading="acting === row.materialId"
-              @click="setMaterialStatus(row as MaterialItem, 'CANCELLED')"
-            >
-              取消
-            </ElButton>
+            <template v-if="canManage && !frozen">
+              <ElButton
+                v-if="row.status === 'PENDING'"
+                size="small"
+                :loading="acting === row.materialId"
+                @click="setMaterialStatus(row as MaterialItem, 'IN_PROGRESS')"
+              >
+                开始准备
+              </ElButton>
+              <ElButton
+                v-if="row.status === 'IN_PROGRESS'"
+                size="small"
+                type="primary"
+                plain
+                :loading="acting === row.materialId"
+                @click="setMaterialStatus(row as MaterialItem, 'READY')"
+              >
+                标记就绪
+              </ElButton>
+              <ElButton
+                v-if="row.status !== 'CANCELLED' && row.status !== 'READY'"
+                size="small"
+                type="danger"
+                plain
+                :loading="acting === row.materialId"
+                @click="setMaterialStatus(row as MaterialItem, 'CANCELLED')"
+              >
+                取消
+              </ElButton>
+            </template>
           </template>
         </ElTableColumn>
         <template #empty>
@@ -392,10 +578,12 @@ defineExpose({ reload: loadAll })
       <div class="p3-block__head">
         <h2>资料</h2>
         <ElButton
+          v-if="canManage"
           size="small"
           type="primary"
           plain
           :loading="uploading"
+          :disabled="frozen"
           @click="triggerUpload"
         >
           上传资料
@@ -445,10 +633,12 @@ defineExpose({ reload: loadAll })
               下载
             </ElButton>
             <ElButton
+              v-if="canManage || row.uploaderUsername === session.account?.username"
               size="small"
               type="danger"
               plain
               :loading="acting === row.attachmentId"
+              :disabled="frozen"
               @click="confirmDeleteAttachment(row as AttachmentItem)"
             >
               删除
@@ -463,7 +653,7 @@ defineExpose({ reload: loadAll })
 
     <ElDialog
       v-model="taskDialogVisible"
-      title="新建任务"
+      :title="editingTask ? '编辑任务' : '新建任务'"
       width="var(--ui-dialog-width)"
     >
       <ElForm
@@ -496,6 +686,22 @@ defineExpose({ reload: loadAll })
             />
           </ElSelect>
         </ElFormItem>
+        <ElFormItem label="优先级">
+          <ElSelect v-model="taskForm.priority">
+            <ElOption
+              label="高"
+              value="HIGH"
+            />
+            <ElOption
+              label="中"
+              value="MEDIUM"
+            />
+            <ElOption
+              label="低"
+              value="LOW"
+            />
+          </ElSelect>
+        </ElFormItem>
         <ElFormItem label="说明">
           <ElInput
             v-model="taskForm.description"
@@ -520,14 +726,14 @@ defineExpose({ reload: loadAll })
           :loading="taskSubmitting"
           @click="submitTask"
         >
-          创建
+          {{ editingTask ? '保存' : '创建' }}
         </ElButton>
       </template>
     </ElDialog>
 
     <ElDialog
       v-model="materialDialogVisible"
-      title="添加物资"
+      :title="editingMaterial ? '编辑物资' : '添加物资'"
       width="var(--ui-dialog-width)"
     >
       <ElForm
@@ -592,7 +798,7 @@ defineExpose({ reload: loadAll })
           :loading="materialSubmitting"
           @click="submitMaterial"
         >
-          添加
+          {{ editingMaterial ? '保存' : '添加' }}
         </ElButton>
       </template>
     </ElDialog>

@@ -1,3 +1,4 @@
+import { fetchMembers } from '../organization/api'
 import { request } from '../../shared/http/client'
 
 export interface TaskItem {
@@ -12,6 +13,8 @@ export interface TaskItem {
   status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
   completedAt: string | null
   overdue: boolean
+  /** S08：编辑冲突用版本；改派／编辑时回传。 */
+  version: number
 }
 
 export interface SaveTaskInput {
@@ -20,6 +23,8 @@ export interface SaveTaskInput {
   assigneeMemberId: number
   priority?: string
   dueAt?: string
+  /** 编辑／改派时携带，服务端做乐观锁；创建时不传。 */
+  version?: number
 }
 
 export async function fetchTasks(orgId: string, activityId: string): Promise<TaskItem[]> {
@@ -82,6 +87,8 @@ export interface MaterialItem {
   assigneeUsername: string
   status: 'PENDING' | 'IN_PROGRESS' | 'READY' | 'CANCELLED'
   note: string | null
+  /** S08：编辑冲突用版本。 */
+  version: number
 }
 
 export interface SaveMaterialInput {
@@ -90,6 +97,8 @@ export interface SaveMaterialInput {
   unit: string
   assigneeMemberId?: number
   note?: string
+  /** 编辑时携带，服务端做乐观锁；创建时不传。 */
+  version?: number
 }
 
 export async function fetchMaterials(orgId: string, activityId: string): Promise<MaterialItem[]> {
@@ -131,6 +140,8 @@ export interface AttachmentItem {
   contentType: string
   sizeBytes: number
   uploaderUsername: string
+  /** S09：用途；当前为 ACTIVITY_DOC，任务附件与票据随对应模块接入。 */
+  purpose: string
   createdAt: string
 }
 
@@ -139,6 +150,18 @@ export async function fetchAttachments(orgId: string, activityId: string): Promi
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments`,
   )
   return response.data.items
+}
+
+/**
+ * S10：按用户名解析本人在当前组织的 memberId，用于判断“本人是否为活动负责人／任务承担者”。
+ * 权限仍由后端逐请求判定，这里只决定按钮是否展示。
+ */
+export async function resolveMyMemberId(orgId: string, username: string): Promise<string | null> {
+  if (!username) {
+    return null
+  }
+  const page = await fetchMembers(orgId, { pageSize: 100, query: username })
+  return page.items.find((item) => item.username === username)?.memberId ?? null
 }
 
 export async function uploadAttachment(
