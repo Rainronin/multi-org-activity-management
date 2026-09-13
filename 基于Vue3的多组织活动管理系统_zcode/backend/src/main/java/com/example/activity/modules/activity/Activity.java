@@ -1,5 +1,6 @@
 package com.example.activity.modules.activity;
 
+import com.example.activity.modules.organization.OrganizationMember;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
@@ -11,6 +12,23 @@ public class Activity {
     public static final String STATUS_APPROVED = "APPROVED";
     public static final String SCOPE_INTERNAL = "INTERNAL";
     public static final String SCOPE_PUBLIC = "PUBLIC";
+
+    /** S06：未发布（草稿／待确认）仅组织负责人与活动负责人可见；其余状态对有效成员可见。 */
+    public boolean isVisibleTo(OrganizationMember member, Long accountId) {
+        if (member == null) {
+            return false;
+        }
+        if (!STATUS_DRAFT.equals(status) && !STATUS_PENDING_APPROVAL.equals(status)) {
+            return true;
+        }
+        return OrganizationMember.ROLE_OWNER.equals(member.getRole())
+            || member.getId().equals(ownerMemberId);
+    }
+
+    /** 报名开关：已确认且未开始时才允许变更（P2.3 重新确认后默认关闭）。 */
+    public boolean isBeforeStart() {
+        return startTime == null || OffsetDateTime.now().isBefore(startTime);
+    }
 
     private Long id;
     private Long orgId;
@@ -26,6 +44,8 @@ public class Activity {
     private Integer capacity;
     private OffsetDateTime registrationStart;
     private OffsetDateTime registrationEnd;
+    /** S02：独立报名开关，新建活动默认关闭；仅报名申请校验，审核既有申请不受影响。 */
+    private boolean registrationOpen;
     private String proposal;
     private String reviewNote;
     private Long submittedBy;
@@ -146,6 +166,14 @@ public class Activity {
 
     public void setRegistrationEnd(OffsetDateTime registrationEnd) {
         this.registrationEnd = registrationEnd;
+    }
+
+    public boolean isRegistrationOpen() {
+        return registrationOpen;
+    }
+
+    public void setRegistrationOpen(boolean registrationOpen) {
+        this.registrationOpen = registrationOpen;
     }
 
     public String getProposal() {

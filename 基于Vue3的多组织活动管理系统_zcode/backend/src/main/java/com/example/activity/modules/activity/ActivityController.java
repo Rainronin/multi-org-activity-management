@@ -42,7 +42,8 @@ public class ActivityController {
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
         OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
-        OffsetDateTime registrationEnd, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+        OffsetDateTime registrationEnd, boolean registrationOpen,
+        OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
     public record ActivitiesResponse(List<ActivityResponse> items, int page, int pageSize, long total) {
@@ -136,6 +137,21 @@ public class ActivityController {
     }
 
     public record WithdrawApprovalRequest(@Size(max = 500, message = "撤回原因不超过 500 字符") String reason) {
+    }
+
+    public record RegistrationOpenRequest(@NotNull(message = "请指定报名开关状态") Boolean open) {
+    }
+
+    /** 报名开关（S02／P4.2）：独立于报名时间窗，仅影响新申请。 */
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/registration-open")
+    public ResponseEntity<ActivityResponse> setRegistrationOpen(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody RegistrationOpenRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.setRegistrationOpen(
+                principal.getAccountId(), orgId, activityId, request.open())));
     }
 
     @PutMapping("/api/organizations/{orgId}/activities/{activityId}/proposal")
@@ -242,6 +258,6 @@ public class ActivityController {
             item.submittedBy(), item.confirmedBy(), item.confirmType(),
             item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
-            item.createdAt(), item.updatedAt());
+            item.registrationOpen(), item.createdAt(), item.updatedAt());
     }
 }

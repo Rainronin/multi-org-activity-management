@@ -14,7 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 活动任务（P3.2）：创建与分派归组织负责人／活动负责人；普通成员仅推进本人任务
- * （待处理→进行中→已完成）；取消与重新打开由管理者执行；分派写入站内通知意图（同事务）。
+ * （待处理→进行中／已完成，进行中→已完成）；取消与重新打开由管理者执行；分派写入站内通知意图（同事务）。
+ * 子资源读取沿用活动自身可见性（S06）。
  */
 @Service
 public class TaskService {
@@ -50,7 +51,9 @@ public class TaskService {
     private Context requireVisibleContext(Long accountId, Long orgId, Long activityId) {
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
         Activity activity = actor == null ? null : activityMapper.findById(activityId);
-        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)) {
+        // S06：子资源沿用活动自身可见性，未发布活动不因任务列表／流转接口泄露
+        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)
+            || !activity.isVisibleTo(actor, accountId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或无权访问。");
         }
         return new Context(actor, activity);
@@ -107,8 +110,10 @@ public class TaskService {
         }
         validateAssignee(orgId, patch.getAssigneeMemberId());
         boolean reassigned = !patch.getAssigneeMemberId().equals(task.getAssigneeMemberId());
+        // PATCH 语义：未传优先级时沿用当前值，避免把非空列写成 NULL
+        String priority = patch.getPriority() == null ? task.getPriority() : patch.getPriority();
         taskMapper.updateAssignment(taskId, patch.getTitle(), patch.getDescription(),
-            patch.getAssigneeMemberId(), patch.getPriority(), patch.getDueAt());
+            patch.getAssigneeMemberId(), priority, patch.getDueAt());
         if (reassigned) {
             notifyAssignment(orgId, activityId, taskMapper.findById(taskId));
         }
@@ -129,7 +134,7 @@ public class TaskService {
         return toItem(taskMapper.findById(taskId));
     }
 
-    /** 普通成员推进本人任务：仅限 待处理→进行中→已完成（S05），不可取消或重开。 */
+    /** 普通成员推进本人任务：待处理→进行中／已完成，进行中→已完成（S05），不可取消或重开。 */
     @Transactional
     public TaskItem advanceOwn(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
         Context ctx = requireVisibleContext(accountId, orgId, activityId);
@@ -137,12 +142,13 @@ public class TaskService {
         if (!task.getAssigneeMemberId().equals(ctx.actor().getId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "只能推进本人任务。");
         }
-        // S05：普通成员仅可按流程推进，不可取消或重新打开
-        boolean allowed = (Task.STATUS_PENDING.equals(task.getStatus()) && Task.STATUS_IN_PROGRESS.equals(toStatus))
+        // S05：普通成员仅可按流程推进（待处理可直接完成，也可先转进行中），不可取消或重新打开
+        boolean allowed = (Task.STATUS_PENDING.equals(task.getStatus())
+                && (Task.STATUS_IN_PROGRESS.equals(toStatus) || Task.STATUS_COMPLETED.equals(toStatus)))
             || (Task.STATUS_IN_PROGRESS.equals(task.getStatus()) && Task.STATUS_COMPLETED.equals(toStatus));
         if (!allowed) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_STATE_CONFLICT", "任务状态不允许此操作",
-                "普通成员只能将任务从待处理推进为进行中，再从进行中标记为已完成。");
+                "普通成员只能把本人任务从待处理推进为进行中或已完成，再从进行中标记为已完成。");
         }
         transition(task, toStatus, accountId);
         return toItem(taskMapper.findById(taskId));
@@ -152,7 +158,7 @@ public class TaskService {
         String from = task.getStatus();
         boolean allowed = switch (toStatus) {
             case Task.STATUS_IN_PROGRESS -> Task.STATUS_PENDING.equals(from);
-            case Task.STATUS_COMPLETED -> Task.STATUS_IN_PROGRESS.equals(from);
+            case Task.STATUS_COMPLETED -> Task.STATUS_PENDING.equals(from) || Task.STATUS_IN_PROGRESS.equals(from);
             case Task.STATUS_PENDING -> Task.STATUS_IN_PROGRESS.equals(from)
                 || Task.STATUS_CANCELLED.equals(from) || Task.STATUS_COMPLETED.equals(from);
             case Task.STATUS_CANCELLED -> Task.STATUS_PENDING.equals(from) || Task.STATUS_IN_PROGRESS.equals(from);

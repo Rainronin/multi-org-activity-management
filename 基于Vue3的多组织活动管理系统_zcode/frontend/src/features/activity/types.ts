@@ -21,6 +21,8 @@ export interface ActivityItem {
   capacity: number | null
   registrationStart: string | null
   registrationEnd: string | null
+  /** S02：独立报名开关，新建与重新确认后默认关闭，仅影响新申请。 */
+  registrationOpen: boolean
   createdAt: string
   updatedAt: string
 }

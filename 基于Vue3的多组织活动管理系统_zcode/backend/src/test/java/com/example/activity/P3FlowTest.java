@@ -165,25 +165,24 @@ class P3FlowTest extends ActivityTestBase {
                 .content("{\"toStatus\":\"IN_PROGRESS\"}"))
             .andExpect(status().isForbidden());
 
-        // 分派成员推进：PENDING → IN_PROGRESS → COMPLETED；非法跳跃 → 409
-        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks/" + taskId + "/advance")
-                .with(csrf()).session(member.session())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"toStatus\":\"COMPLETED\"}"))
-            .andExpect(status().isConflict());
-        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks/" + taskId + "/advance")
-                .with(csrf()).session(member.session())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"toStatus\":\"IN_PROGRESS\"}"))
-            .andExpect(status().isOk());
+        // 分派成员推进：待处理可直接完成（S05，计划书 6.1）；成员不能取消或重新打开
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks/" + taskId + "/advance")
                 .with(csrf()).session(member.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"toStatus\":\"COMPLETED\"}"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("COMPLETED"));
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT completed_at IS NOT NULL FROM task WHERE id = ?", Boolean.class, taskId)).isTrue();
 
-        // 成员不能取消任务；OWNER 可重新打开
+        // 成员自己也不能取消已完成的本人任务
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks/" + taskId + "/advance")
+                .with(csrf()).session(member.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"toStatus\":\"CANCELLED\"}"))
+            .andExpect(status().isConflict());
+
+        // 成员不能取消或重新打开任务；OWNER 可重新打开
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks/" + taskId + "/transition")
                 .with(csrf()).session(member.session())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -195,6 +194,8 @@ class P3FlowTest extends ActivityTestBase {
                 .content("{\"toStatus\":\"PENDING\"}"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("PENDING"));
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT completed_at IS NULL FROM task WHERE id = ?", Boolean.class, taskId)).isTrue();
 
         // 本人任务列表
         mockMvc.perform(get("/api/organizations/" + orgId + "/my-tasks").session(member.session()))

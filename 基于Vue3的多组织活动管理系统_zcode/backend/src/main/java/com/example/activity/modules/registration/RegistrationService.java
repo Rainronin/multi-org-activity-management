@@ -73,19 +73,26 @@ public class RegistrationService {
                     "该活动仅限本组织成员报名。");
             }
         }
-        // S02：报名开关与时间窗校验
+        // S02：报名开关与时间窗只约束新申请（审核既有申请不受影响，后端架构 5.2）
+        if (!activity.isRegistrationOpen()) {
+            throw invalid("活动报名尚未开放。");
+        }
         if (activity.getRegistrationStart() != null && OffsetDateTime.now().isBefore(activity.getRegistrationStart())) {
             throw invalid("报名尚未开始。");
         }
         if (activity.getRegistrationEnd() != null && OffsetDateTime.now().isAfter(activity.getRegistrationEnd())) {
             throw invalid("报名已截止。");
         }
+        // 计划书 6.2：到活动开始时间后不再接受新申请
+        if (!activity.isBeforeStart()) {
+            throw invalid("活动已开始，报名不再开放。");
+        }
 
         Registration existing = registrationMapper.findByActivityAndAccount(activityId, accountId);
         if (existing != null) {
             if (Registration.STATUS_PENDING.equals(existing.getStatus())
                 || Registration.STATUS_APPROVED.equals(existing.getStatus())) {
-                // 幂等：已有待审或有效报名，返回现有记录
+                // 幂等：已有待审或有效报名，返回现有记录而不重复建行
                 return toItem(existing, resolveUsername(accountId));
             }
             // 已取消或已驳回：重新申请更新主记录
@@ -108,15 +115,17 @@ public class RegistrationService {
         return toItem(registration, resolveUsername(accountId));
     }
 
-    /** 审核通过：活动须已确认；组织负责人或活动负责人可审核（S04）。 */
+    /**
+     * 审核通过：活动须已确认且未到开始时间（S02：开关或窗口关闭不影响审核既有申请，开始后不再批准）。
+     * 组织负责人或活动负责人可审核（S04）。
+     */
     @Transactional
     public RegistrationItem approve(Long approverAccountId, Long orgId, Long activityId, Long registrationId) {
         organizationMapper.lockOrganization(orgId);
         requireReviewPermission(orgId, activityId, approverAccountId);
-        Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
-            // S04：活动非已确认状态（草稿/待确认/撤回）不可批准
-            throw conflict();
+        Activity activity = requireApprovedActivity(activityId);
+        if (!activity.isBeforeStart()) {
+            throw conflict("活动已开始，不能再批准报名。");
         }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
@@ -136,14 +145,12 @@ public class RegistrationService {
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
+    /** 驳回待审：开始后仍允许，用于清空待审申请（计划书 6.2 结束审核）。 */
     @Transactional
     public RegistrationItem reject(Long approverAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
         organizationMapper.lockOrganization(orgId);
         requireReviewPermission(orgId, activityId, approverAccountId);
-        Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
-            throw conflict();
-        }
+        requireApprovedActivity(activityId);
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
             throw conflict();
@@ -156,7 +163,10 @@ public class RegistrationService {
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
-    /** 本人取消：待审或有效报名可取消（释放名额一次）；重复取消幂等不重复变更。 */
+    /**
+     * 本人取消：活动开始前且未进入执行时，可取消本人待审或已通过报名（计划书 6.2）；
+     * 已占名额仅释放一次，重复取消幂等。
+     */
     @Transactional
     public void cancelSelf(Long accountId, Long activityId) {
         Activity activity = activityMapper.findById(activityId);
@@ -164,6 +174,14 @@ public class RegistrationService {
             throw notFound();
         }
         organizationMapper.lockOrganization(activity.getOrgId());
+        // S02：锁内重读，开始时间与状态以当前值为准
+        activity = activityMapper.findById(activityId);
+        if (activity == null) {
+            throw notFound();
+        }
+        if (!activity.isBeforeStart()) {
+            throw conflict("活动已开始，不能再自助取消报名。");
+        }
         Registration registration = registrationMapper.findByActivityAndAccount(activityId, accountId);
         if (registration == null) {
             throw notFound();
@@ -182,11 +200,14 @@ public class RegistrationService {
             "registration:" + registration.getId(), null, java.util.Map.of("activityId", activityId));
     }
 
-    /** 管理者取消：释放名额并记录原因。 */
+    /** 管理取消：组织负责人或活动负责人（S04），活动进入执行前可说明原因取消（计划书 6.2）。 */
     @Transactional
     public RegistrationItem cancelOrg(Long actorAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
         organizationMapper.lockOrganization(orgId);
-        requireOrgOwner(orgId, actorAccountId);
+        Activity activity = requireReviewPermission(orgId, activityId, actorAccountId);
+        if (!activity.isBeforeStart()) {
+            throw conflict("活动已开始，不能再由管理者取消报名，请在执行记录中说明。");
+        }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())
             && !Registration.STATUS_APPROVED.equals(registration.getStatus())) {
@@ -201,14 +222,10 @@ public class RegistrationService {
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
+    /** 管理名单：组织负责人或本活动负责人（S04）；活动自身可见性同样适用（S06）。 */
     public RegistrationPage listForReview(
         Long accountId, Long orgId, Long activityId, int page, int pageSize, String status) {
-        requireOrgOwner(orgId, accountId);
-        // S01：校验活动确实属于该组织，防止跨组织读取报名名单
-        Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !activity.getOrgId().equals(orgId)) {
-            throw notFound();
-        }
+        requireReviewPermission(orgId, activityId, accountId);
         String filter = status == null || status.isBlank() ? null : status;
         long total = registrationMapper.countByActivity(activityId, filter);
         List<RegistrationItem> items = registrationMapper
@@ -225,29 +242,36 @@ public class RegistrationService {
             .toList();
     }
 
-    private void requireOrgOwner(Long orgId, Long accountId) {
-        var member = memberMapper.findActive(orgId, accountId);
-        if (member == null || !OrganizationMember.ROLE_OWNER.equals(member.getRole())) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以执行此操作。");
-        }
-    }
-
-    /** S04：审核权限 = 组织负责人或本活动负责人。 */
-    private void requireReviewPermission(Long orgId, Long activityId, Long accountId) {
+    /**
+     * S04：管理权限 = 组织负责人或本活动负责人；同时按活动自身可见性拦截未发布活动（S06）与跨组织读取（S01）。
+     * 返回活动当前状态，供调用方在同一锁内继续校验。
+     */
+    private Activity requireReviewPermission(Long orgId, Long activityId, Long accountId) {
         var member = memberMapper.findActive(orgId, accountId);
         if (member == null) {
             throw notFound();
         }
         Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !activity.getOrgId().equals(orgId)) {
+        if (activity == null || !activity.getOrgId().equals(orgId)
+            || !activity.isVisibleTo(member, accountId)) {
             throw notFound();
         }
         boolean isOrgOwner = OrganizationMember.ROLE_OWNER.equals(member.getRole());
         boolean isActivityOwner = member.getId().equals(activity.getOwnerMemberId());
         if (!isOrgOwner && !isActivityOwner) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
-                "仅组织负责人或活动负责人可以审核报名。");
+                "仅组织负责人或活动负责人可以管理报名。");
         }
+        return activity;
+    }
+
+    /** 审核／管理取消的公共前置：活动须存在且为已确认（撤回草稿、待确认不可处理）。 */
+    private Activity requireApprovedActivity(Long activityId) {
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !Activity.STATUS_APPROVED.equals(activity.getStatus())) {
+            throw conflict("活动未处于已确认状态，无法处理报名。");
+        }
+        return activity;
     }
 
     private Registration requireRegistration(Long orgId, Long activityId, Long registrationId) {
@@ -268,12 +292,17 @@ public class RegistrationService {
             "报名已被处理，请刷新后查看。");
     }
 
+    private ApiException conflict(String detail) {
+        return new ApiException(HttpStatus.CONFLICT, "REGISTRATION_STATE_CONFLICT", "报名状态不允许此操作", detail);
+    }
+
     private ApiException notFound() {
         return new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "报名不存在或无权访问。");
     }
 
     private String resolveUsername(Long accountId) {
-        return memberMapper.findUsernameByMemberId(null) == null ? "" : accountId.toString();
+        String username = accountMapper.findUsernameById(accountId);
+        return username == null ? "" : username;
     }
 
     private RegistrationItem toItem(Registration r, String username) {

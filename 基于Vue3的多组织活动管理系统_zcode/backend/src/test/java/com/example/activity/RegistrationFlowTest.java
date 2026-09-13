@@ -119,7 +119,18 @@ class RegistrationFlowTest extends ActivityTestBase {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{}"))
             .andExpect(status().isOk());
+        // S02：报名开关默认关闭，需负责人明确开启后再申请
+        openRegistration(owner, orgId, activityId);
         return activityId;
+    }
+
+    private void openRegistration(TestSession actor, Long orgId, Long activityId) throws Exception {
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/registration-open")
+                .with(csrf()).session(actor.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"open\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.registrationOpen").value(true));
     }
 
     private Long apply(TestSession session, Long activityId) throws Exception {

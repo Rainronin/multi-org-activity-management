@@ -6,7 +6,7 @@
         id, org_id, name, description, owner_member_id, status, review_note, submitted_by,
         confirmed_by, confirm_type, start_time, end_time,
         location, budget, proposal, registration_scope, capacity, registration_start,
-        registration_end, created_by, created_at, updated_at
+        registration_end, registration_open, created_by, created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
@@ -32,6 +32,9 @@
           <if test="query != null and query != ''">
             AND name LIKE CONCAT('%', #{query}, '%')
           </if>
+          <if test="ownerOnly != null">
+            AND owner_member_id = #{ownerOnly}
+          </if>
         ORDER BY updated_at DESC, id DESC
         LIMIT #{limit} OFFSET #{offset}
     </select>
@@ -44,7 +47,17 @@
           <if test="query != null and query != ''">
             AND name LIKE CONCAT('%', #{query}, '%')
           </if>
+          <if test="ownerOnly != null">
+            AND owner_member_id = #{ownerOnly}
+          </if>
     </select>
+
+    <update id="updateRegistrationOpen">
+        UPDATE activity
+        SET registration_open = #{open}
+        WHERE id = #{id}
+          AND org_id = #{orgId}
+    </update>
 
     <update id="updateProposal">
         UPDATE activity

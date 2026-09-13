@@ -122,7 +122,7 @@ public class TaskController {
                 principal.getAccountId(), orgId, activityId, taskId, request.toStatus())));
     }
 
-    /** 普通成员推进本人任务（待处理→进行中→已完成）。 */
+    /** 普通成员推进本人任务（待处理→进行中／已完成，进行中→已完成）。 */
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/tasks/{taskId}/advance")
     public ResponseEntity<TaskResponse> advance(
         @AuthenticationPrincipal AccountUserDetails principal,

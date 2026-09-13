@@ -13,7 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 活动业务（P2.1：草稿创建、列表、详情与编辑）。
- * 写操作取组织行共享锁校验有效成员；草稿仅组织负责人与被指定的活动负责人可见；
+ * 写操作取组织行共享锁校验有效成员；未发布（草稿／待确认）活动仅组织负责人与被指定的活动负责人可见，
+ * 列表、详情及任务／物资／附件子资源使用同一可见性（S06）；报名开关独立于申请时间窗（S02）；
  * 时间顺序、预算精度与名额校验在服务端统一执行（接口说明 P2.1）。
  */
 @Service
@@ -24,7 +25,8 @@ public class ActivityService {
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
         OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
         String registrationScope, Integer capacity, OffsetDateTime registrationStart,
-        OffsetDateTime registrationEnd, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+        OffsetDateTime registrationEnd, boolean registrationOpen,
+        OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
     public record ActivityPage(java.util.List<ActivityItem> items, int page, int pageSize, long total) {
@@ -72,19 +74,23 @@ public class ActivityService {
         return toItem(activityMapper.findById(draft.getId()));
     }
 
-    /** 列表：组织负责人见全部草稿；普通成员当前返回空集（发布可见性随 P2.2 扩展）。 */
+    /**
+     * 列表：可见性与详情一致（S06）——组织负责人见全部状态；其他成员见已确认活动，
+     * 以及本人负责的草稿／待确认活动；筛选状态与分页总数使用同一条件。
+     */
     public ActivityPage list(Long accountId, Long orgId, int page, int pageSize, String query, String status) {
         OrganizationMember actor = requireActiveMember(orgId, accountId);
         boolean orgOwner = OrganizationMember.ROLE_OWNER.equals(actor.getRole());
         String effectiveStatus = status == null || status.isBlank()
             ? (orgOwner ? Activity.STATUS_DRAFT : Activity.STATUS_APPROVED) : status;
-        // S06：普通成员只能看到已确认活动
-        if (!orgOwner && Activity.STATUS_DRAFT.equals(effectiveStatus)) {
-            return new ActivityPage(List.of(), page, pageSize, 0);
-        }
-        long total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus);
+        // 未发布状态对非组织负责人只能看到本人负责的活动；已发布状态无需再按负责人过滤
+        Long ownerOnly = !orgOwner
+            && (Activity.STATUS_DRAFT.equals(effectiveStatus)
+                || Activity.STATUS_PENDING_APPROVAL.equals(effectiveStatus))
+            ? actor.getId() : null;
+        long total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus, ownerOnly);
         List<ActivityItem> items = activityMapper
-            .listPage(orgId, blankToNull(query), effectiveStatus, (long) (page - 1) * pageSize, pageSize)
+            .listPage(orgId, blankToNull(query), effectiveStatus, ownerOnly, (long) (page - 1) * pageSize, pageSize)
             .stream()
             .map(this::toItem)
             .toList();
@@ -222,17 +228,9 @@ public class ActivityService {
         return member != null && OrganizationMember.ROLE_OWNER.equals(member.getRole());
     }
 
-    /** S06：统一可见性——草稿/待确认仅 OWNER 与活动负责人；已确认对全部有效成员可见。 */
+    /** S06：统一可见性——未发布（草稿／待确认）仅 OWNER 与活动负责人；已确认对全部有效成员可见。 */
     private boolean canSeeDraft(Activity activity, Long accountId) {
-        OrganizationMember member = memberMapper.findActive(activity.getOrgId(), accountId);
-        if (member == null) {
-            return false;
-        }
-        if (!"DRAFT".equals(activity.getStatus()) && !"PENDING_APPROVAL".equals(activity.getStatus())) {
-            return true;
-        }
-        return OrganizationMember.ROLE_OWNER.equals(member.getRole())
-            || member.getId().equals(activity.getOwnerMemberId());
+        return activity.isVisibleTo(memberMapper.findActive(activity.getOrgId(), accountId), accountId);
     }
 
     private ActivityItem toItem(Activity activity) {
@@ -246,7 +244,7 @@ public class ActivityService {
             activity.getLocation(), activity.getBudget() == null
                 ? "0.00" : activity.getBudget().setScale(2).toPlainString(),
             activity.getRegistrationScope(), activity.getCapacity(),
-            activity.getRegistrationStart(), activity.getRegistrationEnd(),
+            activity.getRegistrationStart(), activity.getRegistrationEnd(), activity.isRegistrationOpen(),
             activity.getCreatedAt(), activity.getUpdatedAt());
     }
 
@@ -255,6 +253,37 @@ public class ActivityService {
             List.of(new com.example.activity.common.FieldErrorItem(field, message)));
     }
 
+
+    /**
+     * 报名开关（S02／P4.2）：组织负责人或活动负责人；仅已确认且未到开始时间可变更。
+     * 关闭只停止新申请，不阻止既有申请的审核与合法取消（后端架构 5.2）。
+     */
+    @Transactional
+    public ActivityItem setRegistrationOpen(Long accountId, Long orgId, Long activityId, boolean open) {
+        organizationMapper.lockOrganization(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId) || !canSeeDraft(activity, accountId)) {
+            throw notFound();
+        }
+        if (!OrganizationMember.ROLE_OWNER.equals(actor.getRole())
+            && !actor.getId().equals(activity.getOwnerMemberId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
+                "仅组织负责人或活动负责人可以变更报名开关。");
+        }
+        if (!Activity.STATUS_APPROVED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "仅已确认活动可以开关报名。");
+        }
+        if (!activity.isBeforeStart()) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动已开始，不能再变更报名开关。");
+        }
+        if (activityMapper.updateRegistrationOpen(activityId, orgId, open) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
+        }
+        auditService.record(accountId, "ACTIVITY", open ? "ACTIVITY_REGISTRATION_OPENED" : "ACTIVITY_REGISTRATION_CLOSED",
+            "activity:" + activityId, null, java.util.Map.of("registrationOpen", open));
+        return toItem(activityMapper.findById(activityId));
+    }
 
     /** 保存方案文稿：草稿期由组织负责人或活动负责人编写（P2.2，不依赖 AI 也能完成）。 */
     @Transactional
@@ -373,6 +402,8 @@ public class ActivityService {
         if (activityMapper.transitionStatus(activityId, orgId, "APPROVED", "DRAFT") != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
+        // 计划书 6.1：撤回到草稿即暂停报名，重新确认后由负责人明确开启
+        activityMapper.updateRegistrationOpen(activityId, orgId, false);
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_APPROVAL_WITHDRAWN", "activity:" + activityId,
             reason, null);
         return toItem(activityMapper.findById(activityId));

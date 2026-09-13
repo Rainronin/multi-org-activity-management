@@ -1,13 +1,22 @@
-// 8bfa94c 修复复核观察脚本：仅可针对显式连接 activity_test 的后端运行，会新增专用测试数据。
+// 修复复核观察脚本（初版针对 8bfa94c，本轮已更新 S02／S04／S05／S06 检查项）：
+// 仅可针对显式连接 activity_test 的后端运行，会新增专用测试数据。
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { chromium } from '../UI演示/node_modules/playwright/index.mjs'
 import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 if (process.env.AUDIT_TEST_DATABASE !== 'activity_test') throw new Error('先核实后端测试库，再设置 AUDIT_TEST_DATABASE=activity_test')
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
+const MYSQL_EXE = process.env.AUDIT_MYSQL_EXE || 'C:/Program Files/MySQL/MySQL Server 8.4/bin/mysql.exe'
+// 本机开发实例约定：root 空密码仅限 127.0.0.1 回环（README）。
+// 只用于构造「已开始」这个时间边界：合法路径必须撤回草稿，会同时清空报名记录
+async function dbExec(sql) {
+  execFileSync(MYSQL_EXE, ['-h', '127.0.0.1', '-u', 'root', '-D', 'activity_test', '-e', sql],
+    { stdio: 'inherit', env: { ...process.env, MYSQL_PWD: process.env.AUDIT_MYSQL_PASSWORD || '' } })
+}
 try {
-  const contexts = await Promise.all([1, 2, 3].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
-  const [owner, member, outsider] = contexts
+  const contexts = await Promise.all([1, 2, 3, 4].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
+  const [owner, member, outsider, delegate] = contexts
   async function call(ctx, method, path, data, multipart) {
     const headers = {}
     if (method !== 'GET') {
@@ -33,9 +42,12 @@ try {
   const foreignOrg = await json(outsider, 'POST', '/api/organizations', { name: '阶段审核乙' })
   const invitation = await json(owner, 'POST', `/api/organizations/${org.id}/invitations`, {})
   await json(member, 'POST', '/api/invitations/accept', { code: invitation.code })
+  const delegateInvitation = await json(owner, 'POST', `/api/organizations/${org.id}/invitations`, {})
+  await json(delegate, 'POST', '/api/invitations/accept', { code: delegateInvitation.code })
   const members = (await json(owner, 'GET', `/api/organizations/${org.id}/members`)).items
   const ownerMember = members.find(x => x.username === usernames[0]).memberId
   const memberId = members.find(x => x.username === usernames[1]).memberId
+  const delegateMember = members.find(x => x.username === usernames[3]).memberId
   const path = `/api/organizations/${org.id}/activities`
   async function createActivity(name, assignee = ownerMember) {
     const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' })
@@ -46,9 +58,19 @@ try {
     await json(owner, 'POST', `${path}/${activity.id}/submit`)
     await json(owner, 'POST', `${path}/${activity.id}/approve`, { note: '审核通过' })
   }
-  const activity = await createActivity('正式活动审核', memberId)
+  async function openRegistration(activity) {
+    return json(owner, 'POST', `${path}/${activity.id}/registration-open`, { open: true })
+  }
+  const activity = await createActivity('正式活动审核', delegateMember)
   await approveActivity(activity)
+  console.log(JSON.stringify({ check: '报名开关默认状态', closed: (await json(member, 'GET', `${path}/${activity.id}`)).registrationOpen }))
   const aPath = `${path}/${activity.id}`
+  const closedApply = await call(member, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '开关关闭申请' })
+  await closedApply.json()
+  console.log(JSON.stringify({ check: '开关关闭时申请', status: closedApply.status() }))
+  // S04：指定活动负责人（非组织负责人）开开关、读名单、管理取消
+  await json(delegate, 'POST', `${aPath}/registration-open`, { open: true })
+  console.log(JSON.stringify({ check: '指定活动负责人开开关', open: (await json(member, 'GET', aPath)).registrationOpen }))
   console.log(JSON.stringify({ check: '活动负责人列表', total: (await json(member, 'GET', `${path}?status=APPROVED`)).total }))
   const task = await json(owner, 'POST', `${aPath}/tasks`, { title: '本人任务', assigneeMemberId: memberId, priority: 'MEDIUM' })
   const cancelTask = await call(member, 'POST', `${aPath}/tasks/${task.taskId}/advance`, { toStatus: 'CANCELLED' })
@@ -59,14 +81,15 @@ try {
   const registration = await json(member, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '本人成员' })
   const leaked = await call(outsider, 'GET', `/api/organizations/${foreignOrg.id}/activities/${activity.id}/registrations`)
   console.log(JSON.stringify({ check: '报名资格与跨组织读取', outsiderInternalApply: foreignApply.status(), foreignOrgList: leaked.status(), leakedRows: (await leaked.json()).items?.length }))
-  const delegatedApproval = await call(member, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
+  const delegatedApproval = await call(delegate, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
   console.log(JSON.stringify({ check: '指定活动负责人审核', status: delegatedApproval.status() }))
   if (delegatedApproval.status() !== 200) await json(owner, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
-  console.log(JSON.stringify({ check: '活动负责人管理名单', status: (await call(member, 'GET', `${aPath}/registrations`)).status() }))
-  console.log(JSON.stringify({ check: '活动负责人管理取消', status: (await call(member, 'POST', `${aPath}/registrations/${registration.registrationId}/cancel-org`, { reason: '管理取消测试' })).status() }))
+  console.log(JSON.stringify({ check: '活动负责人管理名单', status: (await call(delegate, 'GET', `${aPath}/registrations`)).status() }))
   const selfCancel = await call(member, 'POST', `/api/activities/${activity.id}/registrations/cancel-self`)
   const afterCancel = (await json(member, 'GET', '/api/me/registrations')).items.find(x => x.activityId === activity.id)
   console.log(JSON.stringify({ check: '取消已批准报名', httpStatus: selfCancel.status(), actualState: afterCancel.status }))
+  await json(member, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '重新申请' })
+  console.log(JSON.stringify({ check: '活动负责人管理取消', status: (await call(delegate, 'POST', `${aPath}/registrations/${registration.registrationId}/cancel-org`, { reason: '管理取消测试' })).status() }))
 
   const page = await owner.newPage(), browserErrors = [], warnings = []
   page.on('pageerror', e => browserErrors.push(e.message))
@@ -86,13 +109,16 @@ try {
   console.log(JSON.stringify({ check: '关键变更冻结', changeScopeWithRegistrations: patch.status(), createTaskInWithdrawnDraft: taskWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status() }))
 
   const past = await createActivity('已到开始时间的活动')
-  await json(owner, 'PATCH', `${path}/${past.id}`, { startTime: new Date(Date.now()-3600000).toISOString(), endTime: new Date(Date.now()+3600000).toISOString() })
   await approveActivity(past)
-  const lateApply = await call(member, 'POST', `/api/activities/${past.id}/registrations`, { displayName: '晚报名' })
-  const lateRegistration = await lateApply.json()
-  const lateApprove = await call(owner, 'POST', `${path}/${past.id}/registrations/${lateRegistration.registrationId}/approve`)
-  const lateCancel = await call(member, 'POST', `/api/activities/${past.id}/registrations/cancel-self`)
-  console.log(JSON.stringify({ check: '开始时间边界', apply: lateApply.status(), approve: lateApprove.status(), cancelSelf: lateCancel.status() }))
+  await openRegistration(past)
+  const beforeStart = await json(member, 'POST', `/api/activities/${past.id}/registrations`, { displayName: '时间边界报名' })
+  // 直接改状态列构造「已开始」：合法路径需撤回草稿，会同时清空报名，无法保留开始前记录
+  await dbExec(`UPDATE activity SET start_time = NOW() - INTERVAL 1 HOUR, end_time = NOW() + INTERVAL 1 HOUR WHERE id = ${past.id}`)
+  const startedApply = await call(member, 'POST', `/api/activities/${past.id}/registrations`, { displayName: '开始后申请' })
+  const startedApprove = await call(owner, 'POST', `${path}/${past.id}/registrations/${beforeStart.registrationId}/approve`)
+  const startedSelfCancel = await call(member, 'POST', `/api/activities/${past.id}/registrations/cancel-self`)
+  const startedReject = await call(owner, 'POST', `${path}/${past.id}/registrations/${beforeStart.registrationId}/reject`, { reason: '开始后清理待审' })
+  console.log(JSON.stringify({ check: '开始时间边界', applyBeforeStart: beforeStart.registrationId ? 201 : beforeStart, applyAfterStart: startedApply.status(), approveAfterStart: startedApprove.status(), selfCancelAfterStart: startedSelfCancel.status(), rejectAfterStart: startedReject.status() }))
   const pending = await createActivity('不应向普通成员公开的待确认活动')
   await json(owner, 'POST', `${path}/${pending.id}/submit`)
   const pendingList = await json(member, 'GET', `${path}?status=PENDING_APPROVAL`)

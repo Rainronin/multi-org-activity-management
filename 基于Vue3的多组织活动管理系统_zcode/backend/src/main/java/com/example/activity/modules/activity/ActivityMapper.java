@@ -15,13 +15,15 @@ public interface ActivityMapper {
         @Param("orgId") Long orgId,
         @Param("query") String query,
         @Param("status") String status,
+        @Param("ownerOnly") Long ownerOnly,
         @Param("offset") long offset,
         @Param("limit") int limit);
 
     long countPage(
         @Param("orgId") Long orgId,
         @Param("query") String query,
-        @Param("status") String status);
+        @Param("status") String status,
+        @Param("ownerOnly") Long ownerOnly);
 
     /** 仅更新显式传入的字段（PATCH 语义），由 Service 组装非空字段。 */
     int updateDraft(Activity activity);
@@ -44,4 +46,8 @@ public interface ActivityMapper {
         @Param("confirmType") String confirmType);
 
     int deleteDraft(@Param("id") Long id, @Param("orgId") Long orgId);
+
+    /** S02：报名开关（独立于申请时间窗）；开关仅影响新申请，不影响既有申请审核。 */
+    int updateRegistrationOpen(
+        @Param("id") Long id, @Param("orgId") Long orgId, @Param("open") boolean open);
 }

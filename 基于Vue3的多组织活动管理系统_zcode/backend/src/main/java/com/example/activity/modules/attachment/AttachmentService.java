@@ -73,7 +73,9 @@ public class AttachmentService {
     private Context requireContext(Long accountId, Long orgId, Long activityId) {
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
         Activity activity = actor == null ? null : activityMapper.findById(activityId);
-        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)) {
+        // S06：附件沿用活动自身可见性，未发布活动的资料不能被非负责人成员列出或下载
+        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)
+            || !activity.isVisibleTo(actor, accountId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或无权访问。");
         }
         boolean canManage = OrganizationMember.ROLE_OWNER.equals(actor.getRole())

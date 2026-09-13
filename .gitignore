@@ -20,10 +20,9 @@ application-test-local.yml
 application-test-local.yaml
 /.local/
 /runtime/
-/uploads/
+# 上传目录：按目录名忽略任意层级，避免源码树内残留附件进入版本库
+uploads/
 /backups/
-/backend/uploads/
-/backend/backups/
 
 # 本机 IDE 元数据；不忽略锁文件、Wrapper 或图示成果
 .idea/

@@ -45,7 +45,8 @@ public class MaterialService {
     private Context requireManageContext(Long accountId, Long orgId, Long activityId) {
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
         Activity activity = actor == null ? null : activityMapper.findById(activityId);
-        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)) {
+        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)
+            || !activity.isVisibleTo(actor, accountId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或无权访问。");
         }
         boolean canManage = OrganizationMember.ROLE_OWNER.equals(actor.getRole())
@@ -69,10 +70,12 @@ public class MaterialService {
         }
     }
 
+    /** 物资读取与活动详情同可见性（S06）：未发布活动不向非负责人成员泄露清单。 */
     public List<MaterialItem> list(Long accountId, Long orgId, Long activityId) {
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
         Activity activity = actor == null ? null : activityMapper.findById(activityId);
-        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)) {
+        if (actor == null || activity == null || !activity.getOrgId().equals(orgId)
+            || !activity.isVisibleTo(actor, accountId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或无权访问。");
         }
         return materialMapper.listByActivity(activityId).stream().map(this::toItem).toList();
