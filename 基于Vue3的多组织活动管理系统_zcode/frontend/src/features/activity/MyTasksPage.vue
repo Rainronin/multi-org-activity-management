@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElButton, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import { ElButton, ElRadioButton, ElRadioGroup, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { advanceTask, fetchMyTasks, type TaskItem } from './p3'
 
 // 我的任务（P3.3）：当前组织内分配给我的未完成任务，可推进状态。
 const route = useRoute()
+const router = useRouter()
 const session = useSessionStore()
 
 const orgId = computed(() => String(route.params.orgId ?? ''))
+
+/** P3.3：从本人任务回到所属活动详情（任务只带 activityId，按活动 id 跳转）。 */
+function openActivity(task: TaskItem) {
+  void router.push(`/org/${orgId.value}/activities/${task.activityId}`)
+}
 
 const tasks = ref<TaskItem[]>([])
 const loading = ref(false)
@@ -61,6 +67,12 @@ async function loadTasks(): Promise<void> {
 
 watch(orgId, loadTasks)
 onMounted(loadTasks)
+
+/** P3.3：本人任务按状态筛选（服务端返回全部本人任务，前端筛选不改变权限口径）。 */
+const statusFilter = ref('')
+const visibleTasks = computed(() => (statusFilter.value
+  ? tasks.value.filter((task) => task.status === statusFilter.value)
+  : tasks.value))
 
 async function guard(fn: () => Promise<void>): Promise<void> {
   actionError.value = ''
@@ -145,7 +157,21 @@ function priorityLabel(priority: string): string {
       v-loading="loading"
       class="my-tasks__table"
     >
-      <ElTable :data="tasks">
+      <ElRadioGroup
+        v-model="statusFilter"
+        class="my-tasks__filter"
+      >
+        <ElRadioButton label="">
+          全部
+        </ElRadioButton>
+        <ElRadioButton label="PENDING">
+          待处理
+        </ElRadioButton>
+        <ElRadioButton label="IN_PROGRESS">
+          进行中
+        </ElRadioButton>
+      </ElRadioGroup>
+      <ElTable :data="visibleTasks">
         <ElTableColumn
           prop="title"
           label="任务"
@@ -202,6 +228,12 @@ function priorityLabel(priority: string): string {
             >
               {{ nextStatus(row as TaskItem) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
             </ElButton>
+            <ElButton
+              size="small"
+              @click="openActivity(row as TaskItem)"
+            >
+              查看活动
+            </ElButton>
           </template>
         </ElTableColumn>
         <template #empty>
@@ -255,6 +287,10 @@ function formatDue(value: string): string {
 .my-tasks__table {
   margin-top: var(--ui-space-8);
   width: 100%;
+}
+
+.my-tasks__filter {
+  margin-bottom: var(--ui-space-4);
 }
 
 .my-tasks__overdue {

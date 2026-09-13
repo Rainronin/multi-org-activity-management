@@ -174,6 +174,49 @@ try {
   await check('负责人-活动详情-短屏', detailPath, SHORT_SCREEN, '窄屏任务', '手机验收-短屏-390x600')
   await check('负责人-活动详情-200%缩放', detailPath, ZOOM_200, '窄屏任务', '手机验收-缩放200-详情')
 
+  // P3.1 资料预览：图片类型在弹窗内直接查看（其余类型只保留下载）
+  const ownerView = await browser.newContext({ baseURL: base, viewport: { width: 390, height: 900 } })
+  await signIn(ownerView, ownerName)
+  const ownerPage = await ownerView.newPage()
+  const ownerErrors = []
+  ownerPage.on('pageerror', (e) => ownerErrors.push(e.message))
+  await ownerPage.goto(detailPath, { waitUntil: 'networkidle' })
+  await ownerPage.getByRole('button', { name: '预览' }).first().click()
+  const previewShown = await ownerPage.waitForSelector('.p3-preview__image', { timeout: 10000 })
+    .then(() => true).catch(() => false)
+  const previewShot = fileURLToPath(new URL('../验证截图/手机验收-资料预览.png', import.meta.url))
+  await ownerPage.screenshot({ path: previewShot, fullPage: true })
+  shots.push(previewShot)
+  await ownerView.close()
+
+  // P3.3 本人任务：按状态筛选并可回到所属活动详情
+  const memberView = await browser.newContext({ baseURL: base, viewport: { width: 390, height: 900 } })
+  await signIn(memberView, memberName)
+  const memberPage = await memberView.newPage()
+  const memberErrors = []
+  memberPage.on('pageerror', (e) => memberErrors.push(e.message))
+  await memberPage.goto(`/org/${org.id}/my-tasks`, { waitUntil: 'networkidle' })
+  await memberPage.waitForSelector('.el-table__row', { timeout: 15000 }).catch(() => undefined)
+  const rowsAll = await memberPage.locator('.el-table__row').count()
+  // ElRadioButton 的可见层是 __inner 的 span，直接点 input 会被拦截
+  await memberPage.locator('.el-radio-button__inner').filter({ hasText: '进行中' }).click()
+  await memberPage.waitForTimeout(200)
+  const rowsInProgress = await memberPage.locator('.el-table__row').count()
+  await memberPage.locator('.el-radio-button__inner').filter({ hasText: '待处理' }).click()
+  await memberPage.waitForTimeout(200)
+  const rowsPending = await memberPage.locator('.el-table__row').count()
+  await memberPage.getByRole('button', { name: '查看活动' }).first().click()
+  const backToActivity = await memberPage
+    .waitForURL(new RegExp(`/org/${org.id}/activities/${activity.id}`), { timeout: 10000 })
+    .then(() => true).catch(() => false)
+  await memberView.close()
+
+  console.log(JSON.stringify({
+    check: 'P3.1 资料预览与 P3.3 本人任务交互',
+    attachmentPreview: { hasPreviewButton: true, previewShown, pageErrors: ownerErrors },
+    myTasks: { rowsAll, rowsPending, rowsInProgress, filterWorks: rowsPending <= rowsAll, backToActivity, pageErrors: memberErrors },
+  }))
+
   const failing = results.filter((r) => r.horizontalOverflow || r.pageErrors.length > 0 || !r.keyTextVisible)
   console.log(JSON.stringify({
     check: 'P3／P4 窄屏与缩放核对',

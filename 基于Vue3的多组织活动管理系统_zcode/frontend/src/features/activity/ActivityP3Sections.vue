@@ -361,6 +361,39 @@ function download(attachment: AttachmentItem) {
   downloadAttachment(orgId.value, activityId.value, attachment.attachmentId, attachment.originalName)
 }
 
+// P3.1：允许类型预览——图片与 PDF 在弹窗内直接查看（走同一受控端点，带会话 Cookie），
+// 其余类型（文本、Office、ZIP）没有可靠的浏览器内置查看器，保留下载。
+const previewVisible = ref(false)
+const previewTarget = ref<AttachmentItem | null>(null)
+const previewUrl = ref('')
+
+const PREVIEW_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+function isPreviewable(attachment: AttachmentItem): boolean {
+  return PREVIEW_IMAGE_TYPES.includes(attachment.contentType)
+    || attachment.contentType === 'application/pdf'
+}
+
+function previewKindOf(attachment: AttachmentItem): 'image' | 'pdf' | 'none' {
+  if (PREVIEW_IMAGE_TYPES.includes(attachment.contentType)) {
+    return 'image'
+  }
+  return attachment.contentType === 'application/pdf' ? 'pdf' : 'none'
+}
+
+const previewKind = computed(() => (previewTarget.value ? previewKindOf(previewTarget.value) : 'none'))
+
+function attachmentUrl(attachment: AttachmentItem): string {
+  return `/api/organizations/${encodeURIComponent(orgId.value)}/activities/${encodeURIComponent(activityId.value)}`
+    + `/attachments/${encodeURIComponent(attachment.attachmentId)}/download`
+}
+
+function openPreview(attachment: AttachmentItem) {
+  previewTarget.value = attachment
+  previewUrl.value = attachmentUrl(attachment)
+  previewVisible.value = true
+}
+
 async function openTaskAttachments(task: TaskItem) {
   taskAttachmentTarget.value = task
   taskAttachmentVisible.value = true
@@ -719,6 +752,13 @@ defineExpose({ reload: loadAll })
         >
           <template #default="{ row }">
             <ElButton
+              v-if="isPreviewable(row as AttachmentItem)"
+              size="small"
+              @click="openPreview(row as AttachmentItem)"
+            >
+              预览
+            </ElButton>
+            <ElButton
               size="small"
               @click="download(row as AttachmentItem)"
             >
@@ -799,6 +839,13 @@ defineExpose({ reload: loadAll })
         >
           <template #default="{ row }">
             <ElButton
+              v-if="isPreviewable(row as AttachmentItem)"
+              size="small"
+              @click="openPreview(row as AttachmentItem)"
+            >
+              预览
+            </ElButton>
+            <ElButton
               size="small"
               @click="download(row as AttachmentItem)"
             >
@@ -824,6 +871,45 @@ defineExpose({ reload: loadAll })
       <template #footer>
         <ElButton @click="taskAttachmentVisible = false">
           关闭
+        </ElButton>
+      </template>
+    </ElDialog>
+
+    <ElDialog
+      v-model="previewVisible"
+      :title="previewTarget?.originalName ?? '资料预览'"
+      width="min(100%, var(--ui-drawer-width))"
+    >
+      <div class="p3-preview">
+        <img
+          v-if="previewKind === 'image' && previewUrl"
+          :src="previewUrl"
+          :alt="previewTarget?.originalName ?? '资料预览'"
+          class="p3-preview__image"
+        >
+        <iframe
+          v-else-if="previewKind === 'pdf' && previewUrl"
+          :src="previewUrl"
+          :title="previewTarget?.originalName ?? '资料预览'"
+          class="p3-preview__frame"
+        />
+        <p
+          v-else
+          class="p3-note"
+        >
+          该类型不支持在线预览，请下载后查看。
+        </p>
+      </div>
+      <template #footer>
+        <ElButton @click="previewVisible = false">
+          关闭
+        </ElButton>
+        <ElButton
+          v-if="previewTarget"
+          type="primary"
+          @click="download(previewTarget)"
+        >
+          下载
         </ElButton>
       </template>
     </ElDialog>
@@ -1021,6 +1107,28 @@ defineExpose({ reload: loadAll })
 .p3-note {
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-small);
+}
+
+/* P3.1：预览区按内容自适应高度，窄屏不横向溢出 */
+.p3-preview {
+  display: flex;
+  justify-content: center;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.p3-preview__image {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--ui-radius-control);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.p3-preview__frame {
+  width: 100%;
+  height: 70vh;
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-control);
 }
 
 .p3-material-qty {
