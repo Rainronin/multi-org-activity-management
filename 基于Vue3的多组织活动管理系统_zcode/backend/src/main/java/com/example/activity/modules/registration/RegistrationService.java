@@ -20,6 +20,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RegistrationService {
 
+    /** 首期单次导出上限：名单为小规模组织场景，超过时提示缩小筛选范围。 */
+    private static final int MAX_EXPORT_ROWS = 5000;
+
     private final RegistrationMapper registrationMapper;
     private final ActivityMapper activityMapper;
     private final OrganizationMapper organizationMapper;
@@ -246,6 +249,22 @@ public class RegistrationService {
         return registrationMapper.listByAccount(accountId).stream()
             .map(r -> toItem(r, resolveUsername(accountId)))
             .toList();
+    }
+
+    /**
+     * 名单导出（P4.3）：权限与状态筛选沿用管理名单规则（组织负责人或本活动负责人），
+     * 导出字段固定为报名主记录，不含联系方式等额外信息；导出操作写审计。
+     * 返回值由 Controller 转为 CSV，单元格文本按电子表格公式注入规则转义。
+     */
+    @Transactional
+    public List<RegistrationItem> exportForReview(
+        Long accountId, Long orgId, Long activityId, String status) {
+        requireReviewPermission(orgId, activityId, accountId);
+        String filter = status == null || status.isBlank() ? null : status;
+        List<Registration> rows = registrationMapper.listByActivity(activityId, filter, 0, MAX_EXPORT_ROWS);
+        auditService.record(accountId, "REGISTRATION", "REGISTRATION_EXPORTED", "activity:" + activityId,
+            null, java.util.Map.of("rows", rows.size(), "status", filter == null ? "ALL" : filter));
+        return rows.stream().map(r -> toItem(r, resolveUsername(r.getAccountId()))).toList();
     }
 
     /**

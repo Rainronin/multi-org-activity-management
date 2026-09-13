@@ -84,6 +84,26 @@
           AND owner_member_id = #{memberId}
     </select>
 
+    <!--
+      S11：未登录公开浏览只取“已确认（当前即已发布）且报名范围 PUBLIC”的活动。
+      内部活动面向本组织成员，通过组织内端点访问，不进入公开信息流。
+    -->
+    <select id="listPublicApproved" resultType="com.example.activity.modules.activity.Activity">
+        SELECT <include refid="baseColumns" />
+        FROM activity
+        WHERE status = 'APPROVED'
+          AND registration_scope = 'PUBLIC'
+        ORDER BY start_time ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countPublicApproved" resultType="long">
+        SELECT COUNT(*)
+        FROM activity
+        WHERE status = 'APPROVED'
+          AND registration_scope = 'PUBLIC'
+    </select>
+
     <update id="updateProposal">
         UPDATE activity
         SET proposal = #{proposal},

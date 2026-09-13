@@ -62,6 +62,11 @@ public interface ActivityMapper {
     /** S07-B：退出／移除前的活动职责清点（该成员仍负责的未归档活动数）。 */
     int countOwnedByMember(@Param("orgId") Long orgId, @Param("memberId") Long memberId);
 
+    /** S11：公开浏览只暴露已确认活动，按开始时间排序。 */
+    List<Activity> listPublicApproved(@Param("offset") long offset, @Param("limit") int limit);
+
+    long countPublicApproved();
+
     /** S02：报名开关（独立于申请时间窗）；开关仅影响新申请，不影响既有申请审核。 */
     int updateRegistrationOpen(
         @Param("id") Long id, @Param("orgId") Long orgId, @Param("open") boolean open);

@@ -86,7 +86,7 @@ public class SecurityConfig {
         http
             .authenticationManager(authenticationManager)
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.GET, "/api/health", "/api/auth/csrf").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/health", "/api/auth/csrf", "/api/public/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/recover").permitAll()
                 .anyRequest().authenticated())
             .csrf(csrf -> csrf

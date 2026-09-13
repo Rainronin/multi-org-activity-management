@@ -13,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -136,5 +137,64 @@ public class RegistrationController {
             .stream().map(this::toResponse).toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new RegistrationsResponse(items, 1, 20, items.size()));
+    }
+
+    /**
+     * 名单导出（P4.3）：权限与筛选同管理名单；CSV 文本按电子表格公式注入规则转义，
+     * 防止用户填入的姓名／备注被表格软件当作公式执行。
+     */
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/registrations/export")
+    public ResponseEntity<byte[]> export(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @RequestParam(name = "status", required = false) String status) {
+        List<RegistrationService.RegistrationItem> rows =
+            registrationService.exportForReview(principal.getAccountId(), orgId, activityId, status);
+        StringBuilder csv = new StringBuilder("\uFEFF");
+        csv.append("报名ID,账号,展示姓名,状态,报名时间,处理时间,取消原因,备注\r\n");
+        for (RegistrationService.RegistrationItem item : rows) {
+            csv.append(csvCell(String.valueOf(item.registrationId()))).append(',')
+                .append(csvCell(item.accountUsername())).append(',')
+                .append(csvCell(item.displayName())).append(',')
+                .append(csvCell(statusLabel(item.status()))).append(',')
+                .append(csvCell(formatTime(item.createdAt()))).append(',')
+                .append(csvCell(formatTime(item.decidedAt()))).append(',')
+                .append(csvCell(item.cancelReason())).append(',')
+                .append(csvCell(item.note())).append("\r\n");
+        }
+        byte[] body = csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String filename = "registrations-%d.csv".formatted(activityId);
+        return ResponseEntity.ok()
+            .cacheControl(CacheControl.noStore())
+            .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
+            .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                org.springframework.http.ContentDisposition.attachment()
+                    .filename(filename, java.nio.charset.StandardCharsets.UTF_8).build().toString())
+            .body(body);
+    }
+
+    private String formatTime(java.time.OffsetDateTime value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private String statusLabel(String status) {
+        return switch (status) {
+            case Registration.STATUS_PENDING -> "待审核";
+            case Registration.STATUS_APPROVED -> "已通过";
+            case Registration.STATUS_REJECTED -> "已驳回";
+            case Registration.STATUS_CANCELLED_SELF -> "本人取消";
+            case Registration.STATUS_CANCELLED_ORG -> "组织取消";
+            default -> status;
+        };
+    }
+
+    /** CSV 单元格：加引号转义，并把可能被表格软件当公式的起始字符前置单引号。 */
+    private String csvCell(String value) {
+        String text = value == null ? "" : value;
+        if (!text.isEmpty() && "=+-@\t\r".indexOf(text.charAt(0)) >= 0) {
+            text = "'" + text;
+        }
+        return '"' + text.replace("\"", "\"\"") + '"';
     }
 }
