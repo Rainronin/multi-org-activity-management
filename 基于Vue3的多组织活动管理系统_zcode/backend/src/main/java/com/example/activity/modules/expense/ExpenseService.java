@@ -190,7 +190,7 @@ public class ExpenseService {
         for (Long owner : memberMapper.listActiveOwnerAccountIds(orgId)) {
             if (!owner.equals(accountId)) {
                 notifyIntent(owner, "EXPENSE_SUBMITTED", activityId,
-                    "活动「" + activityName + "」有 1 笔支出待确认。");
+                    "活动「" + activityName + "」有 1 笔支出待确认。", "expense:" + expenseId + ":submitted");
             }
         }
         return toItem(expenseMapper.findById(expenseId));
@@ -231,7 +231,8 @@ public class ExpenseService {
             Map.of("activityId", activityId, "amount", money(expense.getAmount()),
                 "approvedTotal", money(projected), "overBudget", projected.compareTo(budget) > 0));
         notifyIntent(expense.getSubmittedBy() == null ? expense.getCreatedBy() : expense.getSubmittedBy(),
-            "EXPENSE_APPROVED", activityId, "你登记的支出已确认。", accountId);
+            "EXPENSE_APPROVED", activityId, "你登记的支出已确认。", accountId,
+            "expense:" + expenseId + ":approved");
         return toItem(expenseMapper.findById(expenseId));
     }
 
@@ -252,7 +253,8 @@ public class ExpenseService {
         auditService.record(accountId, "EXPENSE", "EXPENSE_REJECTED", "expense:" + expenseId, reason,
             Map.of("activityId", activityId));
         notifyIntent(expense.getSubmittedBy() == null ? expense.getCreatedBy() : expense.getSubmittedBy(),
-            "EXPENSE_REJECTED", activityId, "你登记的支出被驳回：" + (reason == null ? "" : reason), accountId);
+            "EXPENSE_REJECTED", activityId, "你登记的支出被驳回：" + (reason == null ? "" : reason), accountId,
+            "expense:" + expenseId + ":rejected");
         return toItem(expenseMapper.findById(expenseId));
     }
 
@@ -450,17 +452,21 @@ public class ExpenseService {
         return activity == null ? "（活动已不可见）" : activity.getName();
     }
 
-    private void notifyIntent(Long recipient, String type, Long activityId, String payload) {
-        notifyIntent(recipient, type, activityId, payload, null);
+    private void notifyIntent(Long recipient, String type, Long activityId, String payload, String sourceKey) {
+        notifyIntent(recipient, type, activityId, payload, null, sourceKey);
     }
 
-    /** 站内提示来源与业务同事务落库（计划书 6.7）；操作者本人不给自己发提示。 */
-    private void notifyIntent(Long recipient, String type, Long activityId, String payload, Long actorAccountId) {
+    /**
+     * 站内提示来源与业务同事务落库（计划书 6.7）；操作者本人不给自己发提示；
+     * {@code sourceKey} 标识来源操作，与接收账号、类型一起唯一，重放不重复（P7.3）。
+     */
+    private void notifyIntent(Long recipient, String type, Long activityId, String payload,
+        Long actorAccountId, String sourceKey) {
         if (recipient == null || recipient.equals(actorAccountId)) {
             return;
         }
         notificationMapper.insert(recipient, type, activityId,
-            payload.length() > 500 ? payload.substring(0, 500) : payload);
+            payload.length() > 500 ? payload.substring(0, 500) : payload, sourceKey);
     }
 
     private ExpenseItem toItem(Expense expense) {

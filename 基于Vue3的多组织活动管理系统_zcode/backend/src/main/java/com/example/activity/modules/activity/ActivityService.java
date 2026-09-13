@@ -410,13 +410,14 @@ public class ActivityService {
             activity.getCreatedAt(), activity.getUpdatedAt());
     }
 
-    /** P6：站内提示只有必要摘要；接收人按当次操作固定（计划书 6.7）。 */
-    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload) {
+    /** P6：站内提示只有必要摘要；接收人按当次操作固定（计划书 6.7）；来源操作唯一防重。 */
+    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload,
+        String sourceKey) {
         if (recipientAccountId == null) {
             return;
         }
         notificationMapper.insert(recipientAccountId, type, activityId,
-            payload.length() > 500 ? payload.substring(0, 500) : payload);
+            payload.length() > 500 ? payload.substring(0, 500) : payload, sourceKey);
     }
 
     // ==================== P6：执行、取消、总结与归档 ====================
@@ -534,7 +535,8 @@ public class ActivityService {
         int cancelledTasks = taskMapper.cancelOpenTasks(activityId);
         for (Long recipient : affected) {
             notifyIntent(recipient, "ACTIVITY_CANCELLED", activityId,
-                "活动「" + activity.getName() + "」已取消：" + reason.trim() + "（负责人将处理遗留事项）");
+                "活动「" + activity.getName() + "」已取消：" + reason.trim() + "（负责人将处理遗留事项）",
+                "activity:" + activityId + ":cancelled");
         }
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_CANCELLED", "activity:" + activityId, reason,
             java.util.Map.of("registrations", affected.size(), "tasks", cancelledTasks));
@@ -972,8 +974,9 @@ public class ActivityService {
             note, java.util.Map.of("confirmType", confirmType));
         // F08：重新确认属关键活动变更，给既有报名者留下来源意图（计划书 6.1：重新通过后通知已报名者）
         for (Long recipient : registrationMapper.listNotifiableAccountIds(activityId)) {
-            notificationMapper.insert(recipient, "ACTIVITY_RECONFIRMED", activityId,
-                "你报名的活动「" + activity.getName() + "」已重新确认，报名开关默认关闭，请以最新安排为准。");
+            notifyIntent(recipient, "ACTIVITY_RECONFIRMED", activityId,
+                "你报名的活动「" + activity.getName() + "」已重新确认，报名开关默认关闭，请以最新安排为准。",
+                "activity:" + activityId + ":reconfirmed:" + activity.getVersion());
         }
         return toItem(activityMapper.findById(activityId));
     }

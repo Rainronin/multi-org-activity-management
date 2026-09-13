@@ -2,9 +2,55 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.activity.modules.notification.NotificationMapper">
 
+    <sql id="baseColumns">
+        id, recipient_account_id, type, activity_id, source_key, payload, created_at, read_at
+    </sql>
+
+    <!-- P7.3：来源操作重复时忽略，保证不漏发也不重复产生有效提示 -->
     <insert id="insert">
-        INSERT INTO notification (recipient_account_id, type, activity_id, payload)
-        VALUES (#{recipientAccountId}, #{type}, #{activityId}, #{payload})
+        INSERT IGNORE INTO notification (recipient_account_id, type, activity_id, source_key, payload)
+        VALUES (#{recipientAccountId}, #{type}, #{activityId}, #{sourceKey}, #{payload})
     </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.notification.Notification">
+        SELECT <include refid="baseColumns" />
+        FROM notification
+        WHERE id = #{id}
+    </select>
+
+    <select id="listByAccount" resultType="com.example.activity.modules.notification.Notification">
+        SELECT <include refid="baseColumns" />
+        FROM notification
+        WHERE recipient_account_id = #{accountId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByAccount" resultType="long">
+        SELECT COUNT(*)
+        FROM notification
+        WHERE recipient_account_id = #{accountId}
+    </select>
+
+    <select id="countUnread" resultType="long">
+        SELECT COUNT(*)
+        FROM notification
+        WHERE recipient_account_id = #{accountId}
+          AND read_at IS NULL
+    </select>
+
+    <update id="markRead">
+        UPDATE notification
+        SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP(6))
+        WHERE id = #{id}
+          AND recipient_account_id = #{accountId}
+    </update>
+
+    <update id="markAllRead">
+        UPDATE notification
+        SET read_at = CURRENT_TIMESTAMP(6)
+        WHERE recipient_account_id = #{accountId}
+          AND read_at IS NULL
+    </update>
 
 </mapper>

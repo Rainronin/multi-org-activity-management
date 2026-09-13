@@ -244,7 +244,7 @@ public class TaskService {
             payload = payload.substring(0, 500);
         }
         notificationMapper.insert(assignee.getAccountId(), "TASK_ASSIGNED",
-            activityId, payload);
+            activityId, payload, "task:" + task.getId() + ":" + task.getVersion());
     }
 
     private Task requireTask(Long orgId, Long activityId, Long taskId) {

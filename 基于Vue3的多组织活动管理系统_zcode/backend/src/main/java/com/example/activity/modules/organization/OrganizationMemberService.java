@@ -240,7 +240,8 @@ public class OrganizationMemberService {
                 java.util.Map.of("activityId", registration.getActivityId(),
                     "accountId", memberAccountId, "fromStatus", registration.getStatus()));
             notificationMapper.insert(memberAccountId, "REGISTRATION_CANCELLED",
-                registration.getActivityId(), "你已退出组织，1 条内部活动报名已取消：" + reason);
+                registration.getActivityId(), "你已退出组织，1 条内部活动报名已取消：" + reason,
+                "registration:" + registration.getId() + ":leave");
         }
     }
 

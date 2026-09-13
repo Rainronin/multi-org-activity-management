@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.workbench.WorkbenchMapper">
+
+    <!-- 本人负责活动过滤：ownerMemberId 为空表示组织范围 -->
+    <sql id="activityScope">
+        a.org_id = #{orgId}
+        <if test="ownerMemberId != null">
+            AND a.owner_member_id = #{ownerMemberId}
+        </if>
+    </sql>
+
+    <select id="countTasks" resultType="long">
+        SELECT COUNT(*)
+        FROM task t
+        JOIN activity a ON a.id = t.activity_id
+        WHERE <include refid="activityScope" />
+        <if test="assigneeMemberId != null">
+            AND t.assignee_member_id = #{assigneeMemberId}
+        </if>
+        <choose>
+            <when test="mode == 'OPEN'">
+                AND t.status IN ('PENDING', 'IN_PROGRESS')
+            </when>
+            <when test="mode == 'OVERDUE'">
+                AND t.status IN ('PENDING', 'IN_PROGRESS')
+                AND t.due_at IS NOT NULL
+                AND t.due_at &lt; #{now}
+            </when>
+            <when test="mode == 'NOT_CANCELLED'">
+                AND t.status &lt;&gt; 'CANCELLED'
+            </when>
+            <when test="mode == 'COMPLETED'">
+                AND t.status = 'COMPLETED'
+            </when>
+            <otherwise>
+                AND 1 = 0
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="listOverdueTasks" resultType="com.example.activity.modules.workbench.WorkbenchMapper$WorkbenchTodoRow">
+        SELECT t.title AS title,
+               CONCAT('截止 ', DATE_FORMAT(t.due_at, '%Y-%m-%d %H:%i'), '，负责人 ', COALESCE(ma.username, '—')) AS detail,
+               a.id AS activityId
+        FROM task t
+        JOIN activity a ON a.id = t.activity_id
+        LEFT JOIN organization_member m ON m.id = t.assignee_member_id
+        LEFT JOIN account ma ON ma.id = m.account_id
+        WHERE <include refid="activityScope" />
+          AND t.status IN ('PENDING', 'IN_PROGRESS')
+          AND t.due_at IS NOT NULL
+          AND t.due_at &lt; #{now}
+          <if test="assigneeMemberId != null">
+            AND t.assignee_member_id = #{assigneeMemberId}
+          </if>
+        ORDER BY t.due_at ASC, t.id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="listPendingRegistrations" resultType="com.example.activity.modules.workbench.WorkbenchMapper$WorkbenchTodoRow">
+        SELECT CONCAT('待审报名：', r.display_name) AS title,
+               CONCAT('活动「', a.name, '」于 ', DATE_FORMAT(r.created_at, '%Y-%m-%d %H:%i'), ' 提交') AS detail,
+               a.id AS activityId
+        FROM registration r
+        JOIN activity a ON a.id = r.activity_id
+        WHERE <include refid="activityScope" />
+          AND r.status = 'PENDING'
+        ORDER BY r.created_at ASC, r.id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="countPendingRegistrations" resultType="long">
+        SELECT COUNT(*)
+        FROM registration r
+        JOIN activity a ON a.id = r.activity_id
+        WHERE <include refid="activityScope" />
+          AND r.status = 'PENDING'
+    </select>
+
+    <select id="listPendingExpenses" resultType="com.example.activity.modules.workbench.WorkbenchMapper$WorkbenchTodoRow">
+        SELECT CONCAT('待确认支出：', e.purpose) AS title,
+               CONCAT('活动「', a.name, '」金额 ', FORMAT(e.amount, 2), ' 元') AS detail,
+               a.id AS activityId
+        FROM expense e
+        JOIN activity a ON a.id = e.activity_id
+        WHERE a.org_id = #{orgId}
+          AND e.status = 'PENDING'
+        ORDER BY e.submitted_at ASC, e.id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="countPendingExpenses" resultType="long">
+        SELECT COUNT(*)
+        FROM expense e
+        JOIN activity a ON a.id = e.activity_id
+        WHERE a.org_id = #{orgId}
+          AND e.status = 'PENDING'
+    </select>
+
+    <select id="listReviewingActivities" resultType="com.example.activity.modules.workbench.WorkbenchMapper$WorkbenchTodoRow">
+        SELECT CONCAT('待归档：', a.name) AS title,
+               CASE
+                   WHEN a.summary_confirmed_at IS NULL THEN '总结尚未确认'
+                   ELSE '总结已确认，可核对归档条件'
+               END AS detail,
+               a.id AS activityId
+        FROM activity a
+        WHERE a.org_id = #{orgId}
+          AND a.status = 'REVIEWING'
+        ORDER BY a.ended_at ASC, a.id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="countEffectiveRegistrations" resultType="long">
+        SELECT COUNT(*)
+        FROM registration r
+        JOIN activity a ON a.id = r.activity_id
+        WHERE <include refid="activityScope" />
+          AND r.status IN ('PENDING', 'APPROVED')
+    </select>
+
+    <!-- 本人报名：账号维度，不以负责人身份过滤 -->
+    <select id="countMyEffectiveRegistrations" resultType="long">
+        SELECT COUNT(*)
+        FROM registration r
+        JOIN activity a ON a.id = r.activity_id
+        WHERE a.org_id = #{orgId}
+          AND r.account_id = #{accountId}
+          AND r.status IN ('PENDING', 'APPROVED')
+    </select>
+
+    <select id="sumCapacity" resultType="long">
+        SELECT COALESCE(SUM(a.capacity), 0)
+        FROM activity a
+        WHERE <include refid="activityScope" />
+          AND a.capacity IS NOT NULL
+          AND a.status IN ('APPROVED', 'EXECUTING', 'REVIEWING')
+    </select>
+
+    <select id="countApprovedRegistrations" resultType="long">        SELECT COUNT(*)
+        FROM registration r
+        JOIN activity a ON a.id = r.activity_id
+        WHERE <include refid="activityScope" />
+          AND r.status = 'APPROVED'
+    </select>
+
+    <select id="sumExpense" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(e.amount), 0.00)
+        FROM expense e
+        JOIN activity a ON a.id = e.activity_id
+        WHERE <include refid="activityScope" />
+          AND e.status = #{status}
+    </select>
+
+    <select id="sumBudget" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(a.budget), 0.00)
+        FROM activity a
+        WHERE <include refid="activityScope" />
+          AND a.status IN ('APPROVED', 'EXECUTING', 'REVIEWING')
+    </select>
+
+    <select id="countFeedback" resultType="long">
+        SELECT COUNT(*)
+        FROM feedback f
+        JOIN activity a ON a.id = f.activity_id
+        WHERE <include refid="activityScope" />
+    </select>
+
+    <select id="averageFeedback" resultType="java.math.BigDecimal">
+        SELECT AVG(f.rating)
+        FROM feedback f
+        JOIN activity a ON a.id = f.activity_id
+        WHERE <include refid="activityScope" />
+    </select>
+
+</mapper>

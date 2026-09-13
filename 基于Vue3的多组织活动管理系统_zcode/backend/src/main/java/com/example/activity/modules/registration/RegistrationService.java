@@ -52,15 +52,16 @@ public class RegistrationService {
     }
 
     /**
-     * F08：站内提示来源意图与业务同事务落库（计划书 6.7：业务提交时保存必要接收人与来源意图）。
-     * 展示与补建随 P7，这里只保证来源不丢。
+     * F08／P7.3：站内提示来源意图与业务同事务落库（计划书 6.7：业务提交时保存必要接收人与来源意图）。
+     * {@code sourceKey} 标识来源操作，与接收账号、类型一起唯一，重放不产生重复提示。
      */
-    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload) {
+    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload,
+        String sourceKey) {
         if (recipientAccountId == null) {
             return;
         }
         notificationMapper.insert(recipientAccountId, type, activityId,
-            payload.length() > 500 ? payload.substring(0, 500) : payload);
+            payload.length() > 500 ? payload.substring(0, 500) : payload, sourceKey);
     }
 
     /**
@@ -174,7 +175,8 @@ public class RegistrationService {
         auditService.record(approverAccountId, "REGISTRATION", "REGISTRATION_APPROVED",
             "registration:" + registrationId, null, java.util.Map.of("activityId", activityId));
         notifyIntent(registration.getAccountId(), "REGISTRATION_APPROVED", activityId,
-            "你报名的活动「" + activity.getName() + "」已通过审核。");
+            "你报名的活动「" + activity.getName() + "」已通过审核。",
+            "registration:" + registrationId + ":approved");
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
@@ -196,7 +198,8 @@ public class RegistrationService {
             "registration:" + registrationId, reason, null);
         notifyIntent(registration.getAccountId(), "REGISTRATION_REJECTED", activityId,
             "你报名的活动「" + activity.getName() + "」未通过审核"
-                + (reason == null || reason.isBlank() ? "。" : "：" + reason));
+                + (reason == null || reason.isBlank() ? "。" : "：" + reason),
+            "registration:" + registrationId + ":rejected");
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
@@ -243,7 +246,8 @@ public class RegistrationService {
         // F08：本人取消属关键活动变更，给活动负责人留下来源意图（组织负责人可在名单中看到结果）
         OrganizationMember owner = memberMapper.findById(activity.getOwnerMemberId());
         notifyIntent(owner == null ? null : owner.getAccountId(), "REGISTRATION_CANCELLED_SELF", activityId,
-            resolveUsername(accountId) + " 取消了活动「" + activity.getName() + "」的报名。");
+            resolveUsername(accountId) + " 取消了活动「" + activity.getName() + "」的报名。",
+            "registration:" + registration.getId() + ":cancelled-self");
     }
 
     /** 管理取消：组织负责人或活动负责人（S04），活动进入执行前可说明原因取消（计划书 6.2）。 */
@@ -268,7 +272,8 @@ public class RegistrationService {
             "registration:" + registrationId, reason, java.util.Map.of("activityId", activityId));
         notifyIntent(registration.getAccountId(), "REGISTRATION_CANCELLED_ORG", activityId,
             "你在活动「" + activity.getName() + "」的报名已被组织取消"
-                + (reason == null || reason.isBlank() ? "。" : "：" + reason));
+                + (reason == null || reason.isBlank() ? "。" : "：" + reason),
+            "registration:" + registrationId + ":cancelled-org");
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
