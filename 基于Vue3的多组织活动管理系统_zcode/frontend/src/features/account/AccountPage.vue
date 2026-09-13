@@ -14,6 +14,7 @@ import { formatDateTime } from '../activity/types'
 import { roleLabel } from '../organization/types'
 import type { OrganizationDirectoryItem } from '../organization/types'
 import RecoveryCodeDialog from './RecoveryCodeDialog.vue'
+import NotificationsSection from '../notification/NotificationsSection.vue'
 import CreateOrganizationDialog from '../organization/CreateOrganizationDialog.vue'
 import JoinByCodeDialog from '../organization/JoinByCodeDialog.vue'
 
@@ -396,6 +397,9 @@ async function handleLogout() {
         {{ cancellingError }}
       </p>
     </section>
+
+    <!-- P7.3 站内提示：账号维度，列表与跳转都由后端按当前权限复核 -->
+    <NotificationsSection />
 
     <section class="account-page__card">
       <div class="account-page__card-head">

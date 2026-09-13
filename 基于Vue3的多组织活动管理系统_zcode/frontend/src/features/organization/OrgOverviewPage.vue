@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ElButton, ElTag } from 'element-plus'
 import { roleLabel, type OrganizationDetail } from './types'
+import WorkbenchSection from '../workbench/WorkbenchSection.vue'
 
 const props = defineProps<{
   orgDetail: OrganizationDetail | null
@@ -77,9 +78,12 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
         </div>
       </dl>
       <p class="overview-card__note">
-        成员邀请与成员管理已开放；活动管理等能力将随开发阶段逐项开放。
+        成员邀请与成员管理已开放；工作台按当前身份展示待办与指标。
       </p>
     </section>
+
+    <!-- P7.1／P7.2 工作台：按身份展示卡片与待办，明细跳转后重新鉴权 -->
+    <WorkbenchSection v-if="state === 'ready' && orgDetail" />
 
     <section
       v-else
