@@ -21,4 +21,7 @@ public interface MaterialMapper {
 
     /** 只读职责查询：未就绪且未取消的物资责任数。 */
     int countOpenByAssignee(@Param("orgId") Long orgId, @Param("assigneeMemberId") Long assigneeMemberId);
+
+    /** S07：草稿删除前的依赖检查。 */
+    int countByActivity(@Param("activityId") Long activityId);
 }

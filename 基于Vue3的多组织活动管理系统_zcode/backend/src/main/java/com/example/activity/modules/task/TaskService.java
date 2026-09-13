@@ -64,12 +64,21 @@ public class TaskService {
             || ctx.actor().getId().equals(ctx.activity().getOwnerMemberId());
     }
 
+    /** S07／计划书 6.1：调整期待确认期间任务只读，避免继续修改筹备数据。 */
+    private void requireNotPendingReconfirmation(Context ctx) {
+        if (ctx.activity().isPendingReconfirmation()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
+                "活动已撤回到草稿等待重新确认，期间任务只读；重新确认后再修改。");
+        }
+    }
+
     @Transactional
     public TaskItem create(Long accountId, Long orgId, Long activityId, Task draft) {
         Context ctx = requireVisibleContext(accountId, orgId, activityId);
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以创建任务。");
         }
+        requireNotPendingReconfirmation(ctx);
         validateAssignee(orgId, draft.getAssigneeMemberId());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
@@ -104,6 +113,7 @@ public class TaskService {
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编辑任务。");
         }
+        requireNotPendingReconfirmation(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         if (Task.STATUS_COMPLETED.equals(task.getStatus()) || Task.STATUS_CANCELLED.equals(task.getStatus())) {
             throw conflict("TASK_STATE_CONFLICT", "任务已完成或已取消", "如需调整请先重新打开任务。");
@@ -129,6 +139,7 @@ public class TaskService {
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以取消或重新打开任务。");
         }
+        requireNotPendingReconfirmation(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         transition(task, toStatus, accountId);
         return toItem(taskMapper.findById(taskId));
@@ -138,6 +149,7 @@ public class TaskService {
     @Transactional
     public TaskItem advanceOwn(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
         Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        requireNotPendingReconfirmation(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         if (!task.getAssigneeMemberId().equals(ctx.actor().getId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "只能推进本人任务。");

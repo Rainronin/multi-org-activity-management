@@ -54,6 +54,11 @@ public class MaterialService {
         if (!canManage) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以维护物资。");
         }
+        // S07／计划书 6.1：调整期待确认期间物资只读
+        if (activity.isPendingReconfirmation()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
+                "活动已撤回到草稿等待重新确认，期间物资只读；重新确认后再维护。");
+        }
         return new Context(actor, activity);
     }
 

@@ -30,6 +30,14 @@ public class Activity {
         return startTime == null || OffsetDateTime.now().isBefore(startTime);
     }
 
+    /**
+     * S07 调整期待确认：曾通过立项（confirmed_at 非空）后又回到草稿。
+     * 该期间任务、物资只读，活动也不能按“从未确认的初始草稿”删除。
+     */
+    public boolean isPendingReconfirmation() {
+        return STATUS_DRAFT.equals(status) && confirmedAt != null;
+    }
+
     private Long id;
     private Long orgId;
     private String name;
@@ -51,6 +59,8 @@ public class Activity {
     private Long submittedBy;
     private Long confirmedBy;
     private String confirmType;
+    /** S07：最近一次立项确认时间；撤回后仍保留，用于识别调整期待确认状态。 */
+    private OffsetDateTime confirmedAt;
 
     private Long createdBy;
     private OffsetDateTime createdAt;
@@ -214,6 +224,14 @@ public class Activity {
 
     public void setConfirmType(String confirmType) {
         this.confirmType = confirmType;
+    }
+
+    public OffsetDateTime getConfirmedAt() {
+        return confirmedAt;
+    }
+
+    public void setConfirmedAt(OffsetDateTime confirmedAt) {
+        this.confirmedAt = confirmedAt;
     }
 
     public Long getCreatedBy() {

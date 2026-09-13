@@ -51,4 +51,11 @@
           AND status IN ('PENDING', 'IN_PROGRESS')
     </select>
 
+    <!-- S07：草稿删除前的依赖检查（只读查询，不写物资表） -->
+    <select id="countByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM material
+        WHERE activity_id = #{activityId}
+    </select>
+
 </mapper>

@@ -1,4 +1,4 @@
-// 修复复核观察脚本（初版针对 8bfa94c，本轮已更新 S02／S04／S05／S06 检查项）：
+// 修复复核观察脚本（初版针对 8bfa94c；第二轮更新 S02／S04／S05／S06；第三轮更新 S07 关键变更冻结）：
 // 仅可针对显式连接 activity_test 的后端运行，会新增专用测试数据。
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -101,12 +101,22 @@ try {
 
   const directComplete = await call(member, 'POST', `${aPath}/tasks/${task.taskId}/advance`, { toStatus: 'COMPLETED' })
   console.log(JSON.stringify({ check: '待处理直接完成', status: directComplete.status() }))
+
+  // S07 关键变更冻结：撤回待重新确认期间任务只读、范围锁定、已确认过的活动不能删除
   await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排' })
   await json(member, 'GET', '/api/me/registrations')
   const approvedWhileDraft = await call(owner, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
   const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC' })
   const taskWhileDraft = await call(owner, 'POST', `${aPath}/tasks`, { title: '调整期新增任务', assigneeMemberId: ownerMember })
-  console.log(JSON.stringify({ check: '关键变更冻结', changeScopeWithRegistrations: patch.status(), createTaskInWithdrawnDraft: taskWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status() }))
+  const materialWhileDraft = await call(owner, 'POST', `${aPath}/materials`, { name: '调整期物资', quantity: 1, unit: '条' })
+  const deleteWithdrawn = await call(owner, 'DELETE', aPath)
+  const patchBody = await patch.json()
+  const deleteBody = await deleteWithdrawn.json()
+  console.log(JSON.stringify({ check: 'S07 关键变更冻结', changeScopeOrCapacityWithRegistrations: patch.status(), patchCode: patchBody.code, createTaskInWithdrawnDraft: taskWhileDraft.status(), createMaterialInWithdrawnDraft: materialWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status(), deleteWithdrawnConfirmed: deleteWithdrawn.status(), deleteCode: deleteBody.code }))
+
+  // 撤回后仍可调整容量到与已通过人数一致（容量下限规则）
+  const capacityOnly = await call(owner, 'PATCH', aPath, { capacity: 1 })
+  console.log(JSON.stringify({ check: 'S07 调整期容量调整', status: capacityOnly.status(), capacity: (await capacityOnly.json()).capacity }))
 
   const past = await createActivity('已到开始时间的活动')
   await approveActivity(past)
@@ -133,6 +143,6 @@ try {
   await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整' })
   console.log(JSON.stringify({ check: '删除已确认后撤回活动', status: (await call(owner, 'DELETE', `${path}/${deletable.id}`)).status() }))
   
-  console.log(JSON.stringify({ check: '隔离边界', database: 'activity_test', newAccounts: 3, newOrganizations: 2, uploadDirectory: '验证截图/audit-p234-files' }))
+  console.log(JSON.stringify({ check: '隔离边界', database: 'activity_test', newAccounts: usernames.length, newOrganizations: 2, uploadDirectory: '验证截图/audit-p234-files' }))
 } finally { await browser.close() }
 

@@ -69,6 +69,21 @@
           AND status = 'APPROVED'
     </select>
 
+    <!-- S07：报名范围锁定：已有任意报名主记录（含已取消／已驳回）后不得切换内部／公开 -->
+    <select id="countAnyByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM registration
+        WHERE activity_id = #{activityId}
+    </select>
+
+    <!-- S07：有效报名（未取消、未驳回）：草稿删除依赖检查 -->
+    <select id="countEffective" resultType="int">
+        SELECT COUNT(*)
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND status IN ('PENDING', 'APPROVED')
+    </select>
+
     <update id="reapply">
         UPDATE registration
         SET display_name = #{displayName},

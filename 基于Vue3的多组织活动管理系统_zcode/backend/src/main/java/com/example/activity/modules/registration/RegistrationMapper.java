@@ -34,6 +34,12 @@ public interface RegistrationMapper {
     /** 名额校验：当前有效报名数（锁内调用）。 */
     int countApproved(@Param("activityId") Long activityId);
 
+    /** S07：报名范围锁定用——活动下任意主记录（含已取消／已驳回）数量。 */
+    int countAnyByActivity(@Param("activityId") Long activityId);
+
+    /** S07：草稿删除依赖检查用——未取消且未驳回的有效报名数。 */
+    int countEffective(@Param("activityId") Long activityId);
+
     /** 重新申请：更新主记录状态并保留历史（不新增行）。 */
     /** 取消：支持从 PENDING 或 APPROVED 源状态取消（S03）。 */
     int cancel(

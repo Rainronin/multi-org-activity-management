@@ -267,7 +267,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
             .andExpect(jsonPath("$.status").value("DRAFT"))
             .andExpect(jsonPath("$.reviewNote").value("预算明细不足，请补充"));
 
-        // 普通组织成员（非活动负责人）不能删除他人草稿；负责人可删除自己的草稿
+        // 从未通过立项确认的草稿仍可删除（普通成员不能删他人草稿由 OWNER 入口限制）
         Long anotherActivityId = createMinimalDraft(owner, orgId, memberIdOf(orgId, owner.username()));
         mockMvc.perform(delete("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session()))

@@ -36,4 +36,12 @@
           AND deleted_at IS NULL
     </update>
 
+    <!-- S07：草稿删除前的依赖检查 -->
+    <select id="countByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM attachment
+        WHERE activity_id = #{activityId}
+          AND deleted_at IS NULL
+    </select>
+
 </mapper>

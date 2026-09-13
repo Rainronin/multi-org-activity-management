@@ -23,7 +23,7 @@ public class ActivityService {
     public record ActivityItem(
         Long activityId, String name, String description, String ownerMemberId, String ownerUsername,
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
-        OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
+        OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
         String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, boolean registrationOpen,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
@@ -36,16 +36,29 @@ public class ActivityService {
     private final OrganizationMemberMapper memberMapper;
     private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
     private final AuditService auditService;
+    // 只读依赖查询：activity → task/material/attachment/registration 单向依赖（后端架构 2.1）
+    private final com.example.activity.modules.task.TaskMapper taskMapper;
+    private final com.example.activity.modules.material.MaterialMapper materialMapper;
+    private final com.example.activity.modules.attachment.AttachmentMapper attachmentMapper;
+    private final com.example.activity.modules.registration.RegistrationMapper registrationMapper;
 
     public ActivityService(
         ActivityMapper activityMapper,
         OrganizationMemberMapper memberMapper,
         com.example.activity.modules.organization.OrganizationMapper organizationMapper,
-        AuditService auditService) {
+        AuditService auditService,
+        com.example.activity.modules.task.TaskMapper taskMapper,
+        com.example.activity.modules.material.MaterialMapper materialMapper,
+        com.example.activity.modules.attachment.AttachmentMapper attachmentMapper,
+        com.example.activity.modules.registration.RegistrationMapper registrationMapper) {
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
         this.organizationMapper = organizationMapper;
         this.auditService = auditService;
+        this.taskMapper = taskMapper;
+        this.materialMapper = materialMapper;
+        this.attachmentMapper = attachmentMapper;
+        this.registrationMapper = registrationMapper;
     }
 
     /** 创建草稿：仅组织负责人；负责人须为本组织有效成员（可为创建者本人）。 */
@@ -143,6 +156,23 @@ public class ActivityService {
             }
             validateOwnerMember(orgId, patch.getOwnerMemberId());
         }
+        // S07：已有报名后禁止切换内部／公开范围，避免身份冲突（计划书 6.1）
+        if (patch.getRegistrationScope() != null
+            && !patch.getRegistrationScope().equals(activity.getRegistrationScope())) {
+            int existing = registrationMapper.countAnyByActivity(activityId);
+            if (existing > 0) {
+                throw conflict("ACTIVITY_SCOPE_LOCKED", "报名范围已锁定",
+                    "该活动已有 " + existing + " 条报名记录，不能再切换内部／公开范围。");
+            }
+        }
+        // S07：名额下限校验放在 Service，便于给出可读提示（早于时间合并校验）
+        if (patch.getCapacity() != null) {
+            int approved = registrationMapper.countApproved(activityId);
+            if (patch.getCapacity() < approved) {
+                throw conflict("ACTIVITY_CAPACITY_BELOW_APPROVED", "名额不能低于已通过报名数",
+                    "已有 " + approved + " 条报名通过，新名额不得小于该数量。");
+            }
+        }
         // 合并后校验时间顺序：以编辑后的整体状态判断
         Activity merged = mergeForValidation(activity, patch);
         validateTimes(merged);
@@ -239,7 +269,7 @@ public class ActivityService {
             String.valueOf(activity.getOwnerMemberId()),
             memberMapper.findUsernameByMemberId(activity.getOwnerMemberId()), activity.getStatus(),
             activity.getProposal(), activity.getReviewNote(), activity.getSubmittedBy(),
-            activity.getConfirmedBy(), activity.getConfirmType(),
+            activity.getConfirmedBy(), activity.getConfirmType(), activity.getConfirmedAt(),
             activity.getStartTime(), activity.getEndTime(),
             activity.getLocation(), activity.getBudget() == null
                 ? "0.00" : activity.getBudget().setScale(2).toPlainString(),
@@ -364,6 +394,8 @@ public class ActivityService {
         if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "APPROVED") != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
+        // S07：记录确认时间，供撤回后识别“调整期待确认”与删除判定
+        activityMapper.markConfirmed(activityId, orgId);
         String confirmType = accountId.equals(activity.getSubmittedBy()) ? "SELF" : "OTHER";
         activityMapper.updateReview(activityId, orgId, note, activity.getSubmittedBy(), accountId, confirmType);
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_APPROVED", "activity:" + activityId,
@@ -409,7 +441,10 @@ public class ActivityService {
         return toItem(activityMapper.findById(activityId));
     }
 
-    /** 删除草稿：仅组织负责人，且仅未提交的草稿；随附件等依赖出现后在此叠加依赖检查。 */
+    /**
+     * 删除草稿：仅组织负责人，且仅“从未确认且无依赖”的初始草稿（计划书 6.1）。
+     * S07：曾确认后撤回的活动保留；已产生任务／物资／附件／有效报名的草稿不得删除。
+     */
     @Transactional
     public void deleteDraft(Long accountId, Long orgId, Long activityId) {
         organizationMapper.lockOrganization(orgId);
@@ -419,11 +454,38 @@ public class ActivityService {
             || !"DRAFT".equals(activity.getStatus())) {
             throw notFound();
         }
+        if (activity.isPendingReconfirmation()) { // S07：曾确认后撤回的活动保留
+            throw conflict("ACTIVITY_DELETE_CONFLICT", "当前状态不允许此操作",
+                "该活动曾通过立项确认，撤回后不能按初始草稿删除，请重新确认或另行取消。");
+        }
+        List<String> dependencies = describeDependencies(activityId);
+        if (!dependencies.isEmpty()) {
+            throw conflict("ACTIVITY_HAS_DEPENDENCIES", "存在关联记录，不能删除",
+                "该草稿已有关联记录（" + String.join("、", dependencies) + "），请先处理后再删除。");
+        }
         if (activityMapper.deleteDraft(activityId, orgId) != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_DRAFT_DELETED", "activity:" + activityId,
             null, java.util.Map.of("name", activity.getName()));
+    }
+
+    /** 删除前的关联记录清点（只读查询，不修改其他模块数据）。 */
+    private List<String> describeDependencies(Long activityId) {
+        List<String> found = new java.util.ArrayList<>();
+        if (taskMapper.countByActivity(activityId) > 0) {
+            found.add("任务");
+        }
+        if (materialMapper.countByActivity(activityId) > 0) {
+            found.add("物资");
+        }
+        if (attachmentMapper.countByActivity(activityId) > 0) {
+            found.add("附件");
+        }
+        if (registrationMapper.countEffective(activityId) > 0) {
+            found.add("有效报名");
+        }
+        return found;
     }
 
     /** 提交前完备性校验（P2.2）。 */

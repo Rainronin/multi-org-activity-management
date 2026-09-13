@@ -40,7 +40,7 @@ public class ActivityController {
     public record ActivityResponse(
         String id, String name, String description, String ownerMemberId, String ownerUsername,
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
-        OffsetDateTime startTime, OffsetDateTime endTime, String location,
+        OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, boolean registrationOpen,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
@@ -256,7 +256,7 @@ public class ActivityController {
             String.valueOf(item.activityId()), item.name(), item.description(), item.ownerMemberId(),
             item.ownerUsername(), item.status(), item.proposal(), item.reviewNote(),
             item.submittedBy(), item.confirmedBy(), item.confirmType(),
-            item.startTime(), item.endTime(), item.location(), item.budget(),
+            item.confirmedAt(), item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
             item.registrationOpen(), item.createdAt(), item.updatedAt());
     }

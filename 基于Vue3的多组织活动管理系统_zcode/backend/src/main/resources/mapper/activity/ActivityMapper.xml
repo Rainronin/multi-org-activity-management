@@ -4,7 +4,7 @@
 
     <sql id="baseColumns">
         id, org_id, name, description, owner_member_id, status, review_note, submitted_by,
-        confirmed_by, confirm_type, start_time, end_time,
+        confirmed_by, confirm_type, confirmed_at, start_time, end_time,
         location, budget, proposal, registration_scope, capacity, registration_start,
         registration_end, registration_open, created_by, created_at, updated_at
     </sql>
@@ -73,6 +73,14 @@
         WHERE id = #{id}
           AND org_id = #{orgId}
           AND status = #{fromStatus}
+    </update>
+
+    <!-- S07：确认时记录确认时间；撤回草稿不清空，用于识别“调整期待确认” -->
+    <update id="markConfirmed">
+        UPDATE activity
+        SET confirmed_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id}
+          AND org_id = #{orgId}
     </update>
 
     <update id="updateReview">

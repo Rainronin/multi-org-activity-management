@@ -34,4 +34,7 @@ public interface TaskMapper {
 
     /** 只读职责查询：供 organization 模块退出的未结责任检查（单向依赖，后端架构 2.1）。 */
     int countOpenByAssignee(@Param("orgId") Long orgId, @Param("assigneeMemberId") Long assigneeMemberId);
+
+    /** S07：草稿删除前的依赖检查。 */
+    int countByActivity(@Param("activityId") Long activityId);
 }
