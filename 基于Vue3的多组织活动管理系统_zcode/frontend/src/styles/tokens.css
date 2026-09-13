@@ -165,6 +165,8 @@
   --ui-table-detail-row-height: 80px;
   --ui-form-field-gap: var(--ui-space-6);
   --ui-form-max-width: 640px;
+  /* 列表筛选等小控件的固定宽度（固定尺寸只用于边界与最小可操作面积） */
+  --ui-filter-width: 160px;
   --ui-login-form-width: 384px;
   --ui-dialog-width: 480px;
   --ui-drawer-width: 740px;

@@ -276,6 +276,16 @@ public class ActivityService {
         if (patch.getBudget() != null && patch.getBudget().signum() < 0) {
             throw fieldError("budget", "预算不能为负数");
         }
+        // P2.3／P5.3：预算下限校验——新预算不得小于当前已确认支出合计（计划书 6.1）
+        if (patch.getBudget() != null) {
+            java.math.BigDecimal approvedExpense =
+                expenseMapper.sumAmountByStatus(activityId, com.example.activity.modules.expense.Expense.STATUS_APPROVED);
+            if (approvedExpense != null && patch.getBudget().compareTo(approvedExpense) < 0) {
+                throw conflict("ACTIVITY_BUDGET_BELOW_APPROVED", "预算不能低于已确认支出",
+                    "该活动已确认支出 " + approvedExpense.setScale(2).toPlainString()
+                        + " 元，新预算不得小于该金额。");
+            }
+        }
         if (patch.getCapacity() != null && patch.getCapacity() <= 0) {
             throw fieldError("capacity", "名额必须为正整数");
         }

@@ -430,6 +430,84 @@ class ExpenseFlowTest extends FlowTestSupport {
         assertSummary(orgId, activityId, owner, "100.00", "60.00", "60.00", "40.00");
     }
 
+    /**
+     * P5.3 边界：零预算活动同样可以登记与确认支出——任何金额都算超支，必须填写说明；
+     * 余额为负；没有支出时不产生统计记录。
+     */
+    @Test
+    void zeroBudgetActivityRequiresNoteForAnyExpense() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-18T14:00:00+08:00", "0.00");
+
+        // 无支出：统计为零且余额为零
+        assertSummary(orgId, activityId, owner, "0.00", "0.00", "0.00", "0.00");
+        mockMvc.perform(get(expensesPath(orgId, activityId)).session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(0));
+
+        String expenseId = createExpense(owner, orgId, activityId, "临时支出", "10.00", "无票说明");
+        submitExpense(owner, orgId, activityId, expenseId);
+        confirmExpense(owner, orgId, activityId, expenseId, null, 409);
+        confirmExpense(owner, orgId, activityId, expenseId, "零预算活动的必要支出", 200);
+        assertSummary(orgId, activityId, owner, "0.00", "0.00", "10.00", "-10.00");
+    }
+
+    /**
+     * P2.3／P5.3：预算下限——新预算不得小于已确认支出合计；同时确认调整期待确认期间费用只读。
+     */
+    @Test
+    void budgetFloorAndAdjustmentFreezeProtectConfirmedExpenses() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-19T14:00:00+08:00", "200.00");
+        String expenseId = createExpense(owner, orgId, activityId, "已确认支出", "80.00", "无票说明");
+        submitExpense(owner, orgId, activityId, expenseId);
+        confirmExpense(owner, orgId, activityId, expenseId, null, 200);
+
+        // 撤回确认后才能改预算；低于已确认支出被拒
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/withdraw-approval")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"reason\":\"预算调整\"}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/organizations/" + orgId + "/activities/" + activityId)
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"budget\":\"50.00\"}")))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ACTIVITY_BUDGET_BELOW_APPROVED"));
+
+        // 调整期待确认期间费用只读：登记、确认、作废都被拒
+        mockMvc.perform(post(expensesPath(orgId, activityId))
+                .header("Idempotency-Key", newIdempotencyKey())
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"purpose\":\"调整期支出\",\"amount\":10.00,\"incurredOn\":\"2027-07-19\","
+                    + "\"category\":\"OTHER\",\"noReceiptNote\":\"无票说明\"}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        mockMvc.perform(post(expensesPath(orgId, activityId) + "/" + expenseId + "/void")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + versionOf(Long.parseLong(expenseId)) + ",\"reason\":\"调整期作废\"}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        assertSummary(orgId, activityId, owner, "200.00", "0.00", "80.00", "120.00");
+
+        // 不低于已确认支出的预算可以保存
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/organizations/" + orgId + "/activities/" + activityId)
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"budget\":\"80.00\"}")))
+            .andExpect(status().isOk());
+        assertSummary(orgId, activityId, owner, "80.00", "0.00", "80.00", "0.00");
+    }
+
     private Integer confirmStatus(TestSession actor, Long orgId, Long activityId, String expenseId) {
         try {
             return mockMvc.perform(post(expensesPath(orgId, activityId) + "/" + expenseId + "/confirm")
