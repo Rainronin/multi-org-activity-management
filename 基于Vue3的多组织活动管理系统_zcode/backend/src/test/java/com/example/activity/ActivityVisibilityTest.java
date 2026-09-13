@@ -106,6 +106,7 @@ class ActivityVisibilityTest extends FlowTestSupport {
 
     private Long createDraftActivityOnly(TestSession owner, Long orgId, Long ownerMemberId) throws Exception {
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(activityBody("草稿活动", ownerMemberId, "2026-12-04T14:00:00+08:00")))

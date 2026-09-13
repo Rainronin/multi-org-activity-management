@@ -3,7 +3,7 @@
 <mapper namespace="com.example.activity.modules.material.MaterialMapper">
 
     <sql id="baseColumns">
-        id, org_id, activity_id, name, quantity, unit, assignee_member_id, status, note,
+        id, org_id, activity_id, name, quantity, unit, assignee_member_id, status, version, note,
         created_by, created_at, updated_at
     </sql>
 
@@ -33,13 +33,18 @@
             quantity = #{quantity},
             unit = #{unit},
             assignee_member_id = #{assigneeMemberId},
-            note = #{note}
+            note = #{note},
+            version = version + 1
         WHERE id = #{id}
+          <if test="version != null">
+            AND version = #{version}
+          </if>
     </update>
 
     <update id="updateStatus">
         UPDATE material
-        SET status = #{status}
+        SET status = #{status},
+            version = version + 1
         WHERE id = #{id}
     </update>
 

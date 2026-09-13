@@ -30,7 +30,7 @@ public class MaterialController {
 
     public record MaterialResponse(
         String materialId, Long activityId, String name, Integer quantity, String unit,
-        String assigneeMemberId, String assigneeUsername, String status, String note) {
+        String assigneeMemberId, String assigneeUsername, String status, String note, Long version) {
     }
 
     public record MaterialsResponse(List<MaterialResponse> items) {
@@ -41,7 +41,9 @@ public class MaterialController {
         @NotNull(message = "数量不能为空") @Min(value = 1, message = "数量必须为正整数") @Max(value = 1000000, message = "数量过大") Integer quantity,
         @NotBlank(message = "单位不能为空") @Size(max = 16, message = "单位不超过 16 字符") String unit,
         Long assigneeMemberId,
-        @Size(max = 500, message = "备注不超过 500 字符") String note) {
+        @Size(max = 500, message = "备注不超过 500 字符") String note,
+        /** S08：期望版本；仅更新时携带，做乐观锁。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
     public record MaterialStatusRequest(
@@ -51,7 +53,7 @@ public class MaterialController {
     private MaterialResponse toResponse(MaterialService.MaterialItem item) {
         return new MaterialResponse(String.valueOf(item.materialId()), item.activityId(), item.name(),
             item.quantity(), item.unit(), item.assigneeMemberId(), item.assigneeUsername(),
-            item.status(), item.note());
+            item.status(), item.note(), item.version());
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/materials")
@@ -93,6 +95,7 @@ public class MaterialController {
         patch.setUnit(request.unit().trim());
         patch.setAssigneeMemberId(request.assigneeMemberId());
         patch.setNote(request.note() == null || request.note().isBlank() ? null : request.note().trim());
+        patch.setVersion(request.version());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(materialService.update(
                 principal.getAccountId(), orgId, activityId, materialId, patch)));

@@ -25,7 +25,7 @@ public class ActivityService {
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
         OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
         String registrationScope, Integer capacity, OffsetDateTime registrationStart,
-        OffsetDateTime registrationEnd, boolean registrationOpen,
+        OffsetDateTime registrationEnd, boolean registrationOpen, Long version,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
@@ -61,30 +61,74 @@ public class ActivityService {
         this.registrationMapper = registrationMapper;
     }
 
-    /** 创建草稿：仅组织负责人；负责人须为本组织有效成员（可为创建者本人）。 */
+    /**
+     * 创建草稿：仅组织负责人；负责人须为本组织有效成员（可为创建者本人）。
+     * S08：必须携带 Idempotency-Key；同组织同键重放返回已提交资源，不重复建草稿。
+     * 先判权限再判防重键，避免未授权调用者借错误码探测接口约定。
+     */
     @Transactional
     public ActivityItem create(
-        Long creatorAccountId, String creatorUsername, Long orgId, Activity draft) {
+        Long creatorAccountId, String creatorUsername, Long orgId, String idempotencyKey, Activity draft) {
         organizationMapper.lockOrganizationShared(orgId);
         OrganizationMember actor = requireActiveMember(orgId, creatorAccountId);
         if (!OrganizationMember.ROLE_OWNER.equals(actor.getRole())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以创建活动。");
+        }
+        if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 64) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "缺少防重键",
+                "创建活动必须携带 Idempotency-Key 请求头（1～64 字符）。");
+        }
+        // 与落库同规则地补齐默认值，保证重放比较与首次创建看到同一份内容
+        applyCreationDefaults(draft);
+        // 防重：先查已提交结果（重放仍校验当前身份与可见性，不返回撤权前的私有结果）
+        Activity existing = activityMapper.findByRequestKey(orgId, idempotencyKey);
+        if (existing != null) {
+            if (!existing.isVisibleTo(actor, creatorAccountId)) {
+                throw notFound();
+            }
+            if (!sameCreationContent(existing, draft)) {
+                throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键",
+                    "该 Idempotency-Key 已用于创建内容不同的活动，请使用新的键重试。");
+            }
+            return toItem(existing);
         }
         validateOwnerMember(orgId, draft.getOwnerMemberId());
         validateTimes(draft);
         draft.setOrgId(orgId);
         draft.setStatus(Activity.STATUS_DRAFT);
         draft.setCreatedBy(creatorAccountId);
+        draft.setRequestKey(idempotencyKey);
+        activityMapper.insert(draft);
+        auditService.record(creatorAccountId, "ACTIVITY", "ACTIVITY_DRAFT_CREATED",
+            "activity:" + draft.getId(), null, java.util.Map.of("name", draft.getName()));
+        return toItem(activityMapper.findById(draft.getId()));
+    }
+
+    /** 创建与重放比较共用的默认值补齐：预算为零、范围默认内部。 */
+    private void applyCreationDefaults(Activity draft) {
         if (draft.getBudget() == null) {
             draft.setBudget(new BigDecimal("0.00"));
         }
         if (draft.getRegistrationScope() == null) {
             draft.setRegistrationScope(Activity.SCOPE_INTERNAL);
         }
-        activityMapper.insert(draft);
-        auditService.record(creatorAccountId, "ACTIVITY", "ACTIVITY_DRAFT_CREATED",
-            "activity:" + draft.getId(), null, java.util.Map.of("name", draft.getName()));
-        return toItem(activityMapper.findById(draft.getId()));
+    }
+
+    /** 防重内容比对：同一键只允许完全相同的创建内容（比较规范化后的业务字段）。 */
+    private boolean sameCreationContent(Activity stored, Activity incoming) {
+        return java.util.Objects.equals(stored.getName(), incoming.getName())
+            && java.util.Objects.equals(stored.getOwnerMemberId(), incoming.getOwnerMemberId())
+            && java.util.Objects.equals(stored.getDescription(), incoming.getDescription())
+            && java.util.Objects.equals(stored.getStartTime(), incoming.getStartTime())
+            && java.util.Objects.equals(stored.getEndTime(), incoming.getEndTime())
+            && java.util.Objects.equals(stored.getLocation(), incoming.getLocation())
+            && java.util.Objects.equals(stored.getRegistrationScope(), incoming.getRegistrationScope())
+            && java.util.Objects.equals(stored.getCapacity(), incoming.getCapacity())
+            && java.util.Objects.equals(stored.getRegistrationStart(), incoming.getRegistrationStart())
+            && java.util.Objects.equals(stored.getRegistrationEnd(), incoming.getRegistrationEnd())
+            && java.util.Objects.equals(
+                stored.getBudget() == null ? null : stored.getBudget().stripTrailingZeros(),
+                incoming.getBudget() == null ? null : incoming.getBudget().stripTrailingZeros());
     }
 
     /**
@@ -120,7 +164,7 @@ public class ActivityService {
         return toItem(activity);
     }
 
-    /** 编辑草稿：组织负责人或活动负责人；PATCH 仅更新显式字段。 */
+    /** 编辑草稿：组织负责人或活动负责人；PATCH 仅更新显式字段；S08 支持携带期望版本做乐观锁。 */
     @Transactional
     public ActivityItem updateDraft(Long accountId, Long orgId, Long activityId, Activity patch) {
         organizationMapper.lockOrganizationShared(orgId);
@@ -128,6 +172,12 @@ public class ActivityService {
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !canSeeDraft(activity, accountId)) {
+            throw notFound();
+        }
+        // S08 锁协议：活动自身写入取活动行排他锁，再访问子记录（组织 → 活动 → 子记录）
+        activityMapper.lockActivity(activityId);
+        activity = activityMapper.findById(activityId);
+        if (activity == null) {
             throw notFound();
         }
         boolean isOrgOwner = OrganizationMember.ROLE_OWNER.equals(actor.getRole());
@@ -185,6 +235,14 @@ public class ActivityService {
         // 状态守卫：按当前实际状态限定更新（草稿自由编辑；已确认仅简介）
         patch.setStatus(activity.getStatus());
         if (activityMapper.updateDraft(patch) != 1) {
+            // S08：影响行数为 0 时区分「版本冲突」与「状态已变化」，两者都要求刷新后重试
+            Activity current = activityMapper.findById(activityId);
+            if (patch.getVersion() != null && current != null
+                && !patch.getVersion().equals(current.getVersion())) {
+                throw conflict("EDIT_CONFLICT", "内容已被他人修改",
+                    "该活动已由其他操作保存（当前版本 " + current.getVersion()
+                        + "，你基于版本 " + patch.getVersion() + "），请刷新后重新编辑。");
+            }
             throw notFound();
         }
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_DRAFT_UPDATED", "activity:" + activityId,
@@ -275,7 +333,7 @@ public class ActivityService {
                 ? "0.00" : activity.getBudget().setScale(2).toPlainString(),
             activity.getRegistrationScope(), activity.getCapacity(),
             activity.getRegistrationStart(), activity.getRegistrationEnd(), activity.isRegistrationOpen(),
-            activity.getCreatedAt(), activity.getUpdatedAt());
+            activity.getVersion(), activity.getCreatedAt(), activity.getUpdatedAt());
     }
 
     private ApiException fieldError(String field, String message) {

@@ -1,5 +1,6 @@
 package com.example.activity.modules.activity;
 
+import com.example.activity.common.ApiException;
 import com.example.activity.security.AccountUserDetails;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -42,7 +44,7 @@ public class ActivityController {
         String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
         OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
-        OffsetDateTime registrationEnd, boolean registrationOpen,
+        OffsetDateTime registrationEnd, boolean registrationOpen, Long version,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
@@ -74,13 +76,16 @@ public class ActivityController {
         @Pattern(regexp = "^(INTERNAL|PUBLIC)$", message = "报名范围仅支持 INTERNAL 或 PUBLIC") String registrationScope,
         @Min(value = 1, message = "名额必须为正整数") Integer capacity,
         OffsetDateTime registrationStart,
-        OffsetDateTime registrationEnd) {
+        OffsetDateTime registrationEnd,
+        /** S08：期望版本；携带时做乐观锁，与实际版本不符返回 409 EDIT_CONFLICT。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
     @PostMapping("/api/organizations/{orgId}/activities")
     public ResponseEntity<ActivityResponse> create(
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody CreateActivityRequest request) {
         Activity draft = new Activity();
         draft.setName(request.name().trim());
@@ -96,8 +101,9 @@ public class ActivityController {
         draft.setCapacity(request.capacity());
         draft.setRegistrationStart(request.registrationStart());
         draft.setRegistrationEnd(request.registrationEnd());
-        ActivityService.ActivityItem created =
-            activityService.create(principal.getAccountId(), principal.getUsername(), orgId, draft);
+        ActivityService.ActivityItem created = activityService.create(
+            principal.getAccountId(), principal.getUsername(), orgId,
+            idempotencyKey == null ? null : idempotencyKey.trim(), draft);
         return ResponseEntity.status(HttpStatus.CREATED)
             .cacheControl(CacheControl.noStore())
             .body(toResponse(created));
@@ -247,6 +253,7 @@ public class ActivityController {
         patch.setCapacity(request.capacity());
         patch.setRegistrationStart(request.registrationStart());
         patch.setRegistrationEnd(request.registrationEnd());
+        patch.setVersion(request.version());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(activityService.updateDraft(principal.getAccountId(), orgId, activityId, patch)));
     }
@@ -258,6 +265,6 @@ public class ActivityController {
             item.submittedBy(), item.confirmedBy(), item.confirmType(),
             item.confirmedAt(), item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
-            item.registrationOpen(), item.createdAt(), item.updatedAt());
+            item.registrationOpen(), item.version(), item.createdAt(), item.updatedAt());
     }
 }

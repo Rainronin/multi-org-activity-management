@@ -93,6 +93,7 @@ class ActivityFlowTest extends ActivityTestBase {
     private MvcResult createDraft(TestSession creator, Long orgId, Long ownerMemberId, String body)
         throws Exception {
         return mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(creator.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body.formatted(ownerMemberId)))
@@ -144,11 +145,20 @@ class ActivityFlowTest extends ActivityTestBase {
         Long otherOrgId = createOrg(outsider);
         Long foreignMemberId = memberIdOf(otherOrgId, outsider.username());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"无效负责人\",\"ownerMemberId\":%d}".formatted(foreignMemberId)))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("ACTIVITY_OWNER_INVALID"));
+
+        // S08：缺少 Idempotency-Key → 400（已授权的组织负责人）
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"无防重键\",\"ownerMemberId\":%d}".formatted(memberIdOf(orgId, owner.username()))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
     }
 
     @Test
@@ -218,6 +228,7 @@ class ActivityFlowTest extends ActivityTestBase {
 
         // 结束早于开始
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(("{\"name\":\"时间倒置\",\"ownerMemberId\":%d,"
@@ -228,6 +239,7 @@ class ActivityFlowTest extends ActivityTestBase {
 
         // 报名截止晚于活动开始
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(("{\"name\":\"窗口倒置\",\"ownerMemberId\":%d,"
@@ -240,16 +252,19 @@ class ActivityFlowTest extends ActivityTestBase {
 
         // 预算负数与三位小数 → 400；零预算允许
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"负预算\",\"ownerMemberId\":%d,\"budget\":\"-1.00\"}".formatted(ownerMemberId)))
             .andExpect(status().isBadRequest());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"三位小数\",\"ownerMemberId\":%d,\"budget\":\"1.234\"}".formatted(ownerMemberId)))
             .andExpect(status().isBadRequest());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"零预算\",\"ownerMemberId\":%d,\"budget\":\"0\"}".formatted(ownerMemberId)))

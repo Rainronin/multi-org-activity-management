@@ -15,7 +15,7 @@ public interface MaterialMapper {
 
     int update(@Param("id") Long id, @Param("name") String name, @Param("quantity") Integer quantity,
         @Param("unit") String unit, @Param("assigneeMemberId") Long assigneeMemberId,
-        @Param("note") String note);
+        @Param("note") String note, @Param("version") Long version);
 
     int updateStatus(@Param("id") Long id, @Param("status") String status);
 

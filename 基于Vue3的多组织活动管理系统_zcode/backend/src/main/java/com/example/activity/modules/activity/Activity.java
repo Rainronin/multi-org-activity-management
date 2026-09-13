@@ -63,6 +63,10 @@ public class Activity {
     private OffsetDateTime confirmedAt;
 
     private Long createdBy;
+    /** S08：编辑冲突用整数版本；每次成功写入 +1。 */
+    private Long version;
+    /** S08：创建防重的 Idempotency-Key（按组织唯一），仅创建时写入。 */
+    private String requestKey;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
 
@@ -248,6 +252,22 @@ public class Activity {
 
     public void setCreatedAt(OffsetDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
     }
 
     public OffsetDateTime getUpdatedAt() {

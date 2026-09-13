@@ -11,6 +11,15 @@ public interface ActivityMapper {
 
     Activity findById(@Param("id") Long id);
 
+    /** S08：创建防重——按组织与 Idempotency-Key 查已提交资源。 */
+    Activity findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
+    /** S08 锁协议：活动行共享锁（活动下子记录写入前）。 */
+    Long lockActivityShared(@Param("id") Long id);
+
+    /** S08 锁协议：活动行排他锁（活动自身写入与跨子记录写路径）。 */
+    Long lockActivity(@Param("id") Long id);
+
     List<Activity> listPage(
         @Param("orgId") Long orgId,
         @Param("query") String query,

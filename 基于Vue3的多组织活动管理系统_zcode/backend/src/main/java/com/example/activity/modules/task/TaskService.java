@@ -42,7 +42,7 @@ public class TaskService {
     public record TaskItem(
         Long taskId, Long activityId, String activityName, String title, String description,
         String assigneeMemberId, String assigneeUsername, String priority, OffsetDateTime dueAt,
-        String status, OffsetDateTime completedAt, boolean overdue) {
+        String status, OffsetDateTime completedAt, boolean overdue, Long version) {
     }
 
     private record Context(OrganizationMember actor, Activity activity) {
@@ -57,6 +57,16 @@ public class TaskService {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或无权访问。");
         }
         return new Context(actor, activity);
+    }
+
+    /**
+     * S08 锁协议：活动下子记录写入前取活动行共享锁（组织 → 活动 → 子记录）；
+     * 活动自身状态已变化时由调用方继续校验。
+     */
+    private Context requireWriteContext(Long accountId, Long orgId, Long activityId) {
+        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        activityMapper.lockActivityShared(activityId);
+        return ctx;
     }
 
     private boolean canManage(Context ctx) {
@@ -74,7 +84,7 @@ public class TaskService {
 
     @Transactional
     public TaskItem create(Long accountId, Long orgId, Long activityId, Task draft) {
-        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        Context ctx = requireWriteContext(accountId, orgId, activityId);
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以创建任务。");
         }
@@ -109,7 +119,7 @@ public class TaskService {
 
     @Transactional
     public TaskItem update(Long accountId, Long orgId, Long activityId, Long taskId, Task patch) {
-        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        Context ctx = requireWriteContext(accountId, orgId, activityId);
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编辑任务。");
         }
@@ -122,8 +132,15 @@ public class TaskService {
         boolean reassigned = !patch.getAssigneeMemberId().equals(task.getAssigneeMemberId());
         // PATCH 语义：未传优先级时沿用当前值，避免把非空列写成 NULL
         String priority = patch.getPriority() == null ? task.getPriority() : patch.getPriority();
-        taskMapper.updateAssignment(taskId, patch.getTitle(), patch.getDescription(),
-            patch.getAssigneeMemberId(), priority, patch.getDueAt());
+        // S08：携带期望版本时做乐观锁，影响行数为 0 表示他人已保存
+        if (taskMapper.updateAssignment(taskId, patch.getTitle(), patch.getDescription(),
+                patch.getAssigneeMemberId(), priority, patch.getDueAt(), patch.getVersion()) != 1) {
+            if (patch.getVersion() != null) {
+                throw conflict("EDIT_CONFLICT", "任务已被他人修改",
+                    "该任务已由其他操作保存（当前版本 " + task.getVersion() + "），请刷新后重新编辑。");
+            }
+            throw conflict("TASK_STATE_CONFLICT", "任务状态不允许此操作", "任务已变化，请刷新后查看。");
+        }
         if (reassigned) {
             notifyAssignment(orgId, activityId, taskMapper.findById(taskId));
         }
@@ -135,7 +152,7 @@ public class TaskService {
     /** 管理者状态操作：取消、重新打开及任意合法流转。 */
     @Transactional
     public TaskItem manageTransition(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
-        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        Context ctx = requireWriteContext(accountId, orgId, activityId);
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以取消或重新打开任务。");
         }
@@ -148,7 +165,7 @@ public class TaskService {
     /** 普通成员推进本人任务：待处理→进行中／已完成，进行中→已完成（S05），不可取消或重开。 */
     @Transactional
     public TaskItem advanceOwn(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
-        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        Context ctx = requireWriteContext(accountId, orgId, activityId);
         requireNotPendingReconfirmation(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         if (!task.getAssigneeMemberId().equals(ctx.actor().getId())) {
@@ -231,6 +248,7 @@ public class TaskService {
         return new TaskItem(
             task.getId(), task.getActivityId(), null, task.getTitle(), task.getDescription(),
             String.valueOf(task.getAssigneeMemberId()), username == null ? "" : username,
-            task.getPriority(), task.getDueAt(), task.getStatus(), task.getCompletedAt(), overdue);
+            task.getPriority(), task.getDueAt(), task.getStatus(), task.getCompletedAt(), overdue,
+            task.getVersion());
     }
 }

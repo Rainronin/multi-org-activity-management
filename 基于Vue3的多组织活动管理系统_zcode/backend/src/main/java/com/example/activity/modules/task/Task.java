@@ -19,6 +19,8 @@ public class Task {
     private String priority;
     private OffsetDateTime dueAt;
     private String status;
+    /** S08：编辑冲突用整数版本；每次成功写入 +1。 */
+    private Long version;
     private OffsetDateTime completedAt;
     private Long createdBy;
     private OffsetDateTime createdAt;
@@ -110,6 +112,14 @@ public class Task {
 
     public void setCreatedBy(Long createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     public OffsetDateTime getCreatedAt() {

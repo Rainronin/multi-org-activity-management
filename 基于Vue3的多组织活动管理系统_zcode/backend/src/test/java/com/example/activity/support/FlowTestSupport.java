@@ -98,6 +98,7 @@ public abstract class FlowTestSupport extends ActivityTestBase {
     protected Long createApprovedActivity(TestSession owner, Long orgId, Long ownerMemberId, String startTime)
         throws Exception {
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(activityBody("测试活动", ownerMemberId, startTime)))

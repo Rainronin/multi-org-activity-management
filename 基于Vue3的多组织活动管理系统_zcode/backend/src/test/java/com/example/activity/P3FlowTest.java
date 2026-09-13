@@ -89,6 +89,7 @@ class P3FlowTest extends ActivityTestBase {
 
     private Long createApprovedActivity(TestSession owner, Long orgId, Long ownerMemberId) throws Exception {
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(("{\"name\":\"P3活动\",\"ownerMemberId\":%d,\"description\":\"简介\","

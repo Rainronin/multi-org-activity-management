@@ -58,8 +58,9 @@ public class RegistrationService {
         if (activity == null) {
             throw notFound();
         }
-        // 组织行排他锁：报名与名额串行化（后端架构 5.2）
+        // 组织行排他锁：报名与名额串行化（后端架构 5.2）；再取活动行锁后重读状态
         organizationMapper.lockOrganization(activity.getOrgId());
+        activityMapper.lockActivity(activityId);
         // S02：锁内重读活动当前状态，防止锁等待期间状态变化
         activity = activityMapper.findById(activityId);
         if (activity == null || !"APPROVED".equals(activity.getStatus())) {
@@ -118,10 +119,12 @@ public class RegistrationService {
     /**
      * 审核通过：活动须已确认且未到开始时间（S02：开关或窗口关闭不影响审核既有申请，开始后不再批准）。
      * 组织负责人或活动负责人可审核（S04）。
+     * S08：组织行锁 → 活动行锁 → 锁内重读活动状态与报名记录，容量校验与状态更新在同一临界区。
      */
     @Transactional
     public RegistrationItem approve(Long approverAccountId, Long orgId, Long activityId, Long registrationId) {
         organizationMapper.lockOrganization(orgId);
+        activityMapper.lockActivity(activityId);
         requireReviewPermission(orgId, activityId, approverAccountId);
         Activity activity = requireApprovedActivity(activityId);
         if (!activity.isBeforeStart()) {
@@ -149,6 +152,7 @@ public class RegistrationService {
     @Transactional
     public RegistrationItem reject(Long approverAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
         organizationMapper.lockOrganization(orgId);
+        activityMapper.lockActivity(activityId);
         requireReviewPermission(orgId, activityId, approverAccountId);
         requireApprovedActivity(activityId);
         Registration registration = requireRegistration(orgId, activityId, registrationId);
@@ -174,7 +178,8 @@ public class RegistrationService {
             throw notFound();
         }
         organizationMapper.lockOrganization(activity.getOrgId());
-        // S02：锁内重读，开始时间与状态以当前值为准
+        // S02／S08：锁内重读，开始时间与状态以当前值为准
+        activityMapper.lockActivity(activityId);
         activity = activityMapper.findById(activityId);
         if (activity == null) {
             throw notFound();
@@ -204,6 +209,7 @@ public class RegistrationService {
     @Transactional
     public RegistrationItem cancelOrg(Long actorAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
         organizationMapper.lockOrganization(orgId);
+        activityMapper.lockActivity(activityId);
         Activity activity = requireReviewPermission(orgId, activityId, actorAccountId);
         if (!activity.isBeforeStart()) {
             throw conflict("活动已开始，不能再由管理者取消报名，请在执行记录中说明。");

@@ -96,6 +96,7 @@ class RegistrationFlowTest extends ActivityTestBase {
     private Long createApprovedActivity(TestSession owner, Long orgId, int capacity) throws Exception {
         Long ownerMemberId = memberIdOf(orgId, owner.username());
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(("{\"name\":\"报名活动\",\"ownerMemberId\":%d,\"description\":\"D\","

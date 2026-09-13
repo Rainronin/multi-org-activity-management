@@ -90,6 +90,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
 
     private Long createMinimalDraft(TestSession owner, Long orgId, Long ownerMemberId) throws Exception {
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"待完善活动\",\"ownerMemberId\":%d}".formatted(ownerMemberId)))

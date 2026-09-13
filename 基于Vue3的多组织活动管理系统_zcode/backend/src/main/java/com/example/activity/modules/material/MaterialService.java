@@ -36,7 +36,7 @@ public class MaterialService {
 
     public record MaterialItem(
         Long materialId, Long activityId, String name, Integer quantity, String unit,
-        String assigneeMemberId, String assigneeUsername, String status, String note) {
+        String assigneeMemberId, String assigneeUsername, String status, String note, Long version) {
     }
 
     private record Context(OrganizationMember actor, Activity activity) {
@@ -89,6 +89,8 @@ public class MaterialService {
     @Transactional
     public MaterialItem create(Long accountId, Long orgId, Long activityId, Material draft) {
         requireManageContext(accountId, orgId, activityId);
+        // S08 锁协议：活动下子记录写入前取活动行共享锁（组织 → 活动 → 子记录）
+        activityMapper.lockActivityShared(activityId);
         validateAssignee(orgId, draft.getAssigneeMemberId());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
@@ -103,10 +105,14 @@ public class MaterialService {
     @Transactional
     public MaterialItem update(Long accountId, Long orgId, Long activityId, Long materialId, Material patch) {
         requireManageContext(accountId, orgId, activityId);
+        activityMapper.lockActivityShared(activityId);
         Material material = requireMaterial(orgId, activityId, materialId);
         validateAssignee(orgId, patch.getAssigneeMemberId());
-        materialMapper.update(materialId, patch.getName(), patch.getQuantity(), patch.getUnit(),
-            patch.getAssigneeMemberId(), patch.getNote());
+        // S08：携带期望版本时做乐观锁，影响行数为 0 表示他人已保存
+        if (materialMapper.update(materialId, patch.getName(), patch.getQuantity(), patch.getUnit(),
+                patch.getAssigneeMemberId(), patch.getNote(), patch.getVersion()) != 1) {
+            throw editConflictOrState(material.getVersion());
+        }
         auditService.record(accountId, "ACTIVITY", "MATERIAL_UPDATED", "material:" + materialId,
             null, java.util.Map.of("activityId", activityId));
         return toItem(materialMapper.findById(materialId));
@@ -115,6 +121,7 @@ public class MaterialService {
     @Transactional
     public MaterialItem changeStatus(Long accountId, Long orgId, Long activityId, Long materialId, String toStatus) {
         requireManageContext(accountId, orgId, activityId);
+        activityMapper.lockActivityShared(activityId);
         Material material = requireMaterial(orgId, activityId, materialId);
         List<String> valid = List.of(Material.STATUS_PENDING, Material.STATUS_IN_PROGRESS,
             Material.STATUS_READY, Material.STATUS_CANCELLED);
@@ -126,6 +133,12 @@ public class MaterialService {
         auditService.record(accountId, "ACTIVITY", "MATERIAL_STATUS_" + toStatus, "material:" + materialId,
             null, java.util.Map.of("from", material.getStatus(), "to", toStatus));
         return toItem(materialMapper.findById(materialId));
+    }
+
+    /** S08：更新影响行数为 0 时区分版本冲突与状态变化，两者都要求刷新后重试。 */
+    private ApiException editConflictOrState(Long currentVersion) {
+        return new ApiException(HttpStatus.CONFLICT, "EDIT_CONFLICT", "物资已被他人修改",
+            "该物资已由其他操作保存（当前版本 " + currentVersion + "），请刷新后重新编辑。");
     }
 
     private Material requireMaterial(Long orgId, Long activityId, Long materialId) {
@@ -145,6 +158,7 @@ public class MaterialService {
             material.getId(), material.getActivityId(), material.getName(), material.getQuantity(),
             material.getUnit(),
             material.getAssigneeMemberId() == null ? null : String.valueOf(material.getAssigneeMemberId()),
-            username == null ? "" : username, material.getStatus(), material.getNote());
+            username == null ? "" : username, material.getStatus(), material.getNote(),
+            material.getVersion());
     }
 }

@@ -56,6 +56,7 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
 
         // 成员负责一个活动（草稿阶段）：退出被拒并说明仍有负责活动
         MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(activityBody("成员负责的活动", memberMemberId, "2026-12-31T14:00:00+08:00")))

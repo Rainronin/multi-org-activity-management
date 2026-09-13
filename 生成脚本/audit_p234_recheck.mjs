@@ -26,17 +26,22 @@ function dbQuery(sql) {
 try {
   const contexts = await Promise.all([1, 2, 3, 4, 5].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
   const [owner, member, outsider, delegate, leaver] = contexts
-  async function call(ctx, method, path, data, multipart) {
-    const headers = {}
+  async function call(ctx, method, path, data, multipart, extraHeaders) {
+    const headers = { ...(extraHeaders || {}) }
     if (method !== 'GET') {
       const csrf = await (await ctx.request.get('/api/auth/csrf')).json()
       headers[csrf.headerName] = csrf.token
     }
     return ctx.request.fetch(path, { method, headers, ...(data === undefined ? {} : { data }), ...(multipart ? { multipart } : {}) })
   }
-  async function json(ctx, method, path, data) {
-    const res = await call(ctx, method, path, data)
-    assert.ok(res.ok(), `准备流程失败: ${method} ${path} ${res.status()}`)
+  // S08：创建活动必须携带 Idempotency-Key；每次调用生成新键，防重检查另行复用同一键
+  let keySeq = 0
+  const nextKey = () => `audit${Date.now()}-${++keySeq}`
+  async function json(ctx, method, path, data, extraHeaders) {
+    const res = await call(ctx, method, path, data, undefined, extraHeaders)
+    if (!res.ok()) {
+      throw new Error(`准备流程失败: ${method} ${path} ${res.status()} ${await res.text()}`)
+    }
     return res.json()
   }
   const usernames = []
@@ -58,8 +63,8 @@ try {
   const memberId = members.find(x => x.username === usernames[1]).memberId
   const delegateMember = members.find(x => x.username === usernames[3]).memberId
   const path = `/api/organizations/${org.id}/activities`
-  async function createActivity(name, assignee = ownerMember) {
-    const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' })
+  async function createActivity(name, assignee = ownerMember, idempotencyKey = nextKey()) {
+    const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' }, { 'Idempotency-Key': idempotencyKey })
     await json(owner, 'PUT', `${path}/${activity.id}/proposal`, { content: '人工方案审核样例' })
     return activity
   }
@@ -145,6 +150,27 @@ try {
     .find(x => x.activityId === dutyActivity.id)?.status
   const leaveNotifications = await dbQuery(`SELECT COUNT(*) FROM notification n JOIN account a ON a.id = n.recipient_account_id WHERE n.type = 'REGISTRATION_CANCELLED' AND a.username = '${usernames[4]}'`)
   console.log(JSON.stringify({ check: 'S07-B 退出联动', leaveWithActivityDuty: leaveWithDuty.status(), dutyCode: leaveWithDutyBody.code, leaveAfterReassign: leaveAfterReassign.status(), registrationState: leaverRegistrationState, cancelNotificationRows: leaveNotifications }))
+
+  // S08 编辑冲突与创建防重：旧版本保存被拒；同键同内容返回原资源、同键异内容 409、缺键 400
+  const conflictActivity = await createActivity('编辑冲突活动')
+  // createActivity 内部保存过方案，版本已递增；先读当前版本再做第一方保存
+  const currentVersion = (await json(owner, 'GET', `${path}/${conflictActivity.id}`)).version
+  const firstSave = await call(owner, 'PATCH', `${path}/${conflictActivity.id}`, { location: '第一方改的地点', version: currentVersion })
+  const staleSave = await call(owner, 'PATCH', `${path}/${conflictActivity.id}`, { location: '第二方旧版本覆盖', version: currentVersion })
+  const staleBody = await staleSave.json()
+  const locationAfterStale = (await json(owner, 'GET', `${path}/${conflictActivity.id}`)).location
+  const reusedKey = nextKey()
+  const keyedBody = { name: '防重活动甲', description: '阶段审核活动', ownerMemberId: ownerMember, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' }
+  const keyedCreateRes = await call(owner, 'POST', path, keyedBody, undefined, { 'Idempotency-Key': reusedKey })
+  const keyedCreate = await keyedCreateRes.json()
+  const replaySameContent = await call(owner, 'POST', path, keyedBody, undefined, { 'Idempotency-Key': reusedKey })
+  const replayBody = await replaySameContent.json()
+  const reusedDifferentContent = await call(owner, 'POST', path, { name: '防重活动乙', description: '阶段审核活动', ownerMemberId: ownerMember, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' }, undefined, { 'Idempotency-Key': reusedKey })
+  const reusedBody = await reusedDifferentContent.json()
+  const missingKey = await call(owner, 'POST', path, { name: '无防重键活动', ownerMemberId: ownerMember })
+  const missingBody = await missingKey.json()
+  const duplicateRows = await dbQuery(`SELECT COUNT(*) FROM activity WHERE org_id = ${org.id} AND name LIKE '防重活动%'`)
+  console.log(JSON.stringify({ check: 'S08 编辑冲突与创建防重', versionBeforeSave: currentVersion, firstSave: firstSave.status(), staleSave: staleSave.status(), staleCode: staleBody.code, locationAfterStale, replaySameKey: { status: replaySameContent.status(), sameId: replayBody.id === keyedCreate.id }, reusedKeyDifferentContent: { status: reusedDifferentContent.status(), code: reusedBody.code }, missingKey: { status: missingKey.status(), code: missingBody.code }, duplicateRows }))
 
   const past = await createActivity('已到开始时间的活动')
   await approveActivity(past)

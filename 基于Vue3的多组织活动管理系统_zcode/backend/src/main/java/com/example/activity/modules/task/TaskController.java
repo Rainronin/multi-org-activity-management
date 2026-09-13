@@ -2,6 +2,7 @@ package com.example.activity.modules.task;
 
 import com.example.activity.security.AccountUserDetails;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -30,7 +31,7 @@ public class TaskController {
     public record TaskResponse(
         String taskId, Long activityId, String title, String description, String assigneeMemberId,
         String assigneeUsername, String priority, OffsetDateTime dueAt, String status,
-        OffsetDateTime completedAt, boolean overdue) {
+        OffsetDateTime completedAt, boolean overdue, Long version) {
     }
 
     public record TasksResponse(List<TaskResponse> items) {
@@ -41,7 +42,9 @@ public class TaskController {
         @Size(max = 2000, message = "说明不超过 2000 字符") String description,
         @NotNull(message = "任务负责人不能为空") Long assigneeMemberId,
         @Pattern(regexp = "^(HIGH|MEDIUM|LOW)$", message = "优先级仅支持 HIGH/MEDIUM/LOW") String priority,
-        OffsetDateTime dueAt) {
+        OffsetDateTime dueAt,
+        /** S08：期望版本；仅改派／编辑时携带，做乐观锁。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
     public record TransitionRequest(
@@ -51,7 +54,7 @@ public class TaskController {
     private TaskResponse toResponse(TaskService.TaskItem item) {
         return new TaskResponse(String.valueOf(item.taskId()), item.activityId(), item.title(),
             item.description(), item.assigneeMemberId(), item.assigneeUsername(), item.priority(),
-            item.dueAt(), item.status(), item.completedAt(), item.overdue());
+            item.dueAt(), item.status(), item.completedAt(), item.overdue(), item.version());
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/tasks")
@@ -104,6 +107,7 @@ public class TaskController {
         patch.setAssigneeMemberId(request.assigneeMemberId());
         patch.setPriority(request.priority());
         patch.setDueAt(request.dueAt());
+        patch.setVersion(request.version());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(taskService.update(
                 principal.getAccountId(), orgId, activityId, taskId, patch)));

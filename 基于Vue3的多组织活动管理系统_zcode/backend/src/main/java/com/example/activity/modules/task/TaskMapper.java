@@ -23,7 +23,8 @@ public interface TaskMapper {
         @Param("description") String description,
         @Param("assigneeMemberId") Long assigneeMemberId,
         @Param("priority") String priority,
-        @Param("dueAt") OffsetDateTime dueAt);
+        @Param("dueAt") OffsetDateTime dueAt,
+        @Param("version") Long version);
 
     /** 状态流转带前置状态守卫；完成时写入完成时间，重开时清空。 */
     int transition(

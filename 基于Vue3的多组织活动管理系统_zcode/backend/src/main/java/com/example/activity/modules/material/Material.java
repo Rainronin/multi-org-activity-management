@@ -18,6 +18,8 @@ public class Material {
     private String unit;
     private Long assigneeMemberId;
     private String status;
+    /** S08：编辑冲突用整数版本；每次成功写入 +1。 */
+    private Long version;
     private String note;
     private Long createdBy;
     private OffsetDateTime createdAt;
@@ -93,6 +95,14 @@ public class Material {
 
     public void setNote(String note) {
         this.note = note;
+    }
+
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     public Long getCreatedBy() {

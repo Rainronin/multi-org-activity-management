@@ -207,6 +207,7 @@ class ActivityChangeFreezeTest extends FlowTestSupport {
 
         // 从未确认、无依赖的初始草稿可以删除
         MvcResult plain = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(activityBody("初始草稿", memberIdOf(orgId, owner.username()), "2026-12-28T14:00:00+08:00")))
@@ -230,6 +231,7 @@ class ActivityChangeFreezeTest extends FlowTestSupport {
 
         // 有任务依赖的初始草稿：不得删除，并说明依赖类型
         MvcResult withTask = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(activityBody("有依赖草稿", memberIdOf(orgId, owner.username()), "2026-12-30T14:00:00+08:00")))

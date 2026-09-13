@@ -4,7 +4,7 @@
 
     <sql id="baseColumns">
         id, org_id, activity_id, title, description, assignee_member_id, priority,
-        due_at, status, completed_at, created_by, created_at, updated_at
+        due_at, status, version, completed_at, created_by, created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
@@ -42,13 +42,18 @@
             description = #{description},
             assignee_member_id = #{assigneeMemberId},
             priority = #{priority},
-            due_at = #{dueAt}
+            due_at = #{dueAt},
+            version = version + 1
         WHERE id = #{id}
+          <if test="version != null">
+            AND version = #{version}
+          </if>
     </update>
 
     <update id="transition">
         UPDATE task
         SET status = #{toStatus},
+            version = version + 1,
             completed_at = <choose>
                 <when test="setCompletedAt">CURRENT_TIMESTAMP(6)</when>
                 <otherwise>NULL</otherwise>
