@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElSkeleton, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElRate, ElSkeleton, ElTag } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
-import { applyBlockReason, fetchPublicActivity, type PublicActivityItem } from './publicActivity'
+import {
+  applyBlockReason, fetchPublicActivity, fetchPublicFeedback, submitPublicFeedback,
+  type PublicActivityItem, type PublicFeedbackSummary,
+} from './publicActivity'
 import {
   applyRegistration, cancelMyRegistration, fetchMyRegistrations, isCancellable,
   registrationStatusLabel, type RegistrationItem,
@@ -41,6 +44,45 @@ const applyRules: FormRules = {
 
 let requestSeq = 0
 
+// P9.1：外部参与者的本人反馈（复盘中可提交，不必加入组织）
+const feedback = ref<PublicFeedbackSummary | null>(null)
+const feedbackRating = ref(0)
+const feedbackComment = ref('')
+const feedbackSubmitting = ref(false)
+
+async function loadFeedback(target: string, seq: number, gen: number): Promise<void> {
+  try {
+    const summary = await fetchPublicFeedback(target)
+    if (seq !== requestSeq || gen !== session.generation) {
+      return
+    }
+    feedback.value = summary
+    feedbackRating.value = summary.myRating ?? 0
+    feedbackComment.value = summary.myComment ?? ''
+  } catch {
+    // 未到复盘期或没有资格依据时不展示该区块，不影响公开浏览
+    feedback.value = null
+  }
+}
+
+async function submitFeedback(): Promise<void> {
+  if (feedbackRating.value < 1) {
+    actionError.value = '请先选择 1～5 分评分'
+    return
+  }
+  const gen = session.capture()
+  feedbackSubmitting.value = true
+  actionError.value = ''
+  try {
+    await submitPublicFeedback(activityId.value, feedbackRating.value, feedbackComment.value)
+    await loadFeedback(activityId.value, requestSeq, gen)
+  } catch (error) {
+    actionError.value = error instanceof ApiError ? error.detail : '反馈提交失败，请稍后重试。'
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
 async function load(): Promise<void> {
   if (!activityId.value) {
     return
@@ -65,6 +107,11 @@ async function load(): Promise<void> {
       mine.value = mineItems.find((entry) => entry.activityId === target) ?? null
     } else {
       mine.value = null
+    }
+    if (session.status === 'authenticated') {
+      await loadFeedback(target, seq, gen)
+    } else {
+      feedback.value = null
     }
   } catch (error) {
     if (seq !== requestSeq) {
@@ -308,6 +355,51 @@ function cancelMine() {
             </span>
           </div>
         </template>
+      </section>
+
+      <!-- P9.1：复盘期本人反馈；外部参与者不必加入组织，也不是到场核验 -->
+      <section
+        v-if="feedback && (feedback.canSubmit || feedback.mineSubmitted || feedback.count > 0)"
+        class="public-feedback"
+        data-public-feedback
+      >
+        <h2>活动反馈</h2>
+        <p class="public-hint">
+          当前 {{ feedback.count }} 份反馈
+          <template v-if="feedback.averageRating">
+            ，平均分 {{ feedback.averageRating }}
+          </template>
+          ；反馈是本人主动表达，不代表到场核验，每账号一份、归档前可修改。
+        </p>
+        <p
+          v-if="!feedback.canSubmit && feedback.submitBlockedReason"
+          class="public-hint"
+          data-public-feedback-blocked
+        >
+          {{ feedback.submitBlockedReason }}
+        </p>
+        <ElRate
+          v-model="feedbackRating"
+          :disabled="!feedback.canSubmit"
+          data-public-feedback-rating
+        />
+        <ElInput
+          v-model="feedbackComment"
+          type="textarea"
+          :rows="3"
+          :disabled="!feedback.canSubmit"
+          placeholder="文字建议（可选，不超过 2000 字符）"
+          data-public-feedback-comment
+        />
+        <ElButton
+          type="primary"
+          :disabled="!feedback.canSubmit || feedbackRating < 1"
+          :loading="feedbackSubmitting"
+          data-public-feedback-submit
+          @click="submitFeedback"
+        >
+          {{ feedback.mineSubmitted ? '更新反馈' : '提交反馈' }}
+        </ElButton>
       </section>
 
       <p class="public-note">

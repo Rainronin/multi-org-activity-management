@@ -108,6 +108,22 @@ public class GlobalExceptionHandler {
         return enrich(problem);
     }
 
+    /**
+     * 上传体积超限（P9.2 复核发现的缺口）：容器或 Servlet 在进入业务代码前就拒绝超大请求，
+     * 原先落到通用异常处理返回 500，用户看不到"文件过大"的原因。这里明确返回 413 与可操作的说明，
+     * 与控制器内的单文件/单请求上限校验使用同一套错误码口径。
+     */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ProblemDetail handleUploadTooLarge(
+        org.springframework.web.multipart.MaxUploadSizeExceededException ex) {
+        log.warn("上传体积超限: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.PAYLOAD_TOO_LARGE);
+        problem.setTitle("文件过大");
+        problem.setDetail("单个文件不超过 20MB、单次请求不超过 22MB；请压缩或拆分后重试。");
+        problem.setProperty("code", "ATTACHMENT_TOO_LARGE");
+        return enrich(problem);
+    }
+
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception ex) {
         log.error("未预期异常", ex);

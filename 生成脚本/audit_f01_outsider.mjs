@@ -49,9 +49,13 @@ try {
     registrationStart: new Date(Date.now() - 86400000).toISOString(),
     registrationEnd: new Date(Date.now() + 11 * 86400000).toISOString(),
   }, { 'Idempotency-Key': `f01-${stamp}` })
-  await json(owner, 'PUT', `/api/organizations/${org.id}/activities/${activity.id}/proposal`, { content: '方案' })
-  await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/submit`)
-  await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/approve`, {})
+  // F05：编辑、方案保存与确认必须携带当前版本号（活动创建后版本自 1 起）
+  const activityPath = `/api/organizations/${org.id}/activities/${activity.id}`
+  const currentVersion = async () => (await json(owner, 'GET', activityPath)).version
+  await json(owner, 'PUT', `${activityPath}/proposal`,
+    { content: '方案', version: await currentVersion() })
+  await json(owner, 'POST', `${activityPath}/submit`)
+  await json(owner, 'POST', `${activityPath}/approve`, { version: await currentVersion() })
   await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/registration-open`, { open: true })
 
   // 参与者账号：注册但不加入任何组织。API 会话校验接口行为，浏览器会话走真实页面流程。

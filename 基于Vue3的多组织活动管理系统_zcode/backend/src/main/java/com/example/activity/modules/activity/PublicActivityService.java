@@ -48,14 +48,22 @@ public class PublicActivityService {
         return new PublicActivityPage(items, safePage, safeSize, total);
     }
 
-    /** 公开详情：仅已确认且公开报名的活动；其余一律 404，不泄露草稿存在性。 */
+    /**
+     * 公开详情：仅公开报名且**已发布**（已确认／执行中／复盘中）的活动；草稿、待确认、归档与取消
+     * 一律 404，不泄露未发布活动的存在性。执行与复盘期仍可读，外部参与者才能在参与后查询与反馈。
+     */
     public PublicActivityItem get(Long activityId) {
+        return toItem(requirePublished(activityId));
+    }
+
+    /** 公开侧的动作前置：返回已发布的公开活动（供公开反馈入口复核组织与状态）。 */
+    public Activity requirePublished(Long activityId) {
         Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !Activity.STATUS_APPROVED.equals(activity.getStatus())
+        if (activity == null || !Activity.isPublished(activity.getStatus())
             || !Activity.SCOPE_PUBLIC.equals(activity.getRegistrationScope())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或未公开。");
         }
-        return toItem(activity);
+        return activity;
     }
 
     private PublicActivityItem toItem(Activity activity) {

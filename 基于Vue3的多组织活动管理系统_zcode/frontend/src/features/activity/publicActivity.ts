@@ -66,3 +66,32 @@ export function applyBlockReason(item: PublicActivityItem, now = new Date()): st
   }
   return ''
 }
+
+/** P9.1：公开活动参与者在复盘中可反馈，不必加入组织；只返回汇总与本人一份。 */
+export interface PublicFeedbackSummary {
+  count: number
+  averageRating: string | null
+  mineSubmitted: boolean
+  myRating: number | null
+  myComment: string | null
+  canSubmit: boolean
+  submitBlockedReason: string | null
+}
+
+export async function fetchPublicFeedback(activityId: string): Promise<PublicFeedbackSummary> {
+  const response = await request<PublicFeedbackSummary>(
+    `/api/public/activities/${encodeURIComponent(activityId)}/feedback`,
+  )
+  return response.data
+}
+
+export async function submitPublicFeedback(
+  activityId: string,
+  rating: number,
+  comment?: string,
+): Promise<void> {
+  await request(`/api/public/activities/${encodeURIComponent(activityId)}/feedback`, {
+    method: 'POST',
+    json: { rating, comment: comment && comment.trim() ? comment.trim() : null },
+  })
+}

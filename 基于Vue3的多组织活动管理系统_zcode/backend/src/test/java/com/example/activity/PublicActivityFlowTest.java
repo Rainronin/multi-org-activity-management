@@ -104,6 +104,89 @@ class PublicActivityFlowTest extends FlowTestSupport {
     }
 
     @Test
+    void publishedActivityStaysPublicAndExternalParticipantCanGiveFeedback() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession participant = registerAndLogin();
+        TestSession stranger = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        // 报名窗口包含当前时间，才能在测试中真实报名
+        MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey())
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(("{\"name\":\"复盘期公开活动\",\"ownerMemberId\":%d,\"description\":\"公开简介\","
+                    + "\"startTime\":\"2027-05-02T14:00:00+08:00\",\"endTime\":\"2027-05-02T16:00:00+08:00\","
+                    + "\"location\":\"礼堂\",\"registrationScope\":\"PUBLIC\",\"capacity\":5,"
+                    + "\"registrationStart\":\"2026-01-01T00:00:00+08:00\","
+                    + "\"registrationEnd\":\"2027-04-30T00:00:00+08:00\"}").formatted(ownerMemberId)))
+            .andExpect(status().isCreated())
+            .andReturn();
+        Long activityId = Long.parseLong(readField(created, "$.id"));
+        submitForApproval(owner, orgId, activityId);
+        openRegistration(owner, orgId, activityId);
+        // 外部参与者：登录但不加入组织
+        MvcResult applied = mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
+                .with(csrf()).session(participant.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"外部参与者\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+        String registrationId = readField(applied, "$.registrationId");
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+
+        // 已发布状态（执行中、复盘中）仍可从公开端点读取：外部参与者要能在参与后查询与反馈
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/start-execution")
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(get("/api/public/activities/" + activityId)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/finish-execution")
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(get("/api/public/activities/" + activityId)).andExpect(status().isOk());
+
+        // 匿名读取反馈需要登录：不给匿名者暴露参与者评分
+        mockMvc.perform(get("/api/public/activities/" + activityId + "/feedback"))
+            .andExpect(status().isUnauthorized());
+        // 非参与者（也不是组织成员）：读不到汇总、也提交不了（按 F01 口径统一 404，不泄露活动内情）
+        mockMvc.perform(get("/api/public/activities/" + activityId + "/feedback").session(stranger.session()))
+            .andExpect(status().isNotFound());
+        mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
+                .session(stranger.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rating\":5}"))
+            .andExpect(status().isNotFound());
+
+        // 参与者：只看到汇总与本人一份，可提交与修改
+        mockMvc.perform(get("/api/public/activities/" + activityId + "/feedback").session(participant.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.count").value(0))
+            .andExpect(jsonPath("$.canSubmit").value(true))
+            .andExpect(jsonPath("$.mineSubmitted").value(false));
+        mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
+                .session(participant.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rating\":5,\"comment\":\"流程顺畅\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.rating").value(5));
+        mockMvc.perform(get("/api/public/activities/" + activityId + "/feedback").session(participant.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.count").value(1))
+            .andExpect(jsonPath("$.mineSubmitted").value(true))
+            .andExpect(jsonPath("$.myRating").value(5))
+            .andExpect(jsonPath("$.averageRating").value("5.0"));
+        // 每账号一份：再次提交是修改而不是新增
+        mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
+                .session(participant.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rating\":4,\"comment\":\"补充建议\"}"))
+            .andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM feedback WHERE activity_id = ?", Long.class, activityId)).isEqualTo(1L);
+    }
+
+    @Test
     void withdrawnActivityIsNoLongerPublic() throws Exception {
         TestSession owner = registerAndLogin();
         Long orgId = createOrg(owner);
