@@ -22,6 +22,9 @@ public interface OrganizationMemberMapper {
 
     int countActiveOwners(@Param("orgId") Long orgId);
 
+    /** P5：支出提交后的站内提示接收人（本组织在任负责人的账号）。 */
+    List<Long> listActiveOwnerAccountIds(@Param("orgId") Long orgId);
+
     /** 仅当仍为 ACTIVE 时更新；返回 0 表示并发下已被处理。 */
     int updateStatus(@Param("id") Long id, @Param("status") String status);
 

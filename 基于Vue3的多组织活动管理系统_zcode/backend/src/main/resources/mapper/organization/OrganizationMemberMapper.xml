@@ -54,6 +54,16 @@
           AND role = 'OWNER'
     </select>
 
+    <!-- P5：支出提交后的提示接收人 —— 本组织在任负责人账号 -->
+    <select id="listActiveOwnerAccountIds" resultType="long">
+        SELECT account_id
+        FROM organization_member
+        WHERE org_id = #{orgId}
+          AND status = 'ACTIVE'
+          AND role = 'OWNER'
+        ORDER BY account_id
+    </select>
+
     <update id="updateStatus">
         UPDATE organization_member
         SET status = #{status}

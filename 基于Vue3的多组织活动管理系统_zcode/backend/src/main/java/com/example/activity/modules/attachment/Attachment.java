@@ -7,12 +7,16 @@ public class Attachment {
 
     public static final String PURPOSE_ACTIVITY_DOC = "ACTIVITY_DOC";
     public static final String PURPOSE_TASK_ATTACHMENT = "TASK_ATTACHMENT";
+    /** P5：费用凭证；与活动资料、任务资料三选一。 */
+    public static final String PURPOSE_EXPENSE_VOUCHER = "EXPENSE_VOUCHER";
 
     private Long id;
     private Long orgId;
     private Long activityId;
     /** S10：任务资料时指向任务；活动资料为 null（二选一，后端架构 6.1）。 */
     private Long taskId;
+    /** P5：费用凭证时指向支出；其余用途为 null。 */
+    private Long expenseId;
     private String purpose;
     private String storedName;
     private String originalName;
@@ -56,6 +60,14 @@ public class Attachment {
 
     public void setTaskId(Long taskId) {
         this.taskId = taskId;
+    }
+
+    public Long getExpenseId() {
+        return expenseId;
+    }
+
+    public void setExpenseId(Long expenseId) {
+        this.expenseId = expenseId;
     }
 
     public String getPurpose() {

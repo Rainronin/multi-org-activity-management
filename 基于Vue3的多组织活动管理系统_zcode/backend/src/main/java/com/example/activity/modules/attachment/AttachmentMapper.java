@@ -20,6 +20,10 @@ public interface AttachmentMapper {
     List<Attachment> listActiveByTask(
         @Param("activityId") Long activityId, @Param("taskId") Long taskId);
 
+    /** P5：费用凭证按支出查询。 */
+    List<Attachment> listActiveByExpense(
+        @Param("activityId") Long activityId, @Param("expenseId") Long expenseId);
+
     int markDeleted(@Param("id") Long id);
 
     /** S07：草稿删除前的依赖检查（只统计未删除附件）。 */
@@ -27,4 +31,7 @@ public interface AttachmentMapper {
 
     /** S09：登记失败补偿前确认存储名是否已被引用（含已软删除记录，避免误删在用文件）。 */
     int countByStoredName(@Param("storedName") String storedName);
+
+    /** P5：费用凭证数量（只读依赖，供 expense 模块判断是否缺票据说明）。 */
+    int countActiveByExpense(@Param("expenseId") Long expenseId);
 }

@@ -41,6 +41,8 @@ public class ActivityService {
     private final com.example.activity.modules.material.MaterialMapper materialMapper;
     private final com.example.activity.modules.attachment.AttachmentMapper attachmentMapper;
     private final com.example.activity.modules.registration.RegistrationMapper registrationMapper;
+    /** P5：草稿删除前清点费用登记（跨模块只读依赖）。 */
+    private final com.example.activity.modules.expense.ExpenseMapper expenseMapper;
     // F08：关键活动变更的站内提示来源意图（计划书 6.7），与业务同事务落库
     private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
 
@@ -53,6 +55,7 @@ public class ActivityService {
         com.example.activity.modules.material.MaterialMapper materialMapper,
         com.example.activity.modules.attachment.AttachmentMapper attachmentMapper,
         com.example.activity.modules.registration.RegistrationMapper registrationMapper,
+        com.example.activity.modules.expense.ExpenseMapper expenseMapper,
         com.example.activity.modules.notification.NotificationMapper notificationMapper) {
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
@@ -62,6 +65,7 @@ public class ActivityService {
         this.materialMapper = materialMapper;
         this.attachmentMapper = attachmentMapper;
         this.registrationMapper = registrationMapper;
+        this.expenseMapper = expenseMapper;
         this.notificationMapper = notificationMapper;
     }
 
@@ -628,6 +632,9 @@ public class ActivityService {
         }
         if (registrationMapper.countEffective(activityId) > 0) {
             found.add("有效报名");
+        }
+        if (expenseMapper.countByActivityId(activityId) > 0) {
+            found.add("费用登记");
         }
         return found;
     }

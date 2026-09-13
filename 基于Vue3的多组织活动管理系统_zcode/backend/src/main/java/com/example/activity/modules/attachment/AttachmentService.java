@@ -75,8 +75,9 @@ public class AttachmentService {
     }
 
     public record AttachmentItem(
-        Long attachmentId, String activityId, String taskId, String originalName, String contentType,
-        long sizeBytes, Long uploadedBy, String uploaderUsername, String purpose, OffsetDateTime createdAt) {
+        Long attachmentId, String activityId, String taskId, String expenseId, String originalName,
+        String contentType, long sizeBytes, Long uploadedBy, String uploaderUsername, String purpose,
+        OffsetDateTime createdAt) {
     }
 
     private record Context(OrganizationMember actor, Activity activity, boolean canManage) {
@@ -84,7 +85,8 @@ public class AttachmentService {
 
     /**
      * 附件归属对象（后端架构 6.1：只能关联一个合法业务对象）。
-     * 活动级资料用 {@code ofActivity}，任务资料用 {@code ofTask}（此时 Task 必须属于该活动）。
+     * 活动级资料用 {@code ofActivity}，任务资料用 {@code ofTask}（Task 必须属于该活动），
+     * 费用凭证用 {@code ofExpense}（费用归属校验由 expense 模块在调用前完成）。
      */
     public sealed interface AttachmentOwner {
         String purpose();
@@ -102,6 +104,13 @@ public class AttachmentService {
                 return Attachment.PURPOSE_TASK_ATTACHMENT;
             }
         }
+
+        record OfExpense(Long expenseId) implements AttachmentOwner {
+            @Override
+            public String purpose() {
+                return Attachment.PURPOSE_EXPENSE_VOUCHER;
+            }
+        }
     }
 
     public static final AttachmentOwner ACTIVITY_DOC = new AttachmentOwner.OfActivity();
@@ -111,11 +120,23 @@ public class AttachmentService {
         return new AttachmentOwner.OfTask(requireTask(orgId, activityId, taskId));
     }
 
+    /** P5：费用凭证归属；费用是否存在与归属由调用方（expense 模块）先行校验。 */
+    public AttachmentOwner expenseOwner(Long expenseId) {
+        return new AttachmentOwner.OfExpense(expenseId);
+    }
+
     private Long taskIdOf(AttachmentOwner owner) {
         return owner instanceof AttachmentOwner.OfTask ofTask ? ofTask.task().getId() : null;
     }
 
+    private Long expenseIdOf(AttachmentOwner owner) {
+        return owner instanceof AttachmentOwner.OfExpense ofExpense ? ofExpense.expenseId() : null;
+    }
+
     private AttachmentOwner ownerOf(Attachment attachment) {
+        if (attachment.getExpenseId() != null) {
+            return new AttachmentOwner.OfExpense(attachment.getExpenseId());
+        }
         if (attachment.getTaskId() == null) {
             return ACTIVITY_DOC;
         }
@@ -159,6 +180,15 @@ public class AttachmentService {
         return attachmentMapper.listActiveByTask(activityId, taskId).stream().map(this::toItem).toList();
     }
 
+    /** P5：费用凭证列表；票据只有管理者可见（计划书 6.3、7.4）。 */
+    public List<AttachmentItem> listByExpense(Long accountId, Long orgId, Long activityId, Long expenseId) {
+        Context ctx = requireContext(accountId, orgId, activityId);
+        if (!ctx.canManage()) {
+            throw notFound();
+        }
+        return attachmentMapper.listActiveByExpense(activityId, expenseId).stream().map(this::toItem).toList();
+    }
+
     /**
      * 上传（第二步）：在短事务内锁内复检权限后登记归属并写审计。
      * 与 {@link #stage} 分开，确保 @Transactional 经过 Spring 代理（避免同类自调用失效，后端架构 5.1）。
@@ -191,6 +221,7 @@ public class AttachmentService {
         attachment.setOrgId(orgId);
         attachment.setActivityId(activityId);
         attachment.setTaskId(taskIdOf(owner));
+        attachment.setExpenseId(expenseIdOf(owner));
         attachment.setPurpose(owner.purpose());
         attachment.setStoredName(staged.storedName());
         attachment.setOriginalName(staged.originalName());
@@ -597,6 +628,7 @@ public class AttachmentService {
         return new AttachmentItem(
             attachment.getId(), String.valueOf(attachment.getActivityId()),
             attachment.getTaskId() == null ? null : String.valueOf(attachment.getTaskId()),
+            attachment.getExpenseId() == null ? null : String.valueOf(attachment.getExpenseId()),
             attachment.getOriginalName(),
             attachment.getContentType(), attachment.getSizeBytes(), attachment.getUploadedBy(),
             accountMapper.findUsernameById(attachment.getUploadedBy()), attachment.getPurpose(),

@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.expense.ExpenseMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, purpose, amount, incurred_on, category, handled_note, no_receipt_note,
+        status, submitted_by, submitted_at, decided_by, decided_at, reject_reason, over_budget_note,
+        void_reason, voided_at, corrects_expense_id, version, request_key, request_fingerprint,
+        created_by, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO expense (org_id, activity_id, purpose, amount, incurred_on, category, handled_note,
+                             no_receipt_note, status, corrects_expense_id, request_key,
+                             request_fingerprint, created_by)
+        VALUES (#{orgId}, #{activityId}, #{purpose}, #{amount}, #{incurredOn}, #{category}, #{handledNote},
+                #{noReceiptNote}, #{status}, #{correctsExpenseId}, #{requestKey},
+                #{requestFingerprint}, #{createdBy})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.expense.Expense">
+        SELECT <include refid="baseColumns" />
+        FROM expense
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.expense.Expense">
+        SELECT <include refid="baseColumns" />
+        FROM expense
+        WHERE org_id = #{orgId}
+          AND request_key = #{requestKey}
+    </select>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.expense.Expense">
+        SELECT <include refid="baseColumns" />
+        FROM expense
+        WHERE activity_id = #{activityId}
+          <if test="status != null">
+            AND status = #{status}
+          </if>
+        ORDER BY incurred_on DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByActivity" resultType="long">
+        SELECT COUNT(*)
+        FROM expense
+        WHERE activity_id = #{activityId}
+          <if test="status != null">
+            AND status = #{status}
+          </if>
+    </select>
+
+    <!-- P5.3：统计只累加有效明细；已驳回、已作废与草稿不计入 -->
+    <select id="sumAmountByStatus" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(amount), 0.00)
+        FROM expense
+        WHERE activity_id = #{activityId}
+          AND status = #{status}
+    </select>
+
+    <update id="update">
+        UPDATE expense
+        SET purpose = #{purpose},
+            amount = #{amount},
+            incurred_on = #{incurredOn},
+            category = #{category},
+            handled_note = #{handledNote},
+            no_receipt_note = #{noReceiptNote},
+            version = version + 1
+        WHERE id = #{id}
+          AND status IN ('DRAFT', 'REJECTED')
+          AND version = #{version}
+    </update>
+
+    <!-- 状态流转：submit／confirm／reject 共用；前置状态由 Service 在锁内校验，受影响行为 0 即状态已变化。
+         这里用显式参数而不是 OGNL 字符串比较，避免 MyBatis 对单引号字面量的解释差异。 -->
+    <update id="transition">
+        UPDATE expense
+        <set>
+            status = #{toStatus},
+            version = version + 1,
+            <if test="submittedBy != null">
+                submitted_by = #{submittedBy},
+                submitted_at = CURRENT_TIMESTAMP(6),
+            </if>
+            <if test="decidedBy != null">
+                decided_by = #{decidedBy},
+                decided_at = CURRENT_TIMESTAMP(6),
+            </if>
+            <if test="clearRejectReason">
+                reject_reason = NULL,
+            </if>
+            <if test="reason != null">
+                reject_reason = #{reason},
+            </if>
+            <if test="overBudgetNote != null">
+                over_budget_note = #{overBudgetNote},
+            </if>
+        </set>
+        WHERE id = #{id}
+          AND status = #{fromStatus}
+    </update>
+
+    <update id="voidApproved">
+        UPDATE expense
+        SET status = 'VOIDED',
+            version = version + 1,
+            void_reason = #{reason},
+            voided_at = CURRENT_TIMESTAMP(6),
+            decided_by = #{actorAccountId},
+            decided_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id}
+          AND status = 'APPROVED'
+    </update>
+
+    <select id="countByActivityId" resultType="int">
+        SELECT COUNT(*)
+        FROM expense
+        WHERE activity_id = #{activityId}
+    </select>
+
+</mapper>

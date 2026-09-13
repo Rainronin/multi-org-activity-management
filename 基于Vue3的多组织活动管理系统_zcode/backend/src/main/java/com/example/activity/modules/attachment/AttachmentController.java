@@ -38,8 +38,9 @@ public class AttachmentController {
     }
 
     public record AttachmentResponse(
-        String attachmentId, String activityId, String taskId, String originalName, String contentType,
-        long sizeBytes, String uploaderUsername, String purpose, java.time.OffsetDateTime createdAt) {
+        String attachmentId, String activityId, String taskId, String expenseId, String originalName,
+        String contentType, long sizeBytes, String uploaderUsername, String purpose,
+        java.time.OffsetDateTime createdAt) {
     }
 
     public record AttachmentsResponse(List<AttachmentResponse> items) {
@@ -47,8 +48,8 @@ public class AttachmentController {
 
     private AttachmentResponse toResponse(AttachmentService.AttachmentItem item) {
         return new AttachmentResponse(String.valueOf(item.attachmentId()), item.activityId(), item.taskId(),
-            item.originalName(), item.contentType(), item.sizeBytes(), item.uploaderUsername(),
-            item.purpose(), item.createdAt());
+            item.expenseId(), item.originalName(), item.contentType(), item.sizeBytes(),
+            item.uploaderUsername(), item.purpose(), item.createdAt());
     }
 
     /**
