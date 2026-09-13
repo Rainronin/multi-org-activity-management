@@ -103,7 +103,7 @@ try {
   await mkdir(new URL('../验证截图/', import.meta.url), { recursive: true })
 
   /** 单页单宽度核对：无 pageerror、页面级无横向溢出、关键文案可见。 */
-  async function check(label, path, viewport, expectText, shot) {
+  async function check(label, path, viewport, expectText, shot, readySelector) {
     const context = await browser.newContext({ baseURL: base, viewport })
     try {
       if (label.includes('匿名')) {
@@ -115,9 +115,14 @@ try {
       const errors = []
       page.on('pageerror', (e) => errors.push(e.message))
       await page.goto(path, { waitUntil: 'networkidle' })
-      if (expectText) {
-        await page.waitForSelector(`text=${expectText}`, { timeout: 15000 })
+      if (readySelector) {
+        await page.waitForSelector(readySelector, { timeout: 15000 }).catch(() => undefined)
       }
+      if (expectText) {
+        // 关键文案作为“页面已就绪”的信号；找不到时按测量结果记录，不中断整轮核对
+        await page.waitForSelector(`text=${expectText}`, { timeout: 15000 }).catch(() => undefined)
+      }
+      await page.waitForTimeout(300)
       const overflow = await page.evaluate(() => {
         const el = document.documentElement
         return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
@@ -130,6 +135,11 @@ try {
         overflowPx: overflow.scrollWidth - overflow.clientWidth,
         keyTextVisible: expectText ? body.includes(expectText) : true,
         pageErrors: errors,
+      }
+      if (expectText && !entry.keyTextVisible) {
+        // 关键文案缺失时留证：表格行数与正文片段，便于判断是页面缺陷还是脚本预期过时
+        entry.tableRows = await page.locator('.el-table__row').count()
+        entry.bodyPreview = body.replace(/\s+/g, ' ').slice(0, 300)
       }
       results.push(entry)
       if (shot) {
@@ -147,12 +157,20 @@ try {
     await check('负责人-活动详情', detailPath, { width, height: 900 }, '窄屏任务',
       width === 390 || width === 320 ? `手机验收-详情-${width}` : null)
   }
-  await check('负责人-活动列表', `/org/${org.id}/activities`, { width: 390, height: 900 }, '手机验收活动', '手机验收-列表-390')
-  await check('负责人-成员列表', `/org/${org.id}/members`, { width: 390, height: 900 }, ownerName, '手机验收-成员-390')
-  await check('成员-本人任务', '/', { width: 390, height: 900 }, '我的任务', '手机验收-成员首页-390')
+  await check('负责人-活动列表', `/org/${org.id}/activities`, { width: 390, height: 900 }, '手机验收活动',
+    '手机验收-列表-390', '.el-table__row')
+  await check('负责人-成员列表', `/org/${org.id}/members`, { width: 390, height: 900 }, ownerName,
+    '手机验收-成员-390', '.el-table__row')
+  await check('成员-本人任务', `/org/${org.id}/my-tasks`, { width: 390, height: 900 }, '窄屏任务',
+    '手机验收-成员首页-390')
   await check('成员-活动详情', detailPath, { width: 320, height: 900 }, '窄屏任务', null)
-  await check('匿名-公开列表', '/public/activities', { width: 390, height: 900 }, '公开活动', '手机验收-公开列表-390')
-  await check('匿名-公开详情', `/public/activities/${activity.id}`, { width: 390, height: 900 }, '手机验收活动', '手机验收-公开详情-390')
+  // 公开页同样要过五档宽度：F10 收尾前这里曾在窄屏横向溢出（.public-main 内容盒）
+  for (const width of WIDTHS) {
+    await check('匿名-公开列表', '/public/activities', { width, height: 900 }, '公开活动',
+      width === 390 ? '手机验收-公开列表-390' : null)
+    await check('匿名-公开详情', `/public/activities/${activity.id}`, { width, height: 900 }, '手机验收活动',
+      width === 390 ? '手机验收-公开详情-390' : null)
+  }
   await check('负责人-活动详情-短屏', detailPath, SHORT_SCREEN, '窄屏任务', '手机验收-短屏-390x600')
   await check('负责人-活动详情-200%缩放', detailPath, ZOOM_200, '窄屏任务', '手机验收-缩放200-详情')
 

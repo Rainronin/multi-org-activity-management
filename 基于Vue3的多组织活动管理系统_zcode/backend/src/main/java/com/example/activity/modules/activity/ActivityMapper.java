@@ -20,11 +20,13 @@ public interface ActivityMapper {
     /** S08 锁协议：活动行排他锁（活动自身写入与跨子记录写路径）。 */
     Long lockActivity(@Param("id") Long id);
 
+    /** 分页查询；status 为空表示“全部状态”，此时非组织负责人按 visibleToMemberId 过滤可见性。 */
     List<Activity> listPage(
         @Param("orgId") Long orgId,
         @Param("query") String query,
         @Param("status") String status,
         @Param("ownerOnly") Long ownerOnly,
+        @Param("visibleToMemberId") Long visibleToMemberId,
         @Param("offset") long offset,
         @Param("limit") int limit);
 
@@ -32,7 +34,8 @@ public interface ActivityMapper {
         @Param("orgId") Long orgId,
         @Param("query") String query,
         @Param("status") String status,
-        @Param("ownerOnly") Long ownerOnly);
+        @Param("ownerOnly") Long ownerOnly,
+        @Param("visibleToMemberId") Long visibleToMemberId);
 
     /** 仅更新显式传入的字段（PATCH 语义）；F05：必须携带期望版本，不做无版本覆盖。 */
     int updateDraft(Activity activity);

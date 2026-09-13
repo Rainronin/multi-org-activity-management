@@ -173,16 +173,26 @@ public class ActivityService {
     public ActivityPage list(Long accountId, Long orgId, int page, int pageSize, String query, String status) {
         OrganizationMember actor = requireActiveMember(orgId, accountId);
         boolean orgOwner = OrganizationMember.ROLE_OWNER.equals(actor.getRole());
-        String effectiveStatus = status == null || status.isBlank()
-            ? (orgOwner ? Activity.STATUS_DRAFT : Activity.STATUS_APPROVED) : status;
-        // 未发布状态对非组织负责人只能看到本人负责的活动；已发布状态无需再按负责人过滤
-        Long ownerOnly = !orgOwner
+        String effectiveStatus = status == null || status.isBlank() ? null : status;
+        Long ownerOnly = null;
+        Long visibleToMemberId = null;
+        if (effectiveStatus == null) {
+            // 未指定状态＝“全部状态”（接口合同：组织负责人见全部状态）：
+            // 组织负责人不加限制；其他成员见已确认活动与本人负责的未发布活动（S06）。
+            if (!orgOwner) {
+                visibleToMemberId = actor.getId();
+            }
+        } else if (!orgOwner
             && (Activity.STATUS_DRAFT.equals(effectiveStatus)
-                || Activity.STATUS_PENDING_APPROVAL.equals(effectiveStatus))
-            ? actor.getId() : null;
-        long total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus, ownerOnly);
+                || Activity.STATUS_PENDING_APPROVAL.equals(effectiveStatus))) {
+            // 指定未发布状态时，非组织负责人只能看到本人负责的活动
+            ownerOnly = actor.getId();
+        }
+        long total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus, ownerOnly,
+            visibleToMemberId);
         List<ActivityItem> items = activityMapper
-            .listPage(orgId, blankToNull(query), effectiveStatus, ownerOnly, (long) (page - 1) * pageSize, pageSize)
+            .listPage(orgId, blankToNull(query), effectiveStatus, ownerOnly, visibleToMemberId,
+                (long) (page - 1) * pageSize, pageSize)
             .stream()
             .map(this::toItem)
             .toList();

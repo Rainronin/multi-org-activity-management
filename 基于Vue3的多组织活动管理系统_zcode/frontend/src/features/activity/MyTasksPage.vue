@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElButton, ElTable, ElTag } from 'element-plus'
+import { ElButton, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { advanceTask, fetchMyTasks, type TaskItem } from './p3'
@@ -193,14 +193,14 @@ function priorityLabel(priority: string): string {
         >
           <template #default="{ row }">
             <ElButton
-              v-if="nextStatus(row)"
+              v-if="nextStatus(row as TaskItem)"
               size="small"
               type="primary"
               plain
               :loading="actingId === row.taskId"
-              @click="advance(row)"
+              @click="advance(row as TaskItem)"
             >
-              {{ nextStatus(row) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
+              {{ nextStatus(row as TaskItem) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
             </ElButton>
           </template>
         </ElTableColumn>

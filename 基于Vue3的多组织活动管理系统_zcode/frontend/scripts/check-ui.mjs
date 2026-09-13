@@ -1,7 +1,8 @@
 // check:ui —— UI 规范 14.1 最小门禁（P0.2 建立的静态检查，随实际写法逐步补齐）。
 // 覆盖：tokens.css 完整性（未定义引用、块内重复定义、自引用循环）；
 // 业务文件中的颜色字面量、固定设计尺寸字面量、字体属性字面量、z-index、
-// transition/animation 时长字面量、!important 与内联 style 绕过。
+// transition/animation 时长字面量、!important 与内联 style 绕过；
+// 以及 Element Plus 组件的模板使用与显式导入是否一致。
 // 结构值（0、auto、none、100%、min-content 等）、SVG 绘图坐标与数据百分比不受限。
 // 限制：无法静态判断的组件数值 props 与数据几何由代码审核补足。
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -113,6 +114,40 @@ for (const file of businessFiles) {
   }
   for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
     addProblem(file, lineOf(text, match.index), `组件尺寸 props 字面量 ${match[0].slice(-40)}，应绑定 token`)
+  }
+  if (file.endsWith('.vue')) {
+    checkElementPlusImports(text, file)
+  }
+}
+
+/**
+ * Element Plus 组件按需显式导入：模板里用到却未导入的组件会被当成未知标签，
+ * 表现为表格列不渲染、插槽拿到 undefined（P3「我的任务」曾整页报错），静态门禁拦住这类回归。
+ */
+function checkElementPlusImports(text, file) {
+  const templateStart = text.indexOf('<template>')
+  if (templateStart < 0) {
+    return
+  }
+  const template = text.slice(templateStart)
+  const setup = text.slice(0, templateStart)
+  const imported = new Set()
+  for (const block of setup.matchAll(/import\s*\{([^}]+)\}\s*from\s*'element-plus'/g)) {
+    for (const item of block[1].split(',')) {
+      const name = item.trim().split(/\s+as\s+/)[0].trim()
+      if (name) {
+        imported.add(name)
+      }
+    }
+  }
+  const seen = new Set()
+  for (const match of template.matchAll(/<(El[A-Za-z]+)[\s/>]/g)) {
+    const tag = match[1]
+    if (imported.has(tag) || seen.has(tag)) {
+      continue
+    }
+    seen.add(tag)
+    addProblem(file, lineOf(text, templateStart + match.index), `模板使用 <${tag}> 但未从 element-plus 显式导入`)
   }
 }
 

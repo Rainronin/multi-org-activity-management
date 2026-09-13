@@ -43,16 +43,23 @@
         WHERE id = #{id}
     </select>
 
+    <!-- 未指定 status 时（接口合同的“全部状态”）按可见性过滤，而不是强行只取某一状态：
+         组织负责人见全部；其他成员见已确认活动与本人负责的未发布活动（S06）。 -->
     <select id="listPage" resultType="com.example.activity.modules.activity.Activity">
         SELECT <include refid="baseColumns" />
         FROM activity
         WHERE org_id = #{orgId}
-          AND status = #{status}
+          <if test="status != null">
+            AND status = #{status}
+          </if>
           <if test="query != null and query != ''">
             AND name LIKE CONCAT('%', #{query}, '%')
           </if>
           <if test="ownerOnly != null">
             AND owner_member_id = #{ownerOnly}
+          </if>
+          <if test="visibleToMemberId != null">
+            AND (status = 'APPROVED' OR owner_member_id = #{visibleToMemberId})
           </if>
         ORDER BY updated_at DESC, id DESC
         LIMIT #{limit} OFFSET #{offset}
@@ -62,12 +69,17 @@
         SELECT COUNT(*)
         FROM activity
         WHERE org_id = #{orgId}
-          AND status = #{status}
+          <if test="status != null">
+            AND status = #{status}
+          </if>
           <if test="query != null and query != ''">
             AND name LIKE CONCAT('%', #{query}, '%')
           </if>
           <if test="ownerOnly != null">
             AND owner_member_id = #{ownerOnly}
+          </if>
+          <if test="visibleToMemberId != null">
+            AND (status = 'APPROVED' OR owner_member_id = #{visibleToMemberId})
           </if>
     </select>
 

@@ -70,6 +70,18 @@ class ActivityVisibilityTest extends FlowTestSupport {
             .andExpect(jsonPath("$.total").value(1))
             .andExpect(jsonPath("$.items.length()").value(1));
 
+        // 不指定状态＝“全部状态”：组织负责人同时看到已确认与未发布活动（列表页“全部状态”入口）
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities").session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(2))
+            .andExpect(jsonPath("$.items.length()").value(2));
+
+        // 普通成员不指定状态时看到已确认活动与本人负责的未发布活动，不含他人未发布活动
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities").session(member.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(1))
+            .andExpect(jsonPath("$.items[0].id").value(String.valueOf(approved)));
+
         // 详情与列表结论一致
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + pending).session(member.session()))
             .andExpect(status().isNotFound());

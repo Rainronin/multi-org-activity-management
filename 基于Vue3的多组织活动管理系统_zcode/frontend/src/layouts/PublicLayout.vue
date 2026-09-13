@@ -169,6 +169,8 @@ function onAccountCommand(command: string) {
   max-width: var(--ui-layout-content-max);
   margin: 0 auto;
   padding: var(--ui-layout-page-padding);
+  /* 窄屏核对：内容盒宽度会变成 100% + 左右内边距，导致公开页整体横向溢出 */
+  box-sizing: border-box;
 }
 
 .public-footer {
