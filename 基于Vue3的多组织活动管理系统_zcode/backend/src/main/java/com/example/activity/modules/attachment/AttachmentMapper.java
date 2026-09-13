@@ -11,6 +11,9 @@ public interface AttachmentMapper {
 
     Attachment findActiveById(@Param("id") Long id);
 
+    /** F06：按组织的防重键查已提交附件（含已软删除记录，避免同键重放复活已删附件）。 */
+    Attachment findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
     List<Attachment> listActiveByActivity(@Param("activityId") Long activityId);
 
     /** S10：活动资料列表排除任务资料，任务资料按任务查询。 */

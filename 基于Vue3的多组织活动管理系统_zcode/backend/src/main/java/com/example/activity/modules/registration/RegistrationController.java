@@ -36,7 +36,10 @@ public class RegistrationController {
     public record RegistrationResponse(
         String registrationId, String activityId, Long accountId, String accountUsername,
         String displayName, String note, String status, String cancelReason,
-        OffsetDateTime decidedAt, OffsetDateTime createdAt) {
+        OffsetDateTime decidedAt, OffsetDateTime createdAt,
+        String activityName, String organizationName, String location,
+        OffsetDateTime startTime, OffsetDateTime endTime,
+        boolean registrationOpen, boolean adjusting) {
     }
 
     public record RegistrationsResponse(
@@ -58,7 +61,9 @@ public class RegistrationController {
         return new RegistrationResponse(
             String.valueOf(item.registrationId()), String.valueOf(item.activityId()),
             item.accountId(), item.accountUsername(), item.displayName(), item.note(),
-            item.status(), item.cancelReason(), item.decidedAt(), item.createdAt());
+            item.status(), item.cancelReason(), item.decidedAt(), item.createdAt(),
+            item.activityName(), item.organizationName(), item.location(),
+            item.startTime(), item.endTime(), item.registrationOpen(), item.adjusting());
     }
 
     @PostMapping("/api/activities/{activityId}/registrations")

@@ -8,8 +8,8 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true })
 try {
   const contexts = await Promise.all([1, 2, 3].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
   const [owner, member, outsider] = contexts
-  async function call(ctx, method, path, data, multipart) {
-    const headers = {}
+  async function call(ctx, method, path, data, multipart, extraHeaders) {
+    const headers = { ...(extraHeaders || {}) }
     if (method !== 'GET') {
       const csrf = await (await ctx.request.get('/api/auth/csrf')).json()
       headers[csrf.headerName] = csrf.token
@@ -21,6 +21,13 @@ try {
     assert.ok(res.ok(), `准备流程失败: ${method} ${path} ${res.status()}`)
     return res.json()
   }
+  // F05：方案保存、审批、撤回确认与编辑都必须携带当前 version，调用前先读取
+  async function currentVersion(activityId) {
+    return (await json(owner, 'GET', `${path}/${activityId}`)).version
+  }
+  // F06：上传必须携带 Idempotency-Key，每次上传生成唯一键
+  let keySeq = 0
+  const nextKey = () => `audit${Date.now()}-${++keySeq}`
   const usernames = []
   for (let i = 0; i < contexts.length; i++) {
     const ctx = contexts[i], username = `audit${Date.now()}p${i}`, password = `Pass${Date.now()}word`
@@ -38,13 +45,13 @@ try {
   const memberId = members.find(x => x.username === usernames[1]).memberId
   const path = `/api/organizations/${org.id}/activities`
   async function createActivity(name, assignee = ownerMember) {
-    const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' })
-    await json(owner, 'PUT', `${path}/${activity.id}/proposal`, { content: '人工方案审核样例' })
+    const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' }, { 'Idempotency-Key': nextKey() })
+    await json(owner, 'PUT', `${path}/${activity.id}/proposal`, { content: '人工方案审核样例', version: await currentVersion(activity.id) })
     return activity
   }
   async function approveActivity(activity) {
     await json(owner, 'POST', `${path}/${activity.id}/submit`)
-    await json(owner, 'POST', `${path}/${activity.id}/approve`, { note: '审核通过' })
+    await json(owner, 'POST', `${path}/${activity.id}/approve`, { note: '审核通过', version: await currentVersion(activity.id) })
   }
   const activity = await createActivity('正式活动审核', memberId)
   await approveActivity(activity)
@@ -74,20 +81,20 @@ try {
   await page.screenshot({ path: fileURLToPath(new URL('../验证截图/审核-P234-活动详情.png', import.meta.url)), fullPage: true })
   console.log(JSON.stringify({ check: 'P3 页面渲染', browserErrors, unresolvedComponents: warnings.filter(x => x.includes('Failed to resolve component')).map(x => x.split('\n')[0]), hasTaskText: (await page.locator('body').innerText()).includes('本人任务') }))
 
-  await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排' })
+  await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排', version: await currentVersion(activity.id) })
   const approvedWhileDraft = await call(owner, 'POST', `${aPath}/registrations/${foreignRegistration.registrationId}/approve`)
-  const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC' })
+  const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC', version: await currentVersion(activity.id) })
   const taskWhileDraft = await call(owner, 'POST', `${aPath}/tasks`, { title: '调整期新增任务', assigneeMemberId: ownerMember })
   console.log(JSON.stringify({ check: '关键变更冻结', changeScopeWithRegistrations: patch.status(), createTaskInWithdrawnDraft: taskWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status() }))
 
   const draft = await createActivity('未发布草稿')
-  const draftTask = await json(owner, 'POST', `${path}/${draft.id}/tasks`, { title: '内部草稿任务', assigneeMemberId: ownerMember })
-  const upload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: 'fake.webp', mimeType: 'image/webp', buffer: Buffer.from('This is not a WebP image') } })
-  const attachment = await upload.json()
-  console.log(JSON.stringify({ check: '草稿子资源与文件内容', parentDetail: (await call(member, 'GET', `${path}/${draft.id}`)).status(), tasks: (await call(member, 'GET', `${path}/${draft.id}/tasks`)).status(), fakeWebpUpload: upload.status(), draftDownload: attachment.attachmentId ? (await call(member, 'GET', `${path}/${draft.id}/attachments/${attachment.attachmentId}/download`)).status() : null, taskCreated: Boolean(draftTask.taskId) }))
+  // F02：从未确认的草稿不能产生任务与资料；成员同样读不到子资源
+  const draftTask = await call(owner, 'POST', `${path}/${draft.id}/tasks`, { title: '内部草稿任务', assigneeMemberId: ownerMember })
+  const upload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: 'fake.webp', mimeType: 'image/webp', buffer: Buffer.from('This is not a WebP image') } }, { 'Idempotency-Key': nextKey() })
+  console.log(JSON.stringify({ check: '未发布草稿的子资源', parentDetail: (await call(member, 'GET', `${path}/${draft.id}`)).status(), tasks: (await call(member, 'GET', `${path}/${draft.id}/tasks`)).status(), createTaskInFreshDraft: draftTask.status(), uploadInFreshDraft: upload.status() }))
   const deletable = await createActivity('曾确认后撤回删除')
   await approveActivity(deletable)
-  await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整' })
+  await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整', version: await currentVersion(deletable.id) })
   console.log(JSON.stringify({ check: '删除已确认后撤回活动', status: (await call(owner, 'DELETE', `${path}/${deletable.id}`)).status() }))
   console.log(JSON.stringify({ check: '活动负责人退出未归档活动', status: (await call(member, 'DELETE', `/api/organizations/${org.id}/members/me`)).status() }))
   console.log(JSON.stringify({ check: '隔离边界', database: 'activity_test', newAccounts: 3, newOrganizations: 2, uploadDirectory: '验证截图/audit-p234-files' }))

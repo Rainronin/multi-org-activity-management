@@ -133,16 +133,28 @@ public class ActivityController {
             .body(toResponse(activityService.get(principal.getAccountId(), orgId, activityId)));
     }
 
-    public record ProposalRequest(@NotBlank(message = "方案内容不能为空") @Size(max = 50000, message = "方案不超过 50000 字符") String content) {
+    public record ProposalRequest(
+        @NotBlank(message = "方案内容不能为空") @Size(max = 50000, message = "方案不超过 50000 字符") String content,
+        /** F05：方案保存的期望版本，必填。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
-    public record ReviewRequest(@Size(max = 500, message = "审批说明不超过 500 字符") String note) {
+    public record ReviewRequest(
+        @Size(max = 500, message = "审批说明不超过 500 字符") String note,
+        /** F05：审批锁定的活动版本，必填。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
-    public record RejectRequest(@NotBlank(message = "驳回须说明原因") @Size(max = 500, message = "驳回原因不超过 500 字符") String reason) {
+    public record RejectRequest(
+        @NotBlank(message = "驳回须说明原因") @Size(max = 500, message = "驳回原因不超过 500 字符") String reason,
+        /** F05：审批锁定的活动版本，必填。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
-    public record WithdrawApprovalRequest(@Size(max = 500, message = "撤回原因不超过 500 字符") String reason) {
+    public record WithdrawApprovalRequest(
+        @Size(max = 500, message = "撤回原因不超过 500 字符") String reason,
+        /** F05：撤回确认锁定的活动版本，必填。 */
+        @Min(value = 1, message = "版本号必须为正整数") Long version) {
     }
 
     public record RegistrationOpenRequest(@NotNull(message = "请指定报名开关状态") Boolean open) {
@@ -168,7 +180,7 @@ public class ActivityController {
         @Valid @RequestBody ProposalRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(activityService.saveProposal(
-                principal.getAccountId(), orgId, activityId, request.content())));
+                principal.getAccountId(), orgId, activityId, request.content(), request.version())));
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/submit")
@@ -197,7 +209,8 @@ public class ActivityController {
         @Valid @RequestBody(required = false) ReviewRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(activityService.approve(
-                principal.getAccountId(), orgId, activityId, request == null ? null : request.note())));
+                principal.getAccountId(), orgId, activityId,
+                request == null ? null : request.note(), request == null ? null : request.version())));
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/reject")
@@ -208,7 +221,7 @@ public class ActivityController {
         @Valid @RequestBody RejectRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(activityService.reject(
-                principal.getAccountId(), orgId, activityId, request.reason())));
+                principal.getAccountId(), orgId, activityId, request.reason(), request.version())));
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/withdraw-approval")
@@ -219,7 +232,8 @@ public class ActivityController {
         @Valid @RequestBody(required = false) WithdrawApprovalRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(activityService.withdrawApproval(
-                principal.getAccountId(), orgId, activityId, request == null ? null : request.reason())));
+                principal.getAccountId(), orgId, activityId,
+                request == null ? null : request.reason(), request == null ? null : request.version())));
     }
 
     @DeleteMapping("/api/organizations/{orgId}/activities/{activityId}")

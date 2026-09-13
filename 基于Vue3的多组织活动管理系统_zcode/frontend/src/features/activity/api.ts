@@ -22,10 +22,15 @@ export async function fetchActivities(
   return response.data
 }
 
-export async function createActivity(orgId: string, input: CreateActivityInput): Promise<ActivityItem> {
+/** S08／F06：创建活动必须携带 Idempotency-Key；同键同内容重放返回原资源。 */
+export async function createActivity(
+  orgId: string,
+  input: CreateActivityInput,
+  idempotencyKey: string,
+): Promise<ActivityItem> {
   const response = await request<ActivityItem>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities`,
-    { method: 'POST', json: input },
+    { method: 'POST', json: input, headers: { 'Idempotency-Key': idempotencyKey } },
   )
   return response.data
 }
@@ -46,19 +51,25 @@ export async function fetchActivity(orgId: string, activityId: string): Promise<
 export async function updateActivity(
   orgId: string,
   activityId: string,
+  version: number,
   patch: Partial<CreateActivityInput>,
 ): Promise<ActivityDetail> {
   const response = await request<ActivityDetail>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}`,
-    { method: 'PATCH', json: patch },
+    { method: 'PATCH', json: { ...patch, version } },
   )
   return response.data
 }
 
-export async function saveProposal(orgId: string, activityId: string, content: string): Promise<void> {
+export async function saveProposal(
+  orgId: string,
+  activityId: string,
+  content: string,
+  version: number,
+): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/proposal`,
-    { method: 'PUT', json: { content }, response: 'none' },
+    { method: 'PUT', json: { content, version }, response: 'none' },
   )
 }
 
@@ -78,26 +89,42 @@ export async function withdrawActivity(orgId: string, activityId: string): Promi
   return response.data
 }
 
-export async function approveActivity(orgId: string, activityId: string, note?: string): Promise<ActivityDetail> {
+/** F05：审批锁定被审阅的那一版，必须携带期望版本。 */
+export async function approveActivity(
+  orgId: string,
+  activityId: string,
+  version: number,
+  note?: string,
+): Promise<ActivityDetail> {
   const response = await request<ActivityDetail>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/approve`,
-    { method: 'POST', json: { note: note || null } },
+    { method: 'POST', json: { note: note || null, version } },
   )
   return response.data
 }
 
-export async function rejectActivity(orgId: string, activityId: string, reason: string): Promise<ActivityDetail> {
+export async function rejectActivity(
+  orgId: string,
+  activityId: string,
+  reason: string,
+  version: number,
+): Promise<ActivityDetail> {
   const response = await request<ActivityDetail>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/reject`,
-    { method: 'POST', json: { reason } },
+    { method: 'POST', json: { reason, version } },
   )
   return response.data
 }
 
-export async function withdrawApproval(orgId: string, activityId: string, reason?: string): Promise<ActivityDetail> {
+export async function withdrawApproval(
+  orgId: string,
+  activityId: string,
+  version: number,
+  reason?: string,
+): Promise<ActivityDetail> {
   const response = await request<ActivityDetail>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/withdraw-approval`,
-    { method: 'POST', json: { reason: reason || null } },
+    { method: 'POST', json: { reason: reason || null, version } },
   )
   return response.data
 }

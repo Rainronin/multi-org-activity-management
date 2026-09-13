@@ -110,7 +110,7 @@ class RegistrationFlowTest extends ActivityTestBase {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"S\"}"))
+                .content(versioned(activityId, "{\"content\":\"S\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(owner.session()))
@@ -118,7 +118,7 @@ class RegistrationFlowTest extends ActivityTestBase {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{}"))
+                .content(versioned(activityId, "{}")))
             .andExpect(status().isOk());
         // S02：报名开关默认关闭，需负责人明确开启后再申请
         openRegistration(owner, orgId, activityId);

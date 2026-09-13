@@ -63,14 +63,19 @@ try {
   const memberId = members.find(x => x.username === usernames[1]).memberId
   const delegateMember = members.find(x => x.username === usernames[3]).memberId
   const path = `/api/organizations/${org.id}/activities`
+  // F05：方案保存、审批、撤回确认与编辑都必须携带当前 version，调用前先读取
+  // （本文件后文另有局部变量 currentVersion 表达旧版本冲突用例，故此处取名 activityVersion）
+  async function activityVersion(activityId) {
+    return (await json(owner, 'GET', `${path}/${activityId}`)).version
+  }
   async function createActivity(name, assignee = ownerMember, idempotencyKey = nextKey()) {
     const activity = await json(owner, 'POST', path, { name, description: '阶段审核活动', ownerMemberId: assignee, startTime: new Date(Date.now()+86400000).toISOString(), endTime: new Date(Date.now()+90000000).toISOString(), location: '会议室', capacity: 2, registrationScope: 'INTERNAL' }, { 'Idempotency-Key': idempotencyKey })
-    await json(owner, 'PUT', `${path}/${activity.id}/proposal`, { content: '人工方案审核样例' })
+    await json(owner, 'PUT', `${path}/${activity.id}/proposal`, { content: '人工方案审核样例', version: await activityVersion(activity.id) })
     return activity
   }
   async function approveActivity(activity) {
     await json(owner, 'POST', `${path}/${activity.id}/submit`)
-    await json(owner, 'POST', `${path}/${activity.id}/approve`, { note: '审核通过' })
+    await json(owner, 'POST', `${path}/${activity.id}/approve`, { note: '审核通过', version: await activityVersion(activity.id) })
   }
   async function openRegistration(activity) {
     return json(owner, 'POST', `${path}/${activity.id}/registration-open`, { open: true })
@@ -117,10 +122,10 @@ try {
   console.log(JSON.stringify({ check: '待处理直接完成', status: directComplete.status() }))
 
   // S07 关键变更冻结：撤回待重新确认期间任务只读、范围锁定、已确认过的活动不能删除
-  await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排' })
+  await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排', version: await activityVersion(activity.id) })
   await json(member, 'GET', '/api/me/registrations')
   const approvedWhileDraft = await call(owner, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
-  const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC' })
+  const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC', version: await activityVersion(activity.id) })
   const taskWhileDraft = await call(owner, 'POST', `${aPath}/tasks`, { title: '调整期新增任务', assigneeMemberId: ownerMember })
   const materialWhileDraft = await call(owner, 'POST', `${aPath}/materials`, { name: '调整期物资', quantity: 1, unit: '条' })
   const deleteWithdrawn = await call(owner, 'DELETE', aPath)
@@ -129,7 +134,7 @@ try {
   console.log(JSON.stringify({ check: 'S07 关键变更冻结', changeScopeOrCapacityWithRegistrations: patch.status(), patchCode: patchBody.code, createTaskInWithdrawnDraft: taskWhileDraft.status(), createMaterialInWithdrawnDraft: materialWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status(), deleteWithdrawnConfirmed: deleteWithdrawn.status(), deleteCode: deleteBody.code }))
 
   // 撤回后仍可调整容量到与已通过人数一致（容量下限规则）
-  const capacityOnly = await call(owner, 'PATCH', aPath, { capacity: 1 })
+  const capacityOnly = await call(owner, 'PATCH', aPath, { capacity: 1, version: await activityVersion(activity.id) })
   console.log(JSON.stringify({ check: 'S07 调整期容量调整', status: capacityOnly.status(), capacity: (await capacityOnly.json()).capacity }))
 
   // S07-B 成员职责与退出联动：负责活动时不能退出；改派后可退出并取消未开始内部活动的报名
@@ -141,7 +146,7 @@ try {
   const dutyActivity = await createActivity('退出联动活动', leaverMember)
   const leaveWithDuty = await call(leaver, 'DELETE', `/api/organizations/${org.id}/members/me`)
   const leaveWithDutyBody = await leaveWithDuty.json()
-  await json(owner, 'PATCH', `${path}/${dutyActivity.id}`, { ownerMemberId: ownerMember })
+  await json(owner, 'PATCH', `${path}/${dutyActivity.id}`, { ownerMemberId: ownerMember, version: await activityVersion(dutyActivity.id) })
   await approveActivity(dutyActivity)
   await openRegistration(dutyActivity)
   await json(leaver, 'POST', `/api/activities/${dutyActivity.id}/registrations`, { displayName: '退出成员' })
@@ -188,22 +193,39 @@ try {
   const pendingList = await json(member, 'GET', `${path}?status=PENDING_APPROVAL`)
   console.log(JSON.stringify({ check: '普通成员待确认列表泄露', total: pendingList.total, containsPrivateActivity: pendingList.items.some(x => x.id === pending.id), detailStatus: (await call(member, 'GET', `${path}/${pending.id}`)).status() }))
   const draft = await createActivity('未发布草稿')
-  const draftTask = await json(owner, 'POST', `${path}/${draft.id}/tasks`, { title: '内部草稿任务', assigneeMemberId: ownerMember })
-  const upload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: 'fake.webp', mimeType: 'image/webp', buffer: Buffer.from('This is not a WebP image') } })
-  const attachment = await upload.json()
-  console.log(JSON.stringify({ check: '草稿子资源与文件内容', parentDetail: (await call(member, 'GET', `${path}/${draft.id}`)).status(), tasks: (await call(member, 'GET', `${path}/${draft.id}/tasks`)).status(), fakeWebpUpload: upload.status(), draftDownload: attachment.attachmentId ? (await call(member, 'GET', `${path}/${draft.id}/attachments/${attachment.attachmentId}/download`)).status() : null, taskCreated: Boolean(draftTask.taskId) }))
+  // F02：从未确认的草稿不能产生任务与资料，成员也读不到子资源
+  const draftTask = await call(owner, 'POST', `${path}/${draft.id}/tasks`, { title: '内部草稿任务', assigneeMemberId: ownerMember })
+  const draftUpload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: '草稿资料.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4]) } }, { 'Idempotency-Key': nextKey() })
+  console.log(JSON.stringify({ check: '未发布草稿的子资源', parentDetail: (await call(member, 'GET', `${path}/${draft.id}`)).status(), tasks: (await call(member, 'GET', `${path}/${draft.id}/tasks`)).status(), createTaskInFreshDraft: draftTask.status(), uploadInFreshDraft: draftUpload.status() }))
 
-  // S09 附件：合法文件可上传并带用途；上传者删除后不可再下载，且校验失败不留下孤立文件
+  // S09 附件：内容校验在已确认期核对；删除时序同样在已确认期
   const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4])
-  const realUpload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: '真实资料.png', mimeType: 'image/png', buffer: pngBytes } })
+  const fileActivity = await createActivity('资料校验活动')
+  await approveActivity(fileActivity)
+  const sniff = await call(owner, 'POST', `${path}/${fileActivity.id}/attachments`, undefined, { file: { name: 'fake.webp', mimeType: 'image/webp', buffer: Buffer.from('This is not a WebP image') } }, { 'Idempotency-Key': nextKey() })
+  const realUpload = await call(owner, 'POST', `${path}/${fileActivity.id}/attachments`, undefined, { file: { name: '真实资料.png', mimeType: 'image/png', buffer: pngBytes } }, { 'Idempotency-Key': nextKey() })
   const realAttachment = await realUpload.json()
-  const ownerDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}/download`) : null
-  const deleteAttachment = realAttachment.attachmentId ? await call(owner, 'DELETE', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}`) : null
-  const afterDeleteDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}/download`) : null
-  console.log(JSON.stringify({ check: 'S09 附件校验与删除时序', realPngUpload: realUpload.status(), purpose: realAttachment.purpose, ownerDownload: ownerDownload && ownerDownload.status(), deleteAttachment: deleteAttachment && deleteAttachment.status(), afterDeleteDownload: afterDeleteDownload && afterDeleteDownload.status() }))
+  const ownerDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${fileActivity.id}/attachments/${realAttachment.attachmentId}/download`) : null
+  const deleteAttachment = realAttachment.attachmentId ? await call(owner, 'DELETE', `${path}/${fileActivity.id}/attachments/${realAttachment.attachmentId}`) : null
+  const afterDeleteDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${fileActivity.id}/attachments/${realAttachment.attachmentId}/download`) : null
+  console.log(JSON.stringify({ check: 'S09 附件校验与删除时序', fakeWebpUpload: sniff.status(), realPngUpload: realUpload.status(), purpose: realAttachment.purpose, ownerDownload: ownerDownload && ownerDownload.status(), deleteAttachment: deleteAttachment && deleteAttachment.status(), afterDeleteDownload: afterDeleteDownload && afterDeleteDownload.status() }))
+
+  // F02：调整期待确认期间子资源只读——成员不可见、下载仍可、写入被拒
+  const adjusting = await createActivity('调整期只读活动')
+  await approveActivity(adjusting)
+  await json(owner, 'POST', `${path}/${adjusting.id}/tasks`, { title: '调整期前任务', assigneeMemberId: memberId })
+  const keptUpload = await call(owner, 'POST', `${path}/${adjusting.id}/attachments`, undefined, { file: { name: '调整期前资料.png', mimeType: 'image/png', buffer: pngBytes } }, { 'Idempotency-Key': nextKey() })
+  const keptAttachment = await keptUpload.json()
+  await json(owner, 'POST', `${path}/${adjusting.id}/withdraw-approval`, { reason: '安排调整', version: await activityVersion(adjusting.id) })
+  const adjustingUpload = await call(owner, 'POST', `${path}/${adjusting.id}/attachments`, undefined, { file: { name: '调整期资料.png', mimeType: 'image/png', buffer: pngBytes } }, { 'Idempotency-Key': nextKey() })
+  const adjustingTask = await call(owner, 'POST', `${path}/${adjusting.id}/tasks`, { title: '调整期任务', assigneeMemberId: memberId })
+  const adjustingDelete = keptAttachment.attachmentId ? await call(owner, 'DELETE', `${path}/${adjusting.id}/attachments/${keptAttachment.attachmentId}`) : null
+  const adjustingDownload = keptAttachment.attachmentId ? await call(owner, 'GET', `${path}/${adjusting.id}/attachments/${keptAttachment.attachmentId}/download`) : null
+  console.log(JSON.stringify({ check: '调整期子资源只读', memberDetail: (await call(member, 'GET', `${path}/${adjusting.id}`)).status(), memberTasks: (await call(member, 'GET', `${path}/${adjusting.id}/tasks`)).status(), uploadInAdjusting: adjustingUpload.status(), createTaskInAdjusting: adjustingTask.status(), deleteInAdjusting: adjustingDelete && adjustingDelete.status(), ownerDownloadInAdjusting: adjustingDownload && adjustingDownload.status() }))
+
   const deletable = await createActivity('曾确认后撤回删除')
   await approveActivity(deletable)
-  await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整' })
+  await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整', version: await activityVersion(deletable.id) })
   console.log(JSON.stringify({ check: '删除已确认后撤回活动', status: (await call(owner, 'DELETE', `${path}/${deletable.id}`)).status() }))
   
   console.log(JSON.stringify({ check: '隔离边界', database: 'activity_test', newAccounts: usernames.length, newOrganizations: 2, uploadDirectory: '验证截图/audit-p234-files' }))

@@ -84,11 +84,20 @@
           AND status IN ('PENDING', 'APPROVED')
     </select>
 
+    <!-- F08：重新确认后需要收到站内提示的账号（计划书 6.1：重新通过后通知已报名者） -->
+    <select id="listNotifiableAccountIds" resultType="long">
+        SELECT DISTINCT account_id
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND status IN ('PENDING', 'APPROVED')
+        ORDER BY account_id
+    </select>
+
     <!--
-      S07-B：退出联动定位需要取消的报名。
-      计划书 6.1「尚未进入执行的内部活动」：当前没有执行／归档状态，以
-      活动未开始（start_time 为空或晚于当前时间）且活动处于已确认状态近似判断；
-      已开始的活动保留历史，不因退出改写（计划书 4 节第 4 条）。
+      S07-B／F03：退出联动定位需要取消的报名。
+      计划书 6.2：取消“尚未进入执行的内部活动”的待审与有效报名，与活动主状态无关——
+      已确认、撤回草稿、重新提交待确认都属未进入执行，必须一并覆盖（原实现限 APPROVED 会漏掉调整期）。
+      已开始的活动保留历史，不因退出改写。
     -->
     <select id="listBlockingForLeave" resultType="com.example.activity.modules.registration.Registration">
         SELECT r.id, r.org_id, r.activity_id, r.account_id, r.display_name, r.note, r.status,
@@ -99,7 +108,6 @@
           AND r.account_id = #{accountId}
           AND r.status IN ('PENDING', 'APPROVED')
           AND a.registration_scope = 'INTERNAL'
-          AND a.status = 'APPROVED'
           AND (a.start_time IS NULL OR a.start_time > CURRENT_TIMESTAMP(6))
         ORDER BY r.id ASC
     </select>

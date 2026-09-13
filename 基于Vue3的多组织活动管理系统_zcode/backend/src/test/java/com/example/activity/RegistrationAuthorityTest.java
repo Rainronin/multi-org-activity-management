@@ -192,4 +192,43 @@ class RegistrationAuthorityTest extends FlowTestSupport {
                 .session(outsider.session()))
             .andExpect(status().isForbidden());
     }
+
+    /** F09：管理名单按服务端分页返回，total 与筛选条件同口径，第 2 页能取到后续申请。 */
+    @Test
+    void rosterIsPagedAndReportsTotal() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession first = registerAndLogin();
+        TestSession second = registerAndLogin();
+        TestSession third = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, first, orgId);
+        inviteAndAccept(owner, second, orgId);
+        inviteAndAccept(owner, third, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00");
+        openRegistration(owner, orgId, activityId);
+        apply(first, activityId);
+        apply(second, activityId);
+        apply(third, activityId);
+
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/registrations")
+                .param("page", "1").param("pageSize", "2").session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(3))
+            .andExpect(jsonPath("$.page").value(1))
+            .andExpect(jsonPath("$.pageSize").value(2))
+            .andExpect(jsonPath("$.items.length()").value(2));
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/registrations")
+                .param("page", "2").param("pageSize", "2").session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(3))
+            .andExpect(jsonPath("$.items.length()").value(1));
+
+        // 状态筛选与 total 同口径：筛选后没有已通过记录时 total 归零
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/registrations")
+                .param("status", "APPROVED").session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(0))
+            .andExpect(jsonPath("$.items.length()").value(0));
+    }
 }

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
+import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { fetchMembers } from '../organization/api'
 import {
@@ -54,6 +55,8 @@ const taskAttachmentTarget = ref<TaskItem | null>(null)
 const taskAttachments = ref<AttachmentItem[]>([])
 const taskAttachmentLoading = ref(false)
 const taskUploading = ref(false)
+/** F06：当前上传意图的防重键；失败重试沿用，成功后清空。 */
+let uploadKey = ''
 const taskUploadInput = ref<HTMLInputElement>()
 
 const statusLabel: Record<string, string> = {
@@ -289,6 +292,10 @@ async function onFileChange(event: Event) {
   }
   uploading.value = true
   await guard(async () => {
+    // F06：活动资料上传同样携带防重键（一次上传意图一个键，重试沿用）
+    if (!uploadKey) {
+      uploadKey = newIdempotencyKey()
+    }
     const csrf = await import('../../shared/http/client').then((mod) =>
       mod.request<{ token: string; headerName: string }>('/api/auth/csrf'))
     const form = new FormData()
@@ -296,8 +303,14 @@ async function onFileChange(event: Event) {
     await import('../../shared/http/client').then((mod) =>
       mod.request(
         `/api/organizations/${orgId.value}/activities/${activityId.value}/attachments`,
-        { method: 'POST', form, headers: { [csrf.data.headerName]: csrf.data.token }, response: 'none' },
+        {
+          method: 'POST',
+          form,
+          headers: { [csrf.data.headerName]: csrf.data.token, 'Idempotency-Key': uploadKey },
+          response: 'none',
+        },
       ))
+    uploadKey = ''
     await loadAll()
   })
   uploading.value = false
@@ -380,7 +393,12 @@ async function onTaskFileChange(event: Event) {
   }
   taskUploading.value = true
   await guard(async () => {
-    await uploadAttachment(orgId.value, activityId.value, file, { kind: 'task', taskId: task.taskId })
+    // F06：一次上传意图一个防重键，重试沿用同一键（失败时保留在 uploadKey 中）
+    if (!uploadKey) {
+      uploadKey = newIdempotencyKey()
+    }
+    await uploadAttachment(orgId.value, activityId.value, file, uploadKey, { kind: 'task', taskId: task.taskId })
+    uploadKey = ''
     await loadTaskAttachments()
     await loadAll()
   })

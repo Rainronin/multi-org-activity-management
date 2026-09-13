@@ -20,14 +20,15 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RegistrationService {
 
-    /** 首期单次导出上限：名单为小规模组织场景，超过时提示缩小筛选范围。 */
-    private static final int MAX_EXPORT_ROWS = 5000;
+    /** 首期单次导出上限：名单为小规模组织场景，超过时明确拒绝并提示缩小筛选范围（F09）。 */
+    private final int maxExportRows;
 
     private final RegistrationMapper registrationMapper;
     private final ActivityMapper activityMapper;
     private final OrganizationMapper organizationMapper;
     private final com.example.activity.modules.organization.OrganizationMemberMapper memberMapper;
     private final com.example.activity.modules.account.AccountMapper accountMapper;
+    private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
     private final AuditService auditService;
 
     public RegistrationService(
@@ -36,19 +37,43 @@ public class RegistrationService {
         OrganizationMapper organizationMapper,
         com.example.activity.modules.organization.OrganizationMemberMapper memberMapper,
         com.example.activity.modules.account.AccountMapper accountMapper,
-        AuditService auditService) {
+        com.example.activity.modules.notification.NotificationMapper notificationMapper,
+        AuditService auditService,
+        @org.springframework.beans.factory.annotation.Value("${app.registration.export-max-rows:5000}")
+        int maxExportRows) {
         this.registrationMapper = registrationMapper;
         this.activityMapper = activityMapper;
         this.organizationMapper = organizationMapper;
         this.memberMapper = memberMapper;
         this.accountMapper = accountMapper;
+        this.notificationMapper = notificationMapper;
         this.auditService = auditService;
+        this.maxExportRows = maxExportRows;
     }
 
+    /**
+     * F08：站内提示来源意图与业务同事务落库（计划书 6.7：业务提交时保存必要接收人与来源意图）。
+     * 展示与补建随 P7，这里只保证来源不丢。
+     */
+    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload) {
+        if (recipientAccountId == null) {
+            return;
+        }
+        notificationMapper.insert(recipientAccountId, type, activityId,
+            payload.length() > 500 ? payload.substring(0, 500) : payload);
+    }
+
+    /**
+     * 报名记录（含所属活动的公开性安排）。{@code adjusting} 表示活动处于调整期待确认
+     * （撤回草稿或重新提交待确认）：已有报名者仍能看到本人状态与安排调整提示（计划书 6.1）。
+     */
     public record RegistrationItem(
         Long registrationId, Long activityId, Long accountId, String accountUsername,
         String displayName, String note, String status, String cancelReason,
-        OffsetDateTime decidedAt, OffsetDateTime createdAt) {
+        OffsetDateTime decidedAt, OffsetDateTime createdAt,
+        String activityName, String organizationName, String location,
+        OffsetDateTime startTime, OffsetDateTime endTime,
+        boolean registrationOpen, boolean adjusting) {
     }
 
     public record RegistrationPage(List<RegistrationItem> items, int page, int pageSize, long total) {
@@ -148,6 +173,8 @@ public class RegistrationService {
         }
         auditService.record(approverAccountId, "REGISTRATION", "REGISTRATION_APPROVED",
             "registration:" + registrationId, null, java.util.Map.of("activityId", activityId));
+        notifyIntent(registration.getAccountId(), "REGISTRATION_APPROVED", activityId,
+            "你报名的活动「" + activity.getName() + "」已通过审核。");
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
@@ -157,7 +184,7 @@ public class RegistrationService {
         organizationMapper.lockOrganization(orgId);
         activityMapper.lockActivity(activityId);
         requireReviewPermission(orgId, activityId, approverAccountId);
-        requireApprovedActivity(activityId);
+        Activity activity = requireApprovedActivity(activityId);
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
             throw conflict();
@@ -167,6 +194,9 @@ public class RegistrationService {
         }
         auditService.record(approverAccountId, "REGISTRATION", "REGISTRATION_REJECTED",
             "registration:" + registrationId, reason, null);
+        notifyIntent(registration.getAccountId(), "REGISTRATION_REJECTED", activityId,
+            "你报名的活动「" + activity.getName() + "」未通过审核"
+                + (reason == null || reason.isBlank() ? "。" : "：" + reason));
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
@@ -206,6 +236,10 @@ public class RegistrationService {
         }
         auditService.record(accountId, "REGISTRATION", "REGISTRATION_CANCELLED_SELF",
             "registration:" + registration.getId(), null, java.util.Map.of("activityId", activityId));
+        // F08：本人取消属关键活动变更，给活动负责人留下来源意图（组织负责人可在名单中看到结果）
+        OrganizationMember owner = memberMapper.findById(activity.getOwnerMemberId());
+        notifyIntent(owner == null ? null : owner.getAccountId(), "REGISTRATION_CANCELLED_SELF", activityId,
+            resolveUsername(accountId) + " 取消了活动「" + activity.getName() + "」的报名。");
     }
 
     /** 管理取消：组织负责人或活动负责人（S04），活动进入执行前可说明原因取消（计划书 6.2）。 */
@@ -228,6 +262,9 @@ public class RegistrationService {
         }
         auditService.record(actorAccountId, "REGISTRATION", "REGISTRATION_CANCELLED_ORG",
             "registration:" + registrationId, reason, java.util.Map.of("activityId", activityId));
+        notifyIntent(registration.getAccountId(), "REGISTRATION_CANCELLED_ORG", activityId,
+            "你在活动「" + activity.getName() + "」的报名已被组织取消"
+                + (reason == null || reason.isBlank() ? "。" : "：" + reason));
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
@@ -245,9 +282,15 @@ public class RegistrationService {
         return new RegistrationPage(items, page, pageSize, total);
     }
 
+    /**
+     * 本人报名记录（P4.3／F01）：包含活动安排、报名开关与“活动安排调整中”标识，
+     * 使没有组织成员身份的外部参与者也能看到自己报名的是哪场活动、当前能否取消。
+     * 这里只下发本人已报名活动的公开性安排信息，与公开端点一致，不含内部字段。
+     */
     public List<RegistrationItem> listMine(Long accountId) {
+        String username = resolveUsername(accountId);
         return registrationMapper.listByAccount(accountId).stream()
-            .map(r -> toItem(r, resolveUsername(accountId)))
+            .map(r -> toItem(r, username, activityOf(r.getActivityId())))
             .toList();
     }
 
@@ -255,13 +298,19 @@ public class RegistrationService {
      * 名单导出（P4.3）：权限与状态筛选沿用管理名单规则（组织负责人或本活动负责人），
      * 导出字段固定为报名主记录，不含联系方式等额外信息；导出操作写审计。
      * 返回值由 Controller 转为 CSV，单元格文本按电子表格公式注入规则转义。
+     * F09：超过单次上限时明确拒绝并提示缩小筛选范围，不再静默截断。
      */
     @Transactional
     public List<RegistrationItem> exportForReview(
         Long accountId, Long orgId, Long activityId, String status) {
         requireReviewPermission(orgId, activityId, accountId);
         String filter = status == null || status.isBlank() ? null : status;
-        List<Registration> rows = registrationMapper.listByActivity(activityId, filter, 0, MAX_EXPORT_ROWS);
+        long total = registrationMapper.countByActivity(activityId, filter);
+        if (total > maxExportRows) {
+            throw new ApiException(HttpStatus.CONFLICT, "EXPORT_TOO_LARGE", "导出记录过多",
+                "当前筛选共 " + total + " 条，单次最多导出 " + maxExportRows + " 条，请缩小筛选范围后重试。");
+        }
+        List<Registration> rows = registrationMapper.listByActivity(activityId, filter, 0, maxExportRows);
         auditService.record(accountId, "REGISTRATION", "REGISTRATION_EXPORTED", "activity:" + activityId,
             null, java.util.Map.of("rows", rows.size(), "status", filter == null ? "ALL" : filter));
         return rows.stream().map(r -> toItem(r, resolveUsername(r.getAccountId()))).toList();
@@ -330,10 +379,26 @@ public class RegistrationService {
         return username == null ? "" : username;
     }
 
+    private Activity activityOf(Long activityId) {
+        return activityMapper.findById(activityId);
+    }
+
     private RegistrationItem toItem(Registration r, String username) {
+        return toItem(r, username, null);
+    }
+
+    private RegistrationItem toItem(Registration r, String username, Activity activity) {
+        var organization = activity == null ? null : organizationMapper.findById(activity.getOrgId());
         return new RegistrationItem(
             r.getId(), r.getActivityId(), r.getAccountId(), username,
             r.getDisplayName(), r.getNote(), r.getStatus(), r.getCancelReason(),
-            r.getDecidedAt(), r.getCreatedAt());
+            r.getDecidedAt(), r.getCreatedAt(),
+            activity == null ? null : activity.getName(),
+            organization == null ? null : organization.getName(),
+            activity == null ? null : activity.getLocation(),
+            activity == null ? null : activity.getStartTime(),
+            activity == null ? null : activity.getEndTime(),
+            activity != null && activity.isRegistrationOpen(),
+            activity != null && activity.isPendingReconfirmation());
     }
 }

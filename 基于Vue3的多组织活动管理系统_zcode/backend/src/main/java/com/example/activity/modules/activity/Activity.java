@@ -31,11 +31,17 @@ public class Activity {
     }
 
     /**
-     * S07 调整期待确认：曾通过立项（confirmed_at 非空）后又回到草稿。
-     * 该期间任务、物资只读，活动也不能按“从未确认的初始草稿”删除。
+     * S07／F02 调整期待确认：曾通过立项（confirmed_at 非空）后又回到草稿，
+     * 或撤回后重新提交处于待确认。该期间任务、物资与附件都只读，活动也不能按“从未确认的初始草稿”删除。
      */
     public boolean isPendingReconfirmation() {
-        return STATUS_DRAFT.equals(status) && confirmedAt != null;
+        return confirmedAt != null
+            && (STATUS_DRAFT.equals(status) || STATUS_PENDING_APPROVAL.equals(status));
+    }
+
+    /** F02：筹备数据（任务、物资、附件）仅在已确认且不处于调整期待确认时可写。 */
+    public boolean isPreparationWritable() {
+        return STATUS_APPROVED.equals(status) && !isPendingReconfirmation();
     }
 
     private Long id;
@@ -67,6 +73,8 @@ public class Activity {
     private Long version;
     /** S08：创建防重的 Idempotency-Key（按组织唯一），仅创建时写入。 */
     private String requestKey;
+    /** F06：创建请求的不可变指纹（规范化业务字段的 SHA-256），仅创建时写入，重放只与此比较。 */
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
 
@@ -268,6 +276,14 @@ public class Activity {
 
     public void setRequestKey(String requestKey) {
         this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public OffsetDateTime getUpdatedAt() {

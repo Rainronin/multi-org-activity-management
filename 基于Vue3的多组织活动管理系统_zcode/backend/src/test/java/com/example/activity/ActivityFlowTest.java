@@ -201,7 +201,7 @@ class ActivityFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"改名后的活动\"}"))
+                .content(versioned(activityId, "{\"name\":\"改名后的活动\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.name").value("改名后的活动"));
 
@@ -209,14 +209,14 @@ class ActivityFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"ownerMemberId\":%d}".formatted(memberIdOf(orgId, plainMember.username()))))
+                .content(versioned(activityId, "{\"ownerMemberId\":%d}".formatted(memberIdOf(orgId, plainMember.username())))))
             .andExpect(status().isForbidden());
 
         // 普通成员编辑 → 404（不可见）
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(plainMember.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"越权编辑\"}"))
+                .content(versioned(activityId, "{\"name\":\"越权编辑\"}")))
             .andExpect(status().isNotFound());
     }
 
@@ -281,7 +281,7 @@ class ActivityFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"endTime\":\"2026-10-01T13:00:00+08:00\"}"))
+                .content(versioned(activityId, "{\"endTime\":\"2026-10-01T13:00:00+08:00\"}")))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.fieldErrors[0].field").value("endTime"));
     }
@@ -304,7 +304,7 @@ class ActivityFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + otherOrgId + "/activities/" + activityId)
                 .with(csrf()).session(outsider.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"越权\"}"))
+                .content(versioned(activityId, "{\"name\":\"越权\"}")))
             .andExpect(status().isNotFound());
     }
 }

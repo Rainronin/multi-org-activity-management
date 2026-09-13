@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElTag, type FormInstance, type FormRules } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElTag, type FormInstance, type FormRules } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { useOrganizationsStore } from '../../stores/organizations'
 import { reissueRecoveryCode } from './api'
 import {
-  fetchMyRegistrations, registrationStatusLabel,
+  cancelMyRegistration, fetchMyRegistrations, isCancellable, registrationStatusLabel,
   type RegistrationItem, type RegistrationStatus,
 } from '../activity/registrations'
 import { formatDateTime } from '../activity/types'
@@ -68,10 +68,40 @@ const directoryError = ref('')
 // P4.3 我的报名（跨组织）：入口放在账号页，外部参与者不需要进入组织工作区。
 const registrations = ref<RegistrationItem[]>([])
 const registrationsError = ref('')
+const cancellingId = ref('')
+const cancellingError = ref('')
 
 const registrationTagType = (status: RegistrationStatus): 'success' | 'info' | 'warning' | 'danger' =>
   status === 'APPROVED' ? 'success' : status === 'PENDING' ? 'warning'
     : status === 'REJECTED' ? 'danger' : 'info'
+
+/** F01：本人取消后立即刷新状态；名额释放与幂等由后端保证。 */
+function cancelRegistration(item: RegistrationItem) {
+  cancellingError.value = ''
+  cancellingId.value = item.registrationId
+  void ElMessageBox.confirm('确定取消本人报名？名额将立即释放。', '取消报名', {
+    confirmButtonText: '取消报名', cancelButtonText: '返回', type: 'warning',
+  })
+    .then(async () => {
+      const gen = session.capture()
+      try {
+        await cancelMyRegistration(item.activityId)
+      } catch (error) {
+        if (session.observeUnauthorized(error, gen)) {
+          return
+        }
+        cancellingError.value = error instanceof ApiError && !error.isTransportError
+          ? error.detail || '取消失败，请重试。'
+          : '网络连接失败，请检查网络后重试。'
+        return
+      }
+      await loadRegistrations()
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      cancellingId.value = ''
+    })
+}
 
 async function loadRegistrations(): Promise<void> {
   registrationsError.value = ''
@@ -293,16 +323,63 @@ async function handleLogout() {
           v-for="item in registrations"
           :key="item.registrationId"
         >
-          <div>
-            <span class="account-page__org-name">{{ item.displayName }}</span>
-            <ElTag
-              :type="registrationTagType(item.status)"
-              size="small"
+          <div class="account-page__reg-main">
+            <div class="account-page__reg-head">
+              <span class="account-page__org-name">{{ item.activityName || '活动已不可见' }}</span>
+              <ElTag
+                :type="registrationTagType(item.status)"
+                size="small"
+              >
+                {{ registrationStatusLabel[item.status] ?? item.status }}
+              </ElTag>
+              <ElTag
+                v-if="item.adjusting"
+                type="warning"
+                size="small"
+              >
+                活动安排调整中
+              </ElTag>
+            </div>
+            <p class="account-page__hint">
+              {{ item.organizationName || '' }}
+              <template v-if="item.startTime">
+                · 开始 {{ formatDateTime(item.startTime) }}
+              </template>
+              <template v-if="item.location">
+                · {{ item.location }}
+              </template>
+            </p>
+            <p class="account-page__hint">
+              报名人 {{ item.displayName }} · 提交 {{ formatDateTime(item.createdAt) }}
+              <template v-if="item.decidedAt">
+                · 处理 {{ formatDateTime(item.decidedAt) }}
+              </template>
+            </p>
+            <p
+              v-if="item.cancelReason"
+              class="account-page__hint"
             >
-              {{ registrationStatusLabel[item.status] ?? item.status }}
-            </ElTag>
+              处理说明：{{ item.cancelReason }}
+            </p>
           </div>
-          <span class="account-page__hint">{{ formatDateTime(item.createdAt) }}</span>
+          <div class="account-page__reg-actions">
+            <ElButton
+              size="small"
+              @click="router.push(`/public/activities/${item.activityId}`)"
+            >
+              查看活动
+            </ElButton>
+            <ElButton
+              v-if="isCancellable(item)"
+              size="small"
+              type="danger"
+              plain
+              :loading="cancellingId === item.registrationId"
+              @click="cancelRegistration(item)"
+            >
+              取消报名
+            </ElButton>
+          </div>
         </li>
       </ul>
       <p
@@ -312,11 +389,11 @@ async function handleLogout() {
         暂无报名记录。登录后可在公开活动页报名，并在活动开始前取消。
       </p>
       <p
-        v-if="registrations.some((item) => item.cancelReason)"
+        v-if="cancellingError"
         class="account-page__hint"
+        role="alert"
       >
-        处理说明：
-        {{ registrations.filter((item) => item.cancelReason).map((item) => item.cancelReason).join('；') }}
+        {{ cancellingError }}
       </p>
     </section>
 
@@ -544,7 +621,28 @@ async function handleLogout() {
 
 .account-page__org-name {
   color: var(--ui-color-text);
+  font-weight: var(--ui-font-weight-semibold);
   overflow-wrap: anywhere;
+}
+
+.account-page__reg-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+  min-width: 0;
+}
+
+.account-page__reg-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  flex-wrap: wrap;
+}
+
+.account-page__reg-actions {
+  display: flex;
+  gap: var(--ui-space-2);
+  flex-wrap: wrap;
 }
 
 .account-page__hint {

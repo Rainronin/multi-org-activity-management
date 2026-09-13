@@ -176,8 +176,10 @@ export async function resolveMyMemberId(orgId: string, username: string): Promis
   return page.items.find((item) => item.username === username)?.memberId ?? null
 }
 
+/** S09／F06：上传必须携带 Idempotency-Key；同键重放由后端返回原附件。 */
 export async function uploadAttachment(
-  orgId: string, activityId: string, file: File, scope: AttachmentScope = { kind: 'activity' },
+  orgId: string, activityId: string, file: File, idempotencyKey: string,
+  scope: AttachmentScope = { kind: 'activity' },
 ): Promise<void> {
   const csrfResp = await request<{ token: string; headerName: string }>('/api/auth/csrf')
   const form = new FormData()
@@ -185,7 +187,12 @@ export async function uploadAttachment(
   // 走统一 fetch 入口并带 CSRF 头（与 ActivityAttachments 约定一致）
   await request(
     attachmentsUrl(orgId, activityId, scope),
-    { method: 'POST', form, headers: { [csrfResp.data.headerName]: csrfResp.data.token }, response: 'none' },
+    {
+      method: 'POST',
+      form,
+      headers: { [csrfResp.data.headerName]: csrfResp.data.token, 'Idempotency-Key': idempotencyKey },
+      response: 'none',
+    },
   )
 }
 

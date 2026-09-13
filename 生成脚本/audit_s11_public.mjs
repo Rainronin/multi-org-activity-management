@@ -27,6 +27,10 @@ try {
     if (!res.ok()) throw new Error(`${method} ${path} -> ${res.status()} ${await res.text()}`)
     return res.json()
   }
+  // F05：方案保存与审批必须携带当前 version，调用前先读取
+  async function currentVersion(activityId) {
+    return (await json(owner, 'GET', `/api/organizations/${org.id}/activities/${activityId}`)).version
+  }
   async function login(ctx, username) {
     await json(ctx, 'POST', '/api/auth/register', { username, password })
     const csrf = await (await ctx.request.get('/api/auth/csrf')).json()
@@ -54,16 +58,16 @@ try {
     }, { 'Idempotency-Key': `pub-${stamp}-${++keySeq}` })
   }
   async function approve(activity) {
-    await json(owner, 'PUT', `/api/organizations/${org.id}/activities/${activity.id}/proposal`, { content: '方案' })
+    await json(owner, 'PUT', `/api/organizations/${org.id}/activities/${activity.id}/proposal`, { content: '方案', version: await currentVersion(activity.id) })
     await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/submit`)
-    await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/approve`, {})
+    await json(owner, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/approve`, { version: await currentVersion(activity.id) })
   }
   const publicActivity = await createActivity('公开活动', 'PUBLIC')
   await approve(publicActivity)
   const internalActivity = await createActivity('内部活动', 'INTERNAL')
   await approve(internalActivity)
   const draftActivity = await createActivity('未确认草稿', 'PUBLIC')
-  await json(owner, 'PUT', `/api/organizations/${org.id}/activities/${draftActivity.id}/proposal`, { content: '方案' })
+  await json(owner, 'PUT', `/api/organizations/${org.id}/activities/${draftActivity.id}/proposal`, { content: '方案', version: await currentVersion(draftActivity.id) })
 
   // 匿名（无会话 Cookie）：公开端点可读，组织内端点必须 401
   const anonPublicList = await anon.request.get('/api/public/activities')

@@ -19,6 +19,10 @@ public class Attachment {
     private String contentType;
     private Long sizeBytes;
     private Long uploadedBy;
+    /** F06：上传意图的 Idempotency-Key（按组织唯一），仅创建时写入。 */
+    private String requestKey;
+    /** F06：上传请求指纹（文件内容摘要 + 归属），重放只与此比较。 */
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
     private OffsetDateTime deletedAt;
 
@@ -100,6 +104,22 @@ public class Attachment {
 
     public void setUploadedBy(Long uploadedBy) {
         this.uploadedBy = uploadedBy;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public OffsetDateTime getCreatedAt() {

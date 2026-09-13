@@ -14,6 +14,15 @@ export interface RegistrationItem {
   cancelReason: string | null
   decidedAt: string | null
   createdAt: string
+  /** F01：所属活动的公开性安排，供“我的报名”展示与调整期提示。 */
+  activityName: string | null
+  organizationName: string | null
+  location: string | null
+  startTime: string | null
+  endTime: string | null
+  registrationOpen: boolean
+  /** 活动处于调整期待确认（撤回草稿或重新提交待确认）：本人状态可读，显示安排调整中。 */
+  adjusting: boolean
 }
 
 export interface RegistrationPage {
@@ -48,6 +57,14 @@ export async function applyRegistration(
   return response.data
 }
 
+/** 本人当前报名是否可自助取消：活动开始前且未进入执行（后端同样校验）。 */
+export function isCancellable(item: RegistrationItem, now = new Date()): boolean {
+  if (item.status !== 'PENDING' && item.status !== 'APPROVED') {
+    return false
+  }
+  return !item.startTime || now < new Date(item.startTime)
+}
+
 /** 本人取消：活动开始前且未进入执行；重复取消幂等。 */
 export async function cancelMyRegistration(activityId: string): Promise<void> {
   await request(
@@ -58,9 +75,10 @@ export async function cancelMyRegistration(activityId: string): Promise<void> {
 
 /** 管理名单：组织负责人或本活动负责人。 */
 export async function fetchActivityRegistrations(
-  orgId: string, activityId: string, status?: string,
+  orgId: string, activityId: string, status?: string, page = 1, pageSize = 20,
 ): Promise<RegistrationPage> {
-  const search = new URLSearchParams({ page: '1', pageSize: '100' })
+  // F09：名单分页交由服务端；响应中的 total 供面板显示页码与总数
+  const search = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
   if (status) {
     search.set('status', status)
   }
@@ -108,15 +126,29 @@ export async function setRegistrationOpen(
   return response.data.registrationOpen
 }
 
-/** 受控导出：浏览器直接下载受控端点（携带会话 Cookie）。 */
-export function downloadRegistrationRoster(
+/**
+ * 受控导出（F09）：走统一请求入口拿 CSV，超限时后端返回 409 `EXPORT_TOO_LARGE`，
+ * 由调用方按普通业务错误提示；不再用直链下载，避免把错误 JSON 当成文件存下来。
+ */
+export async function exportRegistrationRoster(
   orgId: string, activityId: string, status?: string,
-): void {
+): Promise<Blob> {
   const search = status ? `?status=${encodeURIComponent(status)}` : ''
+  const response = await request<Blob>(
+    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/registrations/export${search}`,
+    { response: 'blob' },
+  )
+  return response.data
+}
+
+/** 下载已取回的名单 CSV（文件名与导出范围对应）。 */
+export function saveRosterCsv(blob: Blob, activityId: string, status?: string): void {
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/registrations/export${search}`
-  link.download = `registrations-${activityId}.csv`
+  link.href = url
+  link.download = `registrations-${activityId}${status ? `-${status}` : ''}.csv`
   document.body.appendChild(link)
   link.click()
   link.remove()
+  URL.revokeObjectURL(url)
 }

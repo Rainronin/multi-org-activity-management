@@ -23,6 +23,8 @@ export interface ActivityItem {
   registrationEnd: string | null
   /** S02：独立报名开关，新建与重新确认后默认关闭，仅影响新申请。 */
   registrationOpen: boolean
+  /** S08／F05：编辑、方案保存与审批都需要回传的当前版本。 */
+  version: number
   createdAt: string
   updatedAt: string
 }

@@ -5,6 +5,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.activity.support.FlowTestSupport;
@@ -19,8 +20,9 @@ import org.springframework.test.web.servlet.MvcResult;
 /**
  * S11 名单导出回归：权限与状态筛选沿用管理名单规则；CSV 记录导出操作；
  * 用户填入的姓名／备注不会被表格软件当公式执行（单元格前置单引号）。
+ * F09：导出超过单次上限时明确拒绝（本类把上限调到 2 条以便构造），不静默截断。
  */
-@SpringBootTest
+@SpringBootTest(properties = "app.registration.export-max-rows=2")
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
 class RegistrationExportTest extends FlowTestSupport {
@@ -90,5 +92,43 @@ class RegistrationExportTest extends FlowTestSupport {
         String filteredCsv = filtered.getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(approvedOnly).contains("待审核");
         assertThat(filteredCsv).doesNotContain("待审核");
+    }
+
+    /** F09：超过单次导出上限时返回 409 并给出总数提示，不再静默截断。 */
+    @Test
+    void exportOverLimitIsRejectedWithTotalHint() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession first = registerAndLogin();
+        TestSession second = registerAndLogin();
+        TestSession third = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, first, orgId);
+        inviteAndAccept(owner, second, orgId);
+        inviteAndAccept(owner, third, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-06-05T14:00:00+08:00");
+        openRegistration(owner, orgId, activityId);
+        for (TestSession applicant : new TestSession[] {first, second, third}) {
+            mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
+                    .with(csrf()).session(applicant.session())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"displayName\":\"%s\"}".formatted(applicant.username())))
+                .andExpect(status().isCreated());
+        }
+
+        // 3 条超过上限 2 条：拒绝并说明总数与上限
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/registrations/export")
+                .session(owner.session()))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("EXPORT_TOO_LARGE"))
+            .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("共 3 条")))
+            .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("最多导出 2 条")));
+
+        // 缩小筛选范围（已通过 0 条）后可正常导出
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/registrations/export")
+                .param("status", "APPROVED").session(owner.session()))
+            .andExpect(status().isOk());
     }
 }

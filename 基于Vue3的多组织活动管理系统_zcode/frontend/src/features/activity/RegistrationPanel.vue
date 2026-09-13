@@ -2,16 +2,17 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect,
+  ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElPagination, ElSelect,
   ElSwitch, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
+import type { FormInstance, FormRules } from 'element-plus'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { resolveMyMemberId } from './p3'
 import {
   applyRegistration, approveRegistration, cancelMyRegistration, cancelRegistrationByManager,
-  downloadRegistrationRoster, fetchActivityRegistrations, fetchMyRegistrations,
-  registrationStatusLabel, rejectRegistration, setRegistrationOpen,
+  exportRegistrationRoster, fetchActivityRegistrations, fetchMyRegistrations,
+  registrationStatusLabel, rejectRegistration, saveRosterCsv, setRegistrationOpen,
 } from './registrations'
 import type { RegistrationItem } from './registrations'
 
@@ -44,6 +45,15 @@ const acting = ref('')
 const applyVisible = ref(false)
 const applySubmitting = ref(false)
 const applyForm = ref({ displayName: '', note: '' })
+/** F10：报名表单失焦即校验，提交前再整体校验一次。 */
+const applyFormRef = ref<FormInstance | null>(null)
+const applyRules: FormRules = {
+  displayName: [
+    { required: true, message: '请填写展示姓名', trigger: 'blur' },
+    { min: 1, max: 64, message: '展示姓名 1-64 字符', trigger: 'blur' },
+  ],
+  note: [{ max: 500, message: '备注不超过 500 字符', trigger: 'blur' }],
+}
 
 const rejectVisible = ref(false)
 const rejectTarget = ref<RegistrationItem | null>(null)
@@ -52,6 +62,10 @@ const rejectSubmitting = ref(false)
 
 const toggleSaving = ref(false)
 const rosterFilter = ref('')
+/** F09：管理名单分页（服务端分页，默认每页 20 条），total 决定页码控件。 */
+const ROSTER_PAGE_SIZE = 20
+const rosterPage = ref(1)
+const rosterTotal = ref(0)
 
 /** 组织负责人或本活动负责人可审核、开关报名与导出；前端只决定展示，权限仍由后端判定。 */
 const canManage = computed(() => props.orgRole === 'OWNER'
@@ -100,13 +114,23 @@ async function loadAll(): Promise<void> {
     mine.value = current
     myMemberId.value = memberId
     if (canManage.value) {
-      const page = await fetchActivityRegistrations(orgId.value, activityId.value, rosterFilter.value || undefined)
+      const page = await fetchActivityRegistrations(
+        orgId.value, activityId.value, rosterFilter.value || undefined, rosterPage.value, ROSTER_PAGE_SIZE,
+      )
       if (seq !== requestSeq || gen !== session.generation) {
         return
       }
       roster.value = page.items
+      rosterTotal.value = page.total
+      // 当前页被处理为空时回退到最后一个有效页，避免停在空页
+      if (page.items.length === 0 && page.total > 0 && rosterPage.value > 1) {
+        rosterPage.value = Math.max(1, Math.ceil(page.total / ROSTER_PAGE_SIZE))
+        await loadAll()
+        return
+      }
     } else {
       roster.value = []
+      rosterTotal.value = 0
     }
   } catch (error) {
     if (seq !== requestSeq || gen !== session.generation) {
@@ -128,6 +152,12 @@ async function loadAll(): Promise<void> {
 
 watch([orgId, activityId], loadAll)
 watch(rosterFilter, () => {
+  rosterPage.value = 1
+  if (canManage.value) {
+    void loadAll()
+  }
+})
+watch(rosterPage, () => {
   if (canManage.value) {
     void loadAll()
   }
@@ -164,6 +194,13 @@ function openApply() {
 }
 
 async function submitApply() {
+  const form = applyFormRef.value
+  if (form) {
+    const valid = await form.validate().catch(() => false)
+    if (!valid) {
+      return
+    }
+  }
   applySubmitting.value = true
   await guard(async () => {
     await applyRegistration(activityId.value, {
@@ -252,7 +289,11 @@ function cancelByManager(item: RegistrationItem) {
 }
 
 function exportRoster() {
-  downloadRegistrationRoster(orgId.value, activityId.value, rosterFilter.value || undefined)
+  void guard(async () => {
+    // F09：超限时后端 409 EXPORT_TOO_LARGE，按业务错误提示而不是下载出错页
+    const blob = await exportRegistrationRoster(orgId.value, activityId.value, rosterFilter.value || undefined)
+    saveRosterCsv(blob, activityId.value, rosterFilter.value || undefined)
+  })
 }
 
 defineExpose({ reload: loadAll })
@@ -449,6 +490,15 @@ defineExpose({ reload: loadAll })
           <span class="reg-note">暂无报名记录。</span>
         </template>
       </ElTable>
+      <ElPagination
+        v-if="rosterTotal > ROSTER_PAGE_SIZE"
+        class="reg-panel__pager"
+        layout="prev, pager, next, total"
+        :total="rosterTotal"
+        :page-size="ROSTER_PAGE_SIZE"
+        :current-page="rosterPage"
+        @current-change="(value: number) => { rosterPage = value }"
+      />
     </template>
 
     <ElDialog
@@ -457,16 +507,19 @@ defineExpose({ reload: loadAll })
       width="var(--ui-dialog-width)"
     >
       <ElForm
+        ref="applyFormRef"
         :model="applyForm"
+        :rules="applyRules"
         label-position="top"
       >
         <ElFormItem
           label="展示姓名"
+          prop="displayName"
           required
         >
           <ElInput
             v-model="applyForm.displayName"
-            placeholder="1-64 字符"
+            placeholder="报名姓名（1-64 字符）"
           />
         </ElFormItem>
         <ElFormItem label="备注">

@@ -10,7 +10,12 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 组织成员与负责人管理（P1.3）。所有变更在组织行排他锁内校验并提交（后端架构 5.1）；
  * 最后一名负责人受保护；历史关系置 LEFT／REMOVED 保留，不物理删除。
- * 跨业务职责移交（活动、任务、物资、报名）随 P2—P6 接入时提升为 application 编排。
+ *
+ * 依赖边界（F04）：活动／任务／物资只做只读职责查询，方向为 organization → 各模块；
+ * 退出与移除联动还会取消内部报名、写入站内提示意图，这是跨模块写入，尚未按后端架构三节
+ * 提升到 application/MembershipWorkflowService。此处明确保留为最小例外，而不是当作只读依赖：
+ * 这些写入始终在组织行排他锁内完成，且活动、任务、物资、报名的写入入口都先取组织锁，
+ * 因此仍满足「组织 → 活动 → 子记录」的锁顺序；待职责移交流程接入 P2—P6 时一并提升实现位置。
  */
 @Service
 public class OrganizationMemberService {
@@ -20,10 +25,11 @@ public class OrganizationMemberService {
     private final OrganizationMapper organizationMapper;
     private final OrganizationMemberMapper memberMapper;
     private final AuditService auditService;
-    // 只读职责查询：organization → task/material/activity/registration 单向依赖（后端架构 2.1）
+    // 只读职责查询：organization → task/material/activity 单向依赖（后端架构 2.1）
     private final com.example.activity.modules.task.TaskMapper taskMapper;
     private final com.example.activity.modules.material.MaterialMapper materialMapper;
     private final com.example.activity.modules.activity.ActivityMapper activityMapper;
+    // 跨模块写入（取消报名、通知意图）：见类注释保留的最小例外
     private final com.example.activity.modules.registration.RegistrationMapper registrationMapper;
     private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
 

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -59,8 +60,9 @@ public class AttachmentController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
         @RequestParam("file") MultipartFile file) {
-        return uploadFor(principal, orgId, activityId, AttachmentService.ACTIVITY_DOC, file);
+        return uploadFor(principal, orgId, activityId, AttachmentService.ACTIVITY_DOC, idempotencyKey, file);
     }
 
     /** S10：任务资料上传；权限为组织负责人、活动负责人或该任务承担者。 */
@@ -70,14 +72,15 @@ public class AttachmentController {
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
         @PathVariable("taskId") Long taskId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
         @RequestParam("file") MultipartFile file) {
         return uploadFor(principal, orgId, activityId,
-            attachmentService.taskOwner(orgId, activityId, taskId), file);
+            attachmentService.taskOwner(orgId, activityId, taskId), idempotencyKey, file);
     }
 
     private ResponseEntity<AttachmentResponse> uploadFor(
         AccountUserDetails principal, Long orgId, Long activityId,
-        AttachmentService.AttachmentOwner owner, MultipartFile file) {
+        AttachmentService.AttachmentOwner owner, String idempotencyKey, MultipartFile file) {
         if (file != null && file.getSize() > maxSizeBytes) {
             throw new com.example.activity.common.ApiException(HttpStatus.BAD_REQUEST,
                 "ATTACHMENT_INVALID", "文件过大", "单个文件不超过 20MB。");
@@ -85,9 +88,12 @@ public class AttachmentController {
         AttachmentService.StagedFile staged =
             attachmentService.stage(principal.getAccountId(), orgId, activityId, owner, file);
         try {
+            AttachmentService.AttachmentItem item = attachmentService.register(
+                principal.getAccountId(), orgId, activityId, owner, staged, idempotencyKey);
+            // F06：同键重放时本次暂存的文件没有引用，随即清理，避免留下孤儿文件
+            attachmentService.cleanupIfUnreferenced(staged);
             return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
-                .body(toResponse(attachmentService.register(
-                    principal.getAccountId(), orgId, activityId, owner, staged)));
+                .body(toResponse(item));
         } catch (RuntimeException ex) {
             attachmentService.cleanupIfUnreferenced(staged);
             throw ex;
@@ -125,13 +131,15 @@ public class AttachmentController {
         @PathVariable("attachmentId") Long attachmentId) {
         AttachmentService.Download download =
             attachmentService.download(principal.getAccountId(), orgId, activityId, attachmentId);
-        String encodedName = java.net.URLEncoder.encode(download.attachment().getOriginalName(),
-            StandardCharsets.UTF_8).replace("+", "%20");
+        // F07：filename 交给 ContentDisposition 编码（输出 filename* 的 UTF-8 百分号形式）；
+        // 预先 URLEncoder 会二次编码成 %25E5…，客户端拿到的是乱码文件名。
         return ResponseEntity.ok()
             .cacheControl(CacheControl.noStore())
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
             .header(HttpHeaders.CONTENT_DISPOSITION,
-                ContentDisposition.attachment().filename(encodedName, StandardCharsets.UTF_8).build().toString())
+                ContentDisposition.attachment()
+                    .filename(download.attachment().getOriginalName(), StandardCharsets.UTF_8)
+                    .build().toString())
             .body(new ByteArrayResource(download.content()));
     }
 

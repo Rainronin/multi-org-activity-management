@@ -28,6 +28,10 @@ try {
     if (!res.ok()) throw new Error(`${method} ${path} -> ${res.status()} ${await res.text()}`)
     return res.json()
   }
+  // F05：方案保存与审批必须携带当前 version，调用前先读取
+  async function currentVersion(activityId) {
+    return (await json(ownerApi, 'GET', `/api/organizations/${org.id}/activities/${activityId}`)).version
+  }
   async function login(ctx, username) {
     await json(ctx, 'POST', '/api/auth/register', { username, password })
     const csrf = await (await ctx.request.get('/api/auth/csrf')).json()
@@ -53,9 +57,9 @@ try {
     registrationStart: new Date(Date.now() - 86400000).toISOString(),
     registrationEnd: new Date(Date.now() + 9 * 86400000).toISOString(),
   }, { 'Idempotency-Key': `p4-${stamp}` })
-  await json(ownerApi, 'PUT', `/api/organizations/${org.id}/activities/${publicActivity.id}/proposal`, { content: '方案' })
+  await json(ownerApi, 'PUT', `/api/organizations/${org.id}/activities/${publicActivity.id}/proposal`, { content: '方案', version: await currentVersion(publicActivity.id) })
   await json(ownerApi, 'POST', `/api/organizations/${org.id}/activities/${publicActivity.id}/submit`)
-  await json(ownerApi, 'POST', `/api/organizations/${org.id}/activities/${publicActivity.id}/approve`, {})
+  await json(ownerApi, 'POST', `/api/organizations/${org.id}/activities/${publicActivity.id}/approve`, { version: await currentVersion(publicActivity.id) })
   await json(ownerApi, 'POST', `/api/organizations/${org.id}/activities/${publicActivity.id}/registration-open`, { open: true })
   await ownerApi.close()
   await memberApi.close()
@@ -91,8 +95,8 @@ try {
     internalNote: detailBody.includes('不在此展示'),
   }
 
-  // 2. 未登录点报名 → 登录页 → 回跳公开详情
-  await anonPage.getByRole('button', { name: '登录后报名' }).click()
+  // 2. 未登录点报名 → 登录页 → 回跳公开详情（F01：回跳后留在公开页）
+  await anonPage.getByRole('button', { name: '登录并报名' }).click()
   await anonPage.waitForURL(/\/login/, { timeout: 15000 })
   const loginUrl = anonPage.url()
   await anonPage.getByPlaceholder('注册时设置的用户名').fill(memberName)

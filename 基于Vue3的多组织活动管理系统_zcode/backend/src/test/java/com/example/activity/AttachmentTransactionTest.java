@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -48,10 +49,25 @@ class AttachmentTransactionTest extends FlowTestSupport {
         return (Path) ReflectionTestUtils.getField(attachmentService, "storageDir");
     }
 
+    /** F06：持久目录里的文件数（不含 tmp 子目录），用于核对重放不遗留孤儿文件。 */
+    private long storedFileCount() throws java.io.IOException {
+        try (var paths = Files.list(storageDir())) {
+            return paths.filter(Files::isRegularFile).count();
+        }
+    }
+
     private MvcResult upload(TestSession actor, Long orgId, Long activityId, String name, String contentType,
         byte[] content, int expectedStatus) throws Exception {
+        return uploadWithKey(actor, orgId, activityId, name, contentType, content, expectedStatus,
+            newIdempotencyKey());
+    }
+
+    /** F06：上传必须携带 Idempotency-Key；此重载供防重重放用例复用同一个键。 */
+    private MvcResult uploadWithKey(TestSession actor, Long orgId, Long activityId, String name,
+        String contentType, byte[] content, int expectedStatus, String key) throws Exception {
         return mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + activityId + "/attachments")
                 .file(new MockMultipartFile("file", name, contentType, content))
+                .header("Idempotency-Key", key)
                 .with(csrf()).session(actor.session()))
             .andExpect(status().is(expectedStatus))
             .andReturn();
@@ -63,6 +79,7 @@ class AttachmentTransactionTest extends FlowTestSupport {
         return mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/tasks/" + taskId + "/attachments")
                 .file(new MockMultipartFile("file", name, contentType, content))
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(actor.session()))
             .andExpect(status().is(expectedStatus))
             .andReturn();
@@ -118,9 +135,14 @@ class AttachmentTransactionTest extends FlowTestSupport {
             .andExpect(jsonPath("$.items.length()").value(0));
 
         // 任务资料可以下载；不存在的任务返回 404
+        // F07：中文文件名只在 Content-Disposition 里编码一次（filename*=UTF-8''…），不是 %25 双重编码
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/attachments/" + attachmentId + "/download").session(owner.session()))
-            .andExpect(status().isOk());
+            .andExpect(status().isOk())
+            .andExpect(header().string("Content-Disposition",
+                org.hamcrest.Matchers.containsString("filename*=UTF-8''%E7%8E%B0%E5%9C%BA%E7%85%A7%E7%89%87.png")))
+            .andExpect(header().string("Content-Disposition",
+                org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("%25"))));
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/tasks/999999/attachments").session(owner.session()))
             .andExpect(status().isNotFound());
@@ -204,7 +226,7 @@ class AttachmentTransactionTest extends FlowTestSupport {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/withdraw-approval")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"安排调整\"}"))
+                .content(versioned(activityId, "{\"reason\":\"安排调整\"}")))
             .andExpect(status().isOk());
         upload(owner, orgId, activityId, "调整期资料.png", "image/png", PNG, 409);
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
@@ -245,5 +267,110 @@ class AttachmentTransactionTest extends FlowTestSupport {
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/attachments/" + attachmentId + "/download").session(owner.session()))
             .andExpect(status().isNotFound());
+    }
+
+    /**
+     * F07 两阶段回归：任务承担者在暂存（stage）通过后、登记（register）之前被改派，
+     * 登记必须按锁内重读的当前任务拒绝旧承担者，不能使用阶段一的旧 Task 对象授权。
+     */
+    @Test
+    void reassignmentBetweenStageAndRegisterDeniesStaleAssignee() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long memberMemberId = memberIdOf(orgId, member.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId, "2027-04-05T14:00:00+08:00");
+        String taskId = createTask(owner, orgId, activityId, memberMemberId);
+
+        // 阶段一：旧承担者通过粗粒度检查并落盘，随后被改派
+        AttachmentService.AttachmentOwner staleOwner =
+            attachmentService.taskOwner(orgId, activityId, Long.parseLong(taskId));
+        AttachmentService.StagedFile staged = attachmentService.stage(
+            accountIdOf(orgId, member.username()), orgId, activityId, staleOwner,
+            new MockMultipartFile("file", "阶段照片.png", "image/png", PNG));        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/" + taskId + "/update")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(taskVersioned(taskId, ("{\"title\":\"任务资料核对\",\"assigneeMemberId\":%d}")
+                    .formatted(ownerMemberId))))
+            .andExpect(status().isOk());
+
+        // 阶段二：旧承担者登记被拒，且没有留下元数据
+        com.example.activity.common.ApiException denied = org.junit.jupiter.api.Assertions.assertThrows(
+            com.example.activity.common.ApiException.class,
+            () -> attachmentService.register(
+                accountIdOf(orgId, member.username()), orgId, activityId, staleOwner, staged,
+                newIdempotencyKey()));
+        assertThat(denied.getCode()).isEqualTo("FORBIDDEN");
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE stored_name = ?", Integer.class, staged.storedName()))
+            .isEqualTo(0);
+        // 控制器在登记失败后清理本次文件；服务层同样只清理无引用的文件
+        attachmentService.cleanupIfUnreferenced(staged);
+        assertThat(Files.exists(staged.persistedPath())).isFalse();
+
+        // 新承担者可以正常上传任务资料
+        AttachmentService.AttachmentOwner currentOwner =
+            attachmentService.taskOwner(orgId, activityId, Long.parseLong(taskId));
+        AttachmentService.StagedFile currentStaged = attachmentService.stage(
+            accountIdOf(orgId, owner.username()), orgId, activityId, currentOwner,
+            new MockMultipartFile("file", "改派后照片.png", "image/png", PNG));
+        AttachmentService.AttachmentItem registered = attachmentService.register(
+            accountIdOf(orgId, owner.username()), orgId, activityId, currentOwner, currentStaged,
+            newIdempotencyKey());
+        assertThat(registered.taskId()).isEqualTo(taskId);
+        assertThat(Files.exists(currentStaged.persistedPath())).isTrue();
+    }
+
+    private Long accountIdOf(Long orgId, String username) {
+        return jdbcTemplate.queryForObject(
+            "SELECT m.account_id FROM organization_member m JOIN account a ON a.id = m.account_id "
+                + "WHERE m.org_id = ? AND a.username = ? AND m.status = 'ACTIVE'",
+            Long.class, orgId, username);
+    }
+
+    /** F06：缺防重键的上传被拒；同键同内容重放返回原附件，同键异内容 409。 */
+    @Test
+    void uploadRequiresIdempotencyKeyAndReplaysSameResult() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-04-06T14:00:00+08:00");
+
+        // 缺键：400，且不留元数据与磁盘文件
+        mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + activityId + "/attachments")
+                .file(new MockMultipartFile("file", "无键.png", "image/png", PNG))
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE activity_id = ?", Integer.class, activityId)).isEqualTo(0);
+
+        String key = newIdempotencyKey();
+        MvcResult first = uploadWithKey(owner, orgId, activityId, "防重资料.png", "image/png", PNG, 201, key);
+        String attachmentId = readField(first, "$.attachmentId");
+        long filesAfterFirst = storedFileCount();
+
+        // 同键同内容重放：返回原资源，不新增记录，且暂存的重复文件被清理
+        MvcResult replay = uploadWithKey(owner, orgId, activityId, "防重资料.png", "image/png", PNG, 201, key);
+        assertThat(readField(replay, "$.attachmentId")).isEqualTo(attachmentId);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE activity_id = ?", Integer.class, activityId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE request_key = ?", Integer.class, key)).isEqualTo(1);
+        assertThat(storedFileCount()).isEqualTo(filesAfterFirst);
+
+        // 同键不同内容：409，不静默替换
+        byte[] otherPng = new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 9, 9};
+        uploadWithKey(owner, orgId, activityId, "防重资料.png", "image/png", otherPng, 409, key);
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE activity_id = ?", Integer.class, activityId)).isEqualTo(1);
+
+        // 换键可正常再上传
+        uploadWithKey(owner, orgId, activityId, "第二份.png", "image/png", otherPng, 201, newIdempotencyKey());
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM attachment WHERE activity_id = ?", Integer.class, activityId)).isEqualTo(2);
     }
 }

@@ -102,7 +102,7 @@ class P3FlowTest extends ActivityTestBase {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"方案\"}"))
+                .content(versioned(activityId, "{\"content\":\"方案\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(owner.session()))
@@ -110,7 +110,7 @@ class P3FlowTest extends ActivityTestBase {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{}"))
+                .content(versioned(activityId, "{}")))
             .andExpect(status().isOk());
         return activityId;
     }
@@ -263,6 +263,7 @@ class P3FlowTest extends ActivityTestBase {
         MvcResult upload = mockMvc.perform(multipart(
                     "/api/organizations/" + orgId + "/activities/" + activityId + "/attachments")
                 .file(new MockMultipartFile("file", "海报.png", "image/png", png))
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isCreated())
             .andReturn();
@@ -273,6 +274,7 @@ class P3FlowTest extends ActivityTestBase {
         mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + activityId + "/attachments")
                 .file(new MockMultipartFile("file", "假图.png", "image/png",
                     "this is not a png".getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("ATTACHMENT_INVALID"));
@@ -318,8 +320,9 @@ class P3FlowTest extends ActivityTestBase {
                 + taskIdOf(orgId, member.username()) + "/update")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"title\":\"未结任务\",\"assigneeMemberId\":%d,\"priority\":\"MEDIUM\"}")
-                    .formatted(otherMemberId)))
+                .content(taskVersioned(taskIdOf(orgId, member.username()),
+                    ("{\"title\":\"未结任务\",\"assigneeMemberId\":%d,\"priority\":\"MEDIUM\"}")
+                        .formatted(otherMemberId))))
             .andExpect(status().isOk());
         mockMvc.perform(delete("/api/organizations/" + orgId + "/members/me")
                 .with(csrf()).session(member.session()))

@@ -21,16 +21,19 @@ public class MaterialService {
     private final MaterialMapper materialMapper;
     private final ActivityMapper activityMapper;
     private final OrganizationMemberMapper memberMapper;
+    private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
     private final AuditService auditService;
 
     public MaterialService(
         MaterialMapper materialMapper,
         ActivityMapper activityMapper,
         OrganizationMemberMapper memberMapper,
+        com.example.activity.modules.organization.OrganizationMapper organizationMapper,
         AuditService auditService) {
         this.materialMapper = materialMapper;
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
+        this.organizationMapper = organizationMapper;
         this.auditService = auditService;
     }
 
@@ -42,7 +45,13 @@ public class MaterialService {
     private record Context(OrganizationMember actor, Activity activity) {
     }
 
+    /**
+     * S08 锁协议：物资写入前按「组织 → 活动 → 子记录」取锁，
+     * 权限、调整期与筹备期判断都在锁内基于当前活动完成（F04）。
+     */
     private Context requireManageContext(Long accountId, Long orgId, Long activityId) {
+        organizationMapper.lockOrganizationShared(orgId);
+        activityMapper.lockActivityShared(activityId);
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
         Activity activity = actor == null ? null : activityMapper.findById(activityId);
         if (actor == null || activity == null || !activity.getOrgId().equals(orgId)
@@ -54,12 +63,20 @@ public class MaterialService {
         if (!canManage) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以维护物资。");
         }
-        // S07／计划书 6.1：调整期待确认期间物资只读
+        // S07／F02／计划书 6.1：调整期待确认（撤回草稿或重新提交待确认）期间物资只读
         if (activity.isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
-                "活动已撤回到草稿等待重新确认，期间物资只读；重新确认后再维护。");
+                "活动安排调整中，期间物资只读；重新确认后再维护。");
         }
         return new Context(actor, activity);
+    }
+
+    /** F02：新增物资只在已确认筹备期允许；初始草稿与待确认同样拒绝。锁内以当前活动判断。 */
+    private void requirePreparationWritable(Activity activity) {
+        if (!activity.isPreparationWritable()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动尚未进入筹备",
+                "物资只能在活动确认后的筹备阶段新增。");
+        }
     }
 
     private void validateAssignee(Long orgId, Long assigneeMemberId) {
@@ -88,9 +105,9 @@ public class MaterialService {
 
     @Transactional
     public MaterialItem create(Long accountId, Long orgId, Long activityId, Material draft) {
-        requireManageContext(accountId, orgId, activityId);
-        // S08 锁协议：活动下子记录写入前取活动行共享锁（组织 → 活动 → 子记录）
-        activityMapper.lockActivityShared(activityId);
+        Context ctx = requireManageContext(accountId, orgId, activityId);
+        // F02：新增筹备数据仅在已确认筹备期允许（与权限检查同处锁内）
+        requirePreparationWritable(ctx.activity());
         validateAssignee(orgId, draft.getAssigneeMemberId());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
@@ -105,13 +122,18 @@ public class MaterialService {
     @Transactional
     public MaterialItem update(Long accountId, Long orgId, Long activityId, Long materialId, Material patch) {
         requireManageContext(accountId, orgId, activityId);
-        activityMapper.lockActivityShared(activityId);
         Material material = requireMaterial(orgId, activityId, materialId);
+        // F05：物资编辑必须携带期望版本，缺失即拒绝
+        if (patch.getVersion() == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "输入无效",
+                "请求字段校验失败，请修改后重试。",
+                List.of(new com.example.activity.common.FieldErrorItem("version", "请携带当前版本号（version）后再提交")));
+        }
         validateAssignee(orgId, patch.getAssigneeMemberId());
-        // S08：携带期望版本时做乐观锁，影响行数为 0 表示他人已保存
+        // S08／F05：版本是必备前置条件，影响行数为 0 即版本冲突
         if (materialMapper.update(materialId, patch.getName(), patch.getQuantity(), patch.getUnit(),
                 patch.getAssigneeMemberId(), patch.getNote(), patch.getVersion()) != 1) {
-            throw editConflictOrState(material.getVersion());
+            throw editConflict(material.getVersion());
         }
         auditService.record(accountId, "ACTIVITY", "MATERIAL_UPDATED", "material:" + materialId,
             null, java.util.Map.of("activityId", activityId));
@@ -121,7 +143,6 @@ public class MaterialService {
     @Transactional
     public MaterialItem changeStatus(Long accountId, Long orgId, Long activityId, Long materialId, String toStatus) {
         requireManageContext(accountId, orgId, activityId);
-        activityMapper.lockActivityShared(activityId);
         Material material = requireMaterial(orgId, activityId, materialId);
         List<String> valid = List.of(Material.STATUS_PENDING, Material.STATUS_IN_PROGRESS,
             Material.STATUS_READY, Material.STATUS_CANCELLED);
@@ -135,8 +156,8 @@ public class MaterialService {
         return toItem(materialMapper.findById(materialId));
     }
 
-    /** S08：更新影响行数为 0 时区分版本冲突与状态变化，两者都要求刷新后重试。 */
-    private ApiException editConflictOrState(Long currentVersion) {
+    /** S08／F05：版本前置条件下更新影响行数为 0 即版本冲突，要求刷新后重试。 */
+    private ApiException editConflict(Long currentVersion) {
         return new ApiException(HttpStatus.CONFLICT, "EDIT_CONFLICT", "物资已被他人修改",
             "该物资已由其他操作保存（当前版本 " + currentVersion + "），请刷新后重新编辑。");
     }

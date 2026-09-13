@@ -2,6 +2,7 @@ package com.example.activity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -40,7 +41,7 @@ class ActivityVisibilityTest extends FlowTestSupport {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + pending + "/proposal")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"方案\"}"))
+                .content(versioned(pending, "{\"content\":\"方案\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + pending + "/submit")
                 .with(csrf()).session(owner.session()))
@@ -123,7 +124,8 @@ class ActivityVisibilityTest extends FlowTestSupport {
         inviteAndAccept(owner, member, orgId);
         Long ownerMemberId = memberIdOf(orgId, owner.username());
 
-        Long draft = createDraftActivityOnly(owner, orgId, ownerMemberId);
+        // F02 后草稿不能新建子资源，因此先造已确认活动、写入子资源，再撤回到草稿（未发布状态）
+        Long draft = createApprovedActivity(owner, orgId, ownerMemberId, "2026-12-04T14:00:00+08:00");
         MvcResult task = mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + draft + "/tasks")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -140,10 +142,35 @@ class ActivityVisibilityTest extends FlowTestSupport {
         MvcResult upload = mockMvc.perform(multipart(
                     "/api/organizations/" + orgId + "/activities/" + draft + "/attachments")
                 .file(new MockMultipartFile("file", "草稿资料.png", "image/png", png))
+                .header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isCreated())
             .andReturn();
         String attachmentId = readField(upload, "$.attachmentId");
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + draft + "/withdraw-approval")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(draft, "{\"reason\":\"调整\"}")))
+            .andExpect(status().isOk());
+        // 调整期待确认期间新增子资源被拒（F02）
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + draft + "/tasks")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(("{\"title\":\"调整期任务\",\"assigneeMemberId\":%d}").formatted(ownerMemberId)))
+            .andExpect(status().isConflict());
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + draft + "/materials")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"调整期物资\",\"quantity\":1,\"unit\":\"件\"}"))
+            .andExpect(status().isConflict());
+        mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + draft + "/attachments")
+                .file(new MockMultipartFile("file", "调整期资料.png", "image/png", png))
+                .header("Idempotency-Key", newIdempotencyKey())
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict());
+        mockMvc.perform(delete("/api/organizations/" + orgId + "/activities/" + draft + "/attachments/" + attachmentId)
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict());
 
         // 普通成员：详情、任务、物资、附件列表与下载全部 404
         mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + draft).session(member.session()))

@@ -23,6 +23,7 @@ public class TaskService {
     private final TaskMapper taskMapper;
     private final ActivityMapper activityMapper;
     private final OrganizationMemberMapper memberMapper;
+    private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
     private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
     private final AuditService auditService;
 
@@ -30,11 +31,13 @@ public class TaskService {
         TaskMapper taskMapper,
         ActivityMapper activityMapper,
         OrganizationMemberMapper memberMapper,
+        com.example.activity.modules.organization.OrganizationMapper organizationMapper,
         com.example.activity.modules.notification.NotificationMapper notificationMapper,
         AuditService auditService) {
         this.taskMapper = taskMapper;
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
+        this.organizationMapper = organizationMapper;
         this.notificationMapper = notificationMapper;
         this.auditService = auditService;
     }
@@ -60,13 +63,13 @@ public class TaskService {
     }
 
     /**
-     * S08 锁协议：活动下子记录写入前取活动行共享锁（组织 → 活动 → 子记录）；
-     * 活动自身状态已变化时由调用方继续校验。
+     * S08 锁协议：活动下子记录写入前按「组织 → 活动 → 子记录」取锁，
+     * 并在锁内重新读取身份与活动；锁前快照不得用于授权或状态判断（F04）。
      */
     private Context requireWriteContext(Long accountId, Long orgId, Long activityId) {
-        Context ctx = requireVisibleContext(accountId, orgId, activityId);
+        organizationMapper.lockOrganizationShared(orgId);
         activityMapper.lockActivityShared(activityId);
-        return ctx;
+        return requireVisibleContext(accountId, orgId, activityId);
     }
 
     private boolean canManage(Context ctx) {
@@ -74,11 +77,23 @@ public class TaskService {
             || ctx.actor().getId().equals(ctx.activity().getOwnerMemberId());
     }
 
+    /**
+     * F02：任务只在“已确认且不处于调整期待确认”的筹备期可写。
+     * 初始草稿、待确认与调整期都拒绝，避免从未确认的活动产生任务。
+     */
+    private void requirePreparationWritable(Context ctx) {
+        requireNotPendingReconfirmation(ctx);
+        if (!ctx.activity().isPreparationWritable()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动尚未进入筹备",
+                "任务只能在活动确认后的筹备阶段创建。");
+        }
+    }
+
     /** S07／计划书 6.1：调整期待确认期间任务只读，避免继续修改筹备数据。 */
     private void requireNotPendingReconfirmation(Context ctx) {
         if (ctx.activity().isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
-                "活动已撤回到草稿等待重新确认，期间任务只读；重新确认后再修改。");
+                "活动安排调整中，期间任务只读；重新确认后再修改。");
         }
     }
 
@@ -88,7 +103,8 @@ public class TaskService {
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以创建任务。");
         }
-        requireNotPendingReconfirmation(ctx);
+        // F02：新增筹备数据仅在已确认筹备期允许；初始草稿、待确认与调整期都拒绝
+        requirePreparationWritable(ctx);
         validateAssignee(orgId, draft.getAssigneeMemberId());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
@@ -128,18 +144,21 @@ public class TaskService {
         if (Task.STATUS_COMPLETED.equals(task.getStatus()) || Task.STATUS_CANCELLED.equals(task.getStatus())) {
             throw conflict("TASK_STATE_CONFLICT", "任务已完成或已取消", "如需调整请先重新打开任务。");
         }
+        // F05：改派／编辑必须携带期望版本，缺失即拒绝（开发规范：编辑请求携带 version）
+        if (patch.getVersion() == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "输入无效",
+                "请求字段校验失败，请修改后重试。",
+                List.of(new com.example.activity.common.FieldErrorItem("version", "请携带当前版本号（version）后再提交")));
+        }
         validateAssignee(orgId, patch.getAssigneeMemberId());
         boolean reassigned = !patch.getAssigneeMemberId().equals(task.getAssigneeMemberId());
         // PATCH 语义：未传优先级时沿用当前值，避免把非空列写成 NULL
         String priority = patch.getPriority() == null ? task.getPriority() : patch.getPriority();
-        // S08：携带期望版本时做乐观锁，影响行数为 0 表示他人已保存
+        // S08／F05：版本是必备前置条件，影响行数为 0 即版本冲突
         if (taskMapper.updateAssignment(taskId, patch.getTitle(), patch.getDescription(),
                 patch.getAssigneeMemberId(), priority, patch.getDueAt(), patch.getVersion()) != 1) {
-            if (patch.getVersion() != null) {
-                throw conflict("EDIT_CONFLICT", "任务已被他人修改",
-                    "该任务已由其他操作保存（当前版本 " + task.getVersion() + "），请刷新后重新编辑。");
-            }
-            throw conflict("TASK_STATE_CONFLICT", "任务状态不允许此操作", "任务已变化，请刷新后查看。");
+            throw conflict("EDIT_CONFLICT", "任务已被他人修改",
+                "该任务已由其他操作保存（当前版本 " + task.getVersion() + "），请刷新后重新编辑。");
         }
         if (reassigned) {
             notifyAssignment(orgId, activityId, taskMapper.findById(taskId));

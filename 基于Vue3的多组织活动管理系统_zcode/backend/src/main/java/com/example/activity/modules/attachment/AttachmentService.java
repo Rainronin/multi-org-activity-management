@@ -167,14 +167,22 @@ public class AttachmentService {
      */
     @Transactional
     public AttachmentItem register(
-        Long accountId, Long orgId, Long activityId, AttachmentOwner owner, StagedFile staged) {
+        Long accountId, Long orgId, Long activityId, AttachmentOwner owner, StagedFile staged,
+        String idempotencyKey) {
         Context locked = requireLockedContext(accountId, orgId, activityId);
-        requireUploadPermission(locked, owner);
-        // 调整期待确认期间筹备数据只读（S07-A），附件同属筹备数据
-        if (locked.activity().isPendingReconfirmation()) {
-            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
-                "活动已撤回到草稿等待重新确认，期间资料只读；重新确认后再上传。");
+        // F06：文件上传同样要求防重键（开发规范第三节），先做结果核对再落库
+        String requestKey = requireIdempotencyKey(idempotencyKey);
+        String fingerprint = uploadFingerprint(staged, owner, activityId);
+        Attachment replay = attachmentMapper.findByRequestKey(orgId, requestKey);
+        if (replay != null) {
+            requireSameUpload(replay, fingerprint);
+            return toItem(replay);
         }
+        // F07：任务资料先按锁协议取任务行共享锁，再按当前任务重新判断承担者
+        Task currentTask = lockCurrentTask(locked, owner);
+        requireUploadPermission(locked, currentTask);
+        // F02：新增资料只在已确认筹备期允许（调整期与未确认状态都拒绝）
+        requirePreparationWritable(locked);
         // 存储文件已被清理（例如上传过程中被并发删除）时不登记元数据
         if (!Files.exists(staged.persistedPath())) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "服务内部错误", "文件保存失败，请稍后重试。");
@@ -189,31 +197,114 @@ public class AttachmentService {
         attachment.setContentType(staged.contentType());
         attachment.setSizeBytes(staged.sizeBytes());
         attachment.setUploadedBy(accountId);
-        attachmentMapper.insert(attachment);
+        attachment.setRequestKey(requestKey);
+        attachment.setRequestFingerprint(fingerprint);
+        try {
+            attachmentMapper.insert(attachment);
+        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+            // F06：同键并发上传由唯一约束兜底，冲突后按已提交结果恢复，不返回 500
+            Attachment committed = attachmentMapper.findByRequestKey(orgId, requestKey);
+            if (committed == null) {
+                throw duplicate;
+            }
+            requireSameUpload(committed, fingerprint);
+            return toItem(committed);
+        }
         auditService.record(accountId, "ACTIVITY", "ATTACHMENT_UPLOADED", "attachment:" + attachment.getId(),
             null, Map.of("activityId", activityId, "size", staged.sizeBytes(), "purpose", owner.purpose()));
         return toItem(attachmentMapper.findActiveById(attachment.getId()));
     }
 
-    /** 上传权限：活动级资料限管理者；任务资料额外允许该任务承担者。 */
-    private void requireUploadPermission(Context locked, AttachmentOwner owner) {
+    /** F06：上传必须携带 1～64 字符的 Idempotency-Key。 */
+    private String requireIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 64) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "缺少防重键",
+                "上传文件必须携带 Idempotency-Key 请求头（1～64 字符）。");
+        }
+        return idempotencyKey.trim();
+    }
+
+    /**
+     * F06：上传请求指纹 = 文件内容摘要 + 归属（活动、任务、用途）。
+     * 按开发规范第三节，摘要必须包含文件内容与归属，不能只比较文件名。
+     */
+    private String uploadFingerprint(StagedFile staged, AttachmentOwner owner, Long activityId) {
+        String canonical = String.join("\u001f",
+            staged.contentSha256(), owner.purpose(), String.valueOf(activityId),
+            String.valueOf(taskIdOf(owner)));
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 不可用", ex);
+        }
+    }
+
+    /** F06：同键重放只接受与首次上传相同的内容与归属；已删除的附件不因重放复活。 */
+    private void requireSameUpload(Attachment stored, String fingerprint) {
+        if (stored.getDeletedAt() != null || !fingerprint.equals(stored.getRequestFingerprint())) {
+            throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", "重复的防重键",
+                "该 Idempotency-Key 已用于内容或归属不同的上传，请使用新的键重试。");
+        }
+    }
+
+    /**
+     * F07：锁内取任务行共享锁并重读当前任务；任务被删除或不再属于该活动时按不存在处理。
+     * 阶段一（暂存）拿到的 Task 对象只用于粗粒度检查，不能用作登记授权依据。
+     */
+    private Task lockCurrentTask(Context locked, AttachmentOwner owner) {
+        if (!(owner instanceof AttachmentOwner.OfTask ofTask)) {
+            return null;
+        }
+        Long taskId = ofTask.task().getId();
+        taskMapper.lockTaskShared(taskId);
+        Task current = taskMapper.findById(taskId);
+        if (current == null || !current.getActivityId().equals(locked.activity().getId())) {
+            throw notFound();
+        }
+        return current;
+    }
+
+    /** 上传权限：活动级资料限管理者；任务资料额外允许该任务承担者（按锁内重读的当前任务判断）。 */
+    private void requireUploadPermission(Context locked, Task currentTask) {
         if (locked.canManage()) {
             return;
         }
-        boolean taskAssignee = owner instanceof AttachmentOwner.OfTask ofTask
-            && ofTask.task().getAssigneeMemberId().equals(locked.actor().getId());
+        boolean taskAssignee = currentTask != null
+            && currentTask.getAssigneeMemberId().equals(locked.actor().getId());
         if (!taskAssignee) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
-                owner instanceof AttachmentOwner.OfTask
+                currentTask != null
                     ? "仅组织负责人、活动负责人或该任务承担者可以上传任务资料。"
                     : "仅组织负责人或活动负责人可以上传活动资料。");
         }
     }
 
-    /** 上传（第一步）的返回：已通过校验并落盘的文件元数据与持久路径。 */
+    /** F02：新增资料只在已确认筹备期允许；初始草稿、待确认与调整期待确认都只读。 */
+    private void requirePreparationWritable(Context locked) {
+        if (!locked.activity().isPreparationWritable()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
+                "活动尚未确认或正在调整安排，期间不能新增资料。");
+        }
+    }
+
+    /** F02：调整期待确认期间已上传资料只读，删除也要拒绝。 */
+    private void requireNotFrozen(Context locked) {
+        if (locked.activity().isPendingReconfirmation()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
+                "活动安排调整中，期间资料只读；重新确认后再处理。");
+        }
+    }
+
+    /** 上传（第一步）的返回：已通过校验并落盘的文件元数据、内容摘要与持久路径。 */
     public record StagedFile(
         String originalName, String contentType, String storedName, long sizeBytes, String purpose,
-        Path persistedPath) {
+        String contentSha256, Path persistedPath) {
     }
 
     /**
@@ -224,7 +315,8 @@ public class AttachmentService {
     public StagedFile stage(
         Long accountId, Long orgId, Long activityId, AttachmentOwner owner, MultipartFile file) {
         Context coarse = requireContext(accountId, orgId, activityId);
-        requireUploadPermission(coarse, owner);
+        // 粗粒度检查用阶段一看到的任务；真正授权在 register 内按锁内重读的当前任务完成（F07）
+        requireUploadPermission(coarse, owner instanceof AttachmentOwner.OfTask ofTask ? ofTask.task() : null);
         ValidatedFile validated = validateAndStage(file);
         Path target = storageDir.resolve(validated.storedName()).normalize();
         if (!target.startsWith(storageDir)) {
@@ -237,7 +329,7 @@ public class AttachmentService {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "服务内部错误", "文件保存失败，请稍后重试。");
         }
         return new StagedFile(validated.originalName(), validated.contentType(), validated.storedName(),
-            validated.sizeBytes(), owner.purpose(), target);
+            validated.sizeBytes(), owner.purpose(), validated.contentSha256(), target);
     }
 
     /** 登记失败后的补偿：只清理本次生成且确认没有数据库引用的文件（后端架构 6.1）。 */
@@ -276,6 +368,8 @@ public class AttachmentService {
     @Transactional
     public void delete(Long accountId, Long orgId, Long activityId, Long attachmentId) {
         Context ctx = requireLockedContext(accountId, orgId, activityId);
+        // F02：调整期待确认期间资料只读（原实现只拦住上传，删除仍可执行）
+        requireNotFrozen(ctx);
         Attachment attachment = attachmentMapper.findActiveById(attachmentId);
         if (attachment == null || !attachment.getOrgId().equals(orgId)
             || !attachment.getActivityId().equals(activityId)) {
@@ -283,9 +377,10 @@ public class AttachmentService {
         }
         boolean isUploader = attachment.getUploadedBy().equals(accountId);
         if (!ctx.canManage() && !isUploader) {
-            AttachmentOwner owner = ownerOf(attachment);
-            boolean taskAssignee = owner instanceof AttachmentOwner.OfTask ofTask
-                && ofTask.task().getAssigneeMemberId().equals(ctx.actor().getId());
+            // F07：任务资料按锁内重读的当前任务判断承担者，改派后旧承担者不再可删
+            Task currentTask = lockCurrentTask(ctx, ownerOf(attachment));
+            boolean taskAssignee = currentTask != null
+                && currentTask.getAssigneeMemberId().equals(ctx.actor().getId());
             if (!taskAssignee) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人、活动负责人、上传者或任务承担者可以删除附件。");
             }
@@ -356,16 +451,40 @@ public class AttachmentService {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "ATTACHMENT_INVALID", "存储路径无效", "文件存储路径异常。");
             }
             file.transferTo(staged);
+            // F06：内容摘要用于上传防重（内容 + 归属），落盘后按实际字节计算
+            String contentSha256 = sha256OfFile(staged);
             return new ValidatedFile(originalName, contentType, storedName, file.getSize(),
-                Attachment.PURPOSE_ACTIVITY_DOC, staged);
+                Attachment.PURPOSE_ACTIVITY_DOC, contentSha256, staged);
         } catch (IOException ex) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "服务内部错误", "文件保存失败，请稍后重试。");
         }
     }
 
+    /** F06：文件内容 SHA-256（十六进制小写）。 */
+    private String sha256OfFile(Path path) throws IOException {
+        java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 不可用", ex);
+        }
+        try (InputStream in = Files.newInputStream(path)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        StringBuilder hex = new StringBuilder(64);
+        for (byte b : digest.digest()) {
+            hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        }
+        return hex.toString();
+    }
+
     private record ValidatedFile(
         String originalName, String contentType, String storedName, long sizeBytes,
-        String purpose, Path stagedPath) {
+        String purpose, String contentSha256, Path stagedPath) {
     }
 
     private boolean extensionMatchesContentType(String extension, String contentType) {

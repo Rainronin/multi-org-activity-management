@@ -1,22 +1,44 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { ElButton, ElSkeleton, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElSkeleton, ElTag } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
-import { useSessionStore } from '../../stores/session'
+import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { applyBlockReason, fetchPublicActivity, type PublicActivityItem } from './publicActivity'
+import {
+  applyRegistration, cancelMyRegistration, fetchMyRegistrations, isCancellable,
+  registrationStatusLabel, type RegistrationItem,
+} from './registrations'
 import { formatDateTime, scopeLabel } from './types'
 
-// 公开活动详情（P4.1）：只读展示发布者公开的安排与报名条件。
-// 报名、取消与结果查询在登录后的组织工作区内完成，本页不展示任何内部字段。
+// 公开活动详情（P4.1／F01）：登录后在本页直接报名、更新与取消，不要求外部参与者加入组织。
+// 未登录时仍可只读浏览；页面只消费公开端点与本人报名接口，不出现任何内部字段。
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 
 const activityId = computed(() => String(route.params.activityId ?? ''))
 const item = ref<PublicActivityItem | null>(null)
+const mine = ref<RegistrationItem | null>(null)
 const loading = ref(false)
 const errorText = ref('')
+const actionError = ref('')
+const acting = ref(false)
+
+const applyVisible = ref(false)
+const applySubmitting = ref(false)
+const applyForm = ref({ displayName: '', note: '' })
+/** F10：报名表单失焦即校验，提交前再整体校验一次（与后端 1-64 字符规则一致）。 */
+const applyFormRef = ref<FormInstance | null>(null)
+const applyRules: FormRules = {
+  displayName: [
+    { required: true, message: '请填写展示姓名', trigger: 'blur' },
+    { min: 1, max: 64, message: '展示姓名 1-64 字符', trigger: 'blur' },
+  ],
+  note: [{ max: 500, message: '备注不超过 500 字符', trigger: 'blur' }],
+}
+
 let requestSeq = 0
 
 async function load(): Promise<void> {
@@ -25,6 +47,7 @@ async function load(): Promise<void> {
   }
   const seq = ++requestSeq
   const target = activityId.value
+  const gen = session.capture()
   loading.value = true
   errorText.value = ''
   try {
@@ -33,11 +56,24 @@ async function load(): Promise<void> {
       return
     }
     item.value = detail
+    // 本人报名只在登录后查询；失败不影响公开信息展示
+    if (session.status === 'authenticated') {
+      const mineItems = await fetchMyRegistrations()
+      if (seq !== requestSeq || gen !== session.generation) {
+        return
+      }
+      mine.value = mineItems.find((entry) => entry.activityId === target) ?? null
+    } else {
+      mine.value = null
+    }
   } catch (error) {
     if (seq !== requestSeq) {
       return
     }
     item.value = null
+    if (session.observeUnauthorized(error, gen)) {
+      return
+    }
     errorText.value = error instanceof ApiError && error.isTransportError
       ? '网络连接失败，请检查网络后重试。'
       : '活动不存在或未公开。'
@@ -48,24 +84,103 @@ async function load(): Promise<void> {
   }
 }
 
-watch(activityId, load)
+watch([activityId, () => session.status], load)
 onMounted(load)
 
 const blockReason = computed(() => (item.value ? applyBlockReason(item.value) : ''))
+const canCancel = computed(() => (mine.value ? isCancellable(mine.value) : false))
+const statusType = computed(() => {
+  switch (mine.value?.status) {
+    case 'APPROVED':
+      return 'success'
+    case 'PENDING':
+      return 'warning'
+    case 'REJECTED':
+      return 'danger'
+    default:
+      return 'info'
+  }
+})
 
-/** 报名/取消/查看结果都在登录后的组织工作区完成；未登录先登录并回跳本页。 */
-function goApply(): void {
-  if (!item.value) {
+/** 未登录时先登录并回跳本页；登录后直接在本页完成报名。 */
+function requireLogin(): boolean {
+  if (session.status === 'authenticated') {
+    return true
+  }
+  void router.push({
+    path: '/login',
+    query: { next: `/public/activities/${activityId.value}` },
+  })
+  return false
+}
+
+async function guard(fn: () => Promise<void>): Promise<void> {
+  actionError.value = ''
+  acting.value = true
+  try {
+    await fn()
+  } catch (error) {
+    if (session.observeUnauthorized(error, session.capture())) {
+      return
+    }
+    if (error instanceof ApiError && !error.isTransportError) {
+      if (error.code === 'CSRF_INVALID') {
+        invalidateCsrfCredential()
+        actionError.value = '安全校验已过期，请重试。'
+      } else {
+        actionError.value = error.detail || '操作失败，请重试。'
+      }
+    } else {
+      actionError.value = '网络连接失败，请检查网络后重试。'
+    }
+  } finally {
+    acting.value = false
+  }
+}
+
+function openApply() {
+  if (!requireLogin()) {
     return
   }
-  if (session.status !== 'authenticated') {
-    void router.push({
-      path: '/login',
-      query: { next: `/public/activities/${item.value.id}` },
+  applyForm.value = {
+    displayName: mine.value?.displayName ?? session.account?.username ?? '',
+    note: mine.value?.note ?? '',
+  }
+  applyVisible.value = true
+}
+
+async function submitApply() {
+  const form = applyFormRef.value
+  if (form) {
+    const valid = await form.validate().catch(() => false)
+    if (!valid) {
+      return
+    }
+  }
+  applySubmitting.value = true
+  await guard(async () => {
+    await applyRegistration(activityId.value, {
+      displayName: applyForm.value.displayName.trim(),
+      note: applyForm.value.note.trim() || undefined,
     })
+    applyVisible.value = false
+    await load()
+  })
+  applySubmitting.value = false
+}
+
+function cancelMine() {
+  if (!requireLogin()) {
     return
   }
-  void router.push('/')
+  void ElMessageBox.confirm('确定取消本人报名？名额将立即释放。', '取消报名', {
+    confirmButtonText: '取消报名', cancelButtonText: '返回', type: 'warning',
+  })
+    .then(() => guard(async () => {
+      await cancelMyRegistration(activityId.value)
+      await load()
+    }))
+    .catch(() => undefined)
 }
 </script>
 
@@ -114,18 +229,86 @@ function goApply(): void {
         <div><dt>报名截止</dt><dd>{{ formatDateTime(item.registrationEnd) }}</dd></div>
       </dl>
 
-      <div class="public-detail__actions">
-        <ElButton
-          type="primary"
-          :disabled="Boolean(blockReason)"
-          @click="goApply"
+      <section class="public-apply">
+        <div class="public-apply__head">
+          <h2>我的报名</h2>
+          <ElTag
+            v-if="mine"
+            size="small"
+            :type="statusType"
+          >
+            {{ registrationStatusLabel[mine.status] ?? mine.status }}
+          </ElTag>
+        </div>
+
+        <p
+          v-if="actionError"
+          class="public-error"
+          role="alert"
         >
-          {{ session.status === 'authenticated' ? '进入工作区报名' : '登录后报名' }}
-        </ElButton>
-        <span class="public-hint">
-          {{ blockReason || '报名后可在“我的报名”查看审核结果，并在活动开始前取消。' }}
-        </span>
-      </div>
+          {{ actionError }}
+        </p>
+
+        <template v-if="session.status !== 'authenticated'">
+          <p class="public-hint">
+            登录后可直接在本页报名、查看审核结果与取消；报名不会产生组织成员身份。
+          </p>
+          <ElButton
+            type="primary"
+            :disabled="Boolean(blockReason)"
+            @click="requireLogin()"
+          >
+            {{ blockReason || '登录并报名' }}
+          </ElButton>
+        </template>
+
+        <template v-else>
+          <p
+            v-if="mine && mine.adjusting"
+            class="public-hint"
+          >
+            活动安排调整中：你的报名记录仍然有效，可查看本人状态，重新确认后会给出安排。
+          </p>
+          <p
+            v-if="mine?.cancelReason"
+            class="public-hint"
+          >
+            处理说明：{{ mine.cancelReason }}
+          </p>
+          <p
+            v-if="mine && mine.decidedAt"
+            class="public-hint"
+          >
+            处理时间：{{ formatDateTime(mine.decidedAt) }}
+          </p>
+
+          <div class="public-apply__actions">
+            <ElButton
+              type="primary"
+              :disabled="Boolean(blockReason)"
+              :loading="acting"
+              @click="openApply"
+            >
+              {{ mine ? (blockReason ? '当前不可修改' : '更新报名信息') : (blockReason || '我要报名') }}
+            </ElButton>
+            <ElButton
+              v-if="canCancel"
+              type="danger"
+              plain
+              :loading="acting"
+              @click="cancelMine"
+            >
+              取消报名
+            </ElButton>
+            <span
+              v-if="!mine && blockReason"
+              class="public-hint"
+            >
+              {{ blockReason }}
+            </span>
+          </div>
+        </template>
+      </section>
 
       <p class="public-note">
         本页只包含发布者公开的活动信息；任务分工、成员、预算与资料属于组织内部内容，不在此展示。
@@ -145,6 +328,50 @@ function goApply(): void {
         重试
       </ElButton>
     </p>
+
+    <ElDialog
+      v-model="applyVisible"
+      :title="mine ? '更新报名信息' : '报名'"
+      width="var(--ui-dialog-width)"
+    >
+      <ElForm
+        ref="applyFormRef"
+        :model="applyForm"
+        :rules="applyRules"
+        label-position="top"
+      >
+        <ElFormItem
+          label="展示姓名"
+          prop="displayName"
+          required
+        >
+          <ElInput
+            v-model="applyForm.displayName"
+            placeholder="报名姓名（1-64 字符）"
+          />
+        </ElFormItem>
+        <ElFormItem label="备注">
+          <ElInput
+            v-model="applyForm.note"
+            type="textarea"
+            :rows="2"
+            placeholder="选填，例如联系方式用途说明"
+          />
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton @click="applyVisible = false">
+          取消
+        </ElButton>
+        <ElButton
+          type="primary"
+          :loading="applySubmitting"
+          @click="submitApply"
+        >
+          提交
+        </ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>
 
@@ -198,7 +425,7 @@ function goApply(): void {
 .public-facts {
   display: grid;
   gap: var(--ui-layout-grid-gap);
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--ui-layout-card-min-width)), 1fr));
   padding: var(--ui-layout-card-padding);
   border: var(--ui-border-width) solid var(--ui-color-border);
   border-radius: var(--ui-radius-card);
@@ -213,6 +440,33 @@ function goApply(): void {
 
 .public-facts dd {
   margin-top: var(--ui-space-1);
+}
+
+.public-apply {
+  margin-top: var(--ui-space-6);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+}
+
+.public-apply__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin-bottom: var(--ui-space-4);
+}
+
+.public-apply__head h2 {
+  font-size: var(--ui-font-size-section);
+  font-weight: var(--ui-font-weight-semibold);
+}
+
+.public-apply__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  flex-wrap: wrap;
 }
 
 .public-detail__actions {

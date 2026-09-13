@@ -4,14 +4,14 @@
 
     <sql id="baseColumns">
         id, org_id, activity_id, task_id, purpose, stored_name, original_name, content_type,
-        size_bytes, uploaded_by, created_at, deleted_at
+        size_bytes, uploaded_by, request_key, request_fingerprint, created_at, deleted_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
         INSERT INTO attachment (org_id, activity_id, task_id, purpose, stored_name, original_name,
-                                content_type, size_bytes, uploaded_by)
+                                content_type, size_bytes, uploaded_by, request_key, request_fingerprint)
         VALUES (#{orgId}, #{activityId}, #{taskId}, #{purpose}, #{storedName}, #{originalName},
-                #{contentType}, #{sizeBytes}, #{uploadedBy})
+                #{contentType}, #{sizeBytes}, #{uploadedBy}, #{requestKey}, #{requestFingerprint})
     </insert>
 
     <select id="findActiveById" resultType="com.example.activity.modules.attachment.Attachment">
@@ -19,6 +19,14 @@
         FROM attachment
         WHERE id = #{id}
           AND deleted_at IS NULL
+    </select>
+
+    <!-- F06：防重键按组织唯一；不排除软删除记录，避免同键重放复活已删除附件 -->
+    <select id="findByRequestKey" resultType="com.example.activity.modules.attachment.Attachment">
+        SELECT <include refid="baseColumns" />
+        FROM attachment
+        WHERE org_id = #{orgId}
+          AND request_key = #{requestKey}
     </select>
 
     <!-- 活动级资料：不含任务资料（任务资料按其任务单独列出） -->

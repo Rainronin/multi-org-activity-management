@@ -97,7 +97,7 @@ class PublicActivityFlowTest extends FlowTestSupport {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + publicId + "/withdraw-approval")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"调整\"}"))
+                .content(versioned(publicId, "{\"reason\":\"调整\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(get("/api/public/activities/" + publicId))
             .andExpect(status().isNotFound());
@@ -116,7 +116,7 @@ class PublicActivityFlowTest extends FlowTestSupport {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + approvedId + "/withdraw-approval")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"安排调整\"}"))
+                .content(versioned(approvedId, "{\"reason\":\"安排调整\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(get("/api/public/activities/" + approvedId))
             .andExpect(status().isNotFound());

@@ -37,7 +37,7 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/withdraw-approval")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"调整报名范围\"}"))
+                .content(versioned(activityId, "{\"reason\":\"调整报名范围\"}")))
             .andExpect(status().isOk());
     }
 
@@ -76,7 +76,7 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"ownerMemberId\":%d}").formatted(memberIdOf(orgId, owner.username()))))
+                .content(versioned(activityId, ("{\"ownerMemberId\":%d}").formatted(memberIdOf(orgId, owner.username())))))
             .andExpect(status().isOk());
         leave(member, orgId, 204);
         assertThat(jdbcTemplate.queryForObject(
@@ -174,9 +174,9 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + publicId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"registrationScope\":\"PUBLIC\",\"capacity\":10,"
+                .content(versioned(publicId, ("{\"registrationScope\":\"PUBLIC\",\"capacity\":10,"
                     + "\"registrationStart\":\"2026-09-01T00:00:00+08:00\","
-                    + "\"registrationEnd\":\"2027-01-04T00:00:00+08:00\"}"))
+                    + "\"registrationEnd\":\"2027-01-04T00:00:00+08:00\"}"))))
             .andExpect(status().isOk());
         submitForApproval(owner, orgId, publicId);
         openRegistration(owner, orgId, publicId);
@@ -197,5 +197,63 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         mockMvc.perform(get("/api/me/registrations").session(member.session()))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items.length()").value(2));
+    }
+
+    private void withdrawToDraft(TestSession owner, Long orgId, Long activityId) throws Exception {
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/withdraw-approval")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"reason\":\"安排调整\"}")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("DRAFT"));
+    }
+
+    @Test
+    void leaveCancelsRegistrationsDuringAdjustmentPeriod() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-01T14:00:00+08:00");
+        openRegistration(owner, orgId, activityId);
+        MvcResult applied = mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
+                .with(csrf()).session(member.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"%s\"}".formatted(member.username())))
+            .andExpect(status().isCreated())
+            .andReturn();
+        Long registrationId = Long.parseLong(readField(applied, "$.registrationId"));
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/registrations/" + registrationId + "/approve")
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+
+        // F03 原缺陷：活动撤回到草稿后，退出不再取消内部报名（SQL 限 APPROVED）
+        withdrawToDraft(owner, orgId, activityId);
+        leave(member, orgId, 204);
+        assertThat(statusOf(registrationId)).isEqualTo("CANCELLED_ORG");
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM registration WHERE activity_id = ? AND status IN ('PENDING','APPROVED')",
+            Integer.class, activityId)).isZero();
+
+        // 重新提交待确认同样属于“尚未进入执行”，退出也要取消
+        TestSession another = registerAndLogin();
+        inviteAndAccept(owner, another, orgId);
+        submitForApproval(owner, orgId, activityId);
+        openRegistration(owner, orgId, activityId);
+        MvcResult second = mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
+                .with(csrf()).session(another.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"%s\"}".formatted(another.username())))
+            .andExpect(status().isCreated())
+            .andReturn();
+        Long secondRegistrationId = Long.parseLong(readField(second, "$.registrationId"));
+        withdrawToDraft(owner, orgId, activityId);
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+        leave(another, orgId, 204);
+        assertThat(statusOf(secondRegistrationId)).isEqualTo("CANCELLED_ORG");
     }
 }

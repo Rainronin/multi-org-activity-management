@@ -29,6 +29,10 @@ try {
     if (!res.ok()) throw new Error(`${method} ${path} -> ${res.status()} ${await res.text()}`)
     return res.json()
   }
+  // F05：方案保存与审批必须携带当前 version，调用前先读取
+  async function currentVersion(activityId) {
+    return (await json(api, 'GET', `/api/organizations/${org.id}/activities/${activityId}`)).version
+  }
   async function login(ctx, username) {
     await json(ctx, 'POST', '/api/auth/register', { username, password })
     const csrf = await (await ctx.request.get('/api/auth/csrf')).json()
@@ -51,9 +55,9 @@ try {
     endTime: new Date(Date.now() + 7 * 86400000 + 7200000).toISOString(),
     location: '会议室', registrationScope: 'INTERNAL', capacity: 10,
   }, { 'Idempotency-Key': `ui-${stamp}` })
-  await json(api, 'PUT', `/api/organizations/${org.id}/activities/${activity.id}/proposal`, { content: '方案' })
+  await json(api, 'PUT', `/api/organizations/${org.id}/activities/${activity.id}/proposal`, { content: '方案', version: await currentVersion(activity.id) })
   await json(api, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/submit`)
-  await json(api, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/approve`, {})
+  await json(api, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/approve`, { version: await currentVersion(activity.id) })
   await json(api, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/tasks`,
     { title: '界面核对任务', assigneeMemberId: memberMember, priority: 'MEDIUM' })
   await json(api, 'POST', `/api/organizations/${org.id}/activities/${activity.id}/materials`,

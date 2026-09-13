@@ -109,7 +109,7 @@ class TaskOwnershipTest extends FlowTestSupport {
                 + "/tasks/" + taskId + "/update")
                 .with(csrf()).session(delegate.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"title\":\"本人任务\",\"assigneeMemberId\":%d}").formatted(delegateMemberId)))
+                .content(taskVersioned(taskId, ("{\"title\":\"本人任务\",\"assigneeMemberId\":%d}").formatted(delegateMemberId))))
             .andExpect(status().isOk());
         mockMvc.perform(advance(orgId, activityId, taskId, member, "COMPLETED"))
             .andExpect(status().isForbidden());

@@ -6,16 +6,19 @@
         id, org_id, name, description, owner_member_id, status, version, review_note, submitted_by,
         confirmed_by, confirm_type, confirmed_at, start_time, end_time,
         location, budget, proposal, registration_scope, capacity, registration_start,
-        registration_end, registration_open, created_by, request_key, created_at, updated_at
+        registration_end, registration_open, created_by, request_key, request_fingerprint,
+        created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
         INSERT INTO activity (org_id, name, description, owner_member_id, status, start_time,
                               end_time, location, budget, registration_scope, capacity,
-                              registration_start, registration_end, created_by, request_key)
+                              registration_start, registration_end, created_by, request_key,
+                              request_fingerprint)
         VALUES (#{orgId}, #{name}, #{description}, #{ownerMemberId}, #{status}, #{startTime},
                 #{endTime}, #{location}, #{budget}, #{registrationScope}, #{capacity},
-                #{registrationStart}, #{registrationEnd}, #{createdBy}, #{requestKey})
+                #{registrationStart}, #{registrationEnd}, #{createdBy}, #{requestKey},
+                #{requestFingerprint})
     </insert>
 
     <select id="findByRequestKey" resultType="com.example.activity.modules.activity.Activity">
@@ -104,6 +107,7 @@
           AND registration_scope = 'PUBLIC'
     </select>
 
+    <!-- F05：方案保存纳入同一乐观锁合同，过期版本不得覆盖正文 -->
     <update id="updateProposal">
         UPDATE activity
         SET proposal = #{proposal},
@@ -111,6 +115,7 @@
         WHERE id = #{id}
           AND org_id = #{orgId}
           AND status = 'DRAFT'
+          AND version = #{version}
     </update>
 
     <update id="transitionStatus">
@@ -147,6 +152,7 @@
           AND status = 'DRAFT'
     </delete>
 
+    <!-- S08／F05：草稿编辑以期望版本为前提，缺版本由 Service 先拒绝，不做静默覆盖 -->
     <update id="updateDraft">
         UPDATE activity
         <set>
@@ -168,10 +174,7 @@
           <if test="status != null">
             AND status = #{status}
           </if>
-          <!-- S08：携带期望版本时做乐观锁；影响行数为 0 由 Service 判定冲突或状态不符 -->
-          <if test="version != null">
-            AND version = #{version}
-          </if>
+          AND version = #{version}
     </update>
 
 </mapper>

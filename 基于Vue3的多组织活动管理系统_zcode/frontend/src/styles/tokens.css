@@ -182,6 +182,9 @@
   --ui-layout-analysis-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   --ui-layout-kpi-columns: repeat(4, minmax(0, 1fr));
   --ui-layout-form-columns: repeat(2, minmax(0, 1fr));
+  /* F10：公开页卡片栅格的最小列宽（窄屏由 min(100%, …) 自动降为单列） */
+  --ui-layout-card-min-width: 220px;
+  --ui-layout-card-min-width-wide: 320px;
   --ui-layout-login-columns: 1.04fr 1fr;
   --ui-layout-nav-position: fixed;
 

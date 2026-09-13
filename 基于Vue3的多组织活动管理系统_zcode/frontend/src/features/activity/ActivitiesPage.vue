@@ -16,6 +16,7 @@ import {
   ElTag,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
+import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { createActivity, fetchActivities, fetchOwnerCandidates } from './api'
 import type { MemberItem } from '../organization/types'
@@ -43,6 +44,8 @@ const amOwner = ref(false)
 const createVisible = ref(false)
 const createSubmitting = ref(false)
 const createError = ref('')
+/** F06：当前创建意图的防重键；重试沿用，成功后清空。 */
+let createKey = ''
 const candidates = ref<MemberItem[]>([])
 const createForm = reactive({
   name: '',
@@ -181,6 +184,10 @@ async function submitCreate() {
   createSubmitting.value = true
   createError.value = ''
   try {
+    // F06：一次创建意图固定一个防重键；失败重试沿用原键，成功后丢弃
+    if (!createKey) {
+      createKey = newIdempotencyKey()
+    }
     await createActivity(orgId.value, {
       name: createForm.name.trim(),
       ownerMemberId: createForm.ownerMemberId,
@@ -193,7 +200,8 @@ async function submitCreate() {
       capacity: createForm.capacity ?? undefined,
       registrationStart: createForm.registrationStart || undefined,
       registrationEnd: createForm.registrationEnd || undefined,
-    })
+    }, createKey)
+    createKey = ''
     createVisible.value = false
     await loadActivities()
   } catch (error) {

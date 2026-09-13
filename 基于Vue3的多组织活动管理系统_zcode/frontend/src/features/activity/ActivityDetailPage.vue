@@ -74,6 +74,11 @@ const statusLabel = computed(() => {
 
 let requestSeq = 0
 
+/** F05：编辑与审批必须携带当前版本；活动未加载时不发起写请求。 */
+function currentVersion(): number {
+  return activity.value?.version ?? 0
+}
+
 async function loadActivity(): Promise<void> {
   if (!orgId.value || !activityId.value) {
     return
@@ -125,7 +130,8 @@ async function guard(fn: () => Promise<void>): Promise<void> {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
         actionError.value = '安全校验已过期，请重试。'
-      } else if (error.code === 'ACTIVITY_STATE_CONFLICT') {
+      } else if (error.code === 'ACTIVITY_STATE_CONFLICT' || error.code === 'EDIT_CONFLICT') {
+        // F05：版本过期或状态已变化都要求刷新后由用户重新决定
         actionError.value = error.detail
         await loadActivity()
       } else {
@@ -145,7 +151,7 @@ function onProposalInput() {
 
 async function saveProposalDraft() {
   await guard(async () => {
-    await saveProposal(orgId.value, activityId.value, proposalDraft.value)
+    await saveProposal(orgId.value, activityId.value, proposalDraft.value, currentVersion())
     proposalDirty.value = false
     await loadActivity()
   })
@@ -185,7 +191,7 @@ async function withdrawSubmission() {
 
 async function approve() {
   await guard(async () => {
-    await approveActivity(orgId.value, activityId.value)
+    await approveActivity(orgId.value, activityId.value, currentVersion())
     await loadActivity()
   })
 }
@@ -201,7 +207,7 @@ async function confirmReject() {
   }
   rejectSubmitting.value = true
   await guard(async () => {
-    await rejectActivity(orgId.value, activityId.value, rejectReason.value.trim())
+    await rejectActivity(orgId.value, activityId.value, rejectReason.value.trim(), currentVersion())
     rejectVisible.value = false
     await loadActivity()
   })
@@ -241,7 +247,7 @@ function toIso(local: string): string {
 async function submitEdit() {
   editSubmitting.value = true
   await guard(async () => {
-    await updateActivity(orgId.value, activityId.value, {
+    await updateActivity(orgId.value, activityId.value, currentVersion(), {
       name: editForm.name.trim(),
       description: editForm.description.trim() || undefined,
       startTime: toIso(editForm.startTime) || undefined,
@@ -265,7 +271,7 @@ async function withdrawConfirmed() {
     return
   }
   await guard(async () => {
-    await withdrawApproval(orgId.value, activityId.value, '关键内容变更')
+    await withdrawApproval(orgId.value, activityId.value, currentVersion(), '关键内容变更')
     await loadActivity()
   })
 }

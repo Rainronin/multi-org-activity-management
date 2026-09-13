@@ -218,7 +218,7 @@ function startApply(item: PublicActivityItem): void {
 .public-cards {
   display: grid;
   gap: var(--ui-layout-grid-gap);
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--ui-layout-card-min-width-wide)), 1fr));
   padding: 0;
   margin: 0;
   list-style: none;

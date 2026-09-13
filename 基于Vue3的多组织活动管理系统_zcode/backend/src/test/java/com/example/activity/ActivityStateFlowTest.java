@@ -118,7 +118,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"一、活动流程……二、分工安排……\"}"))
+                .content(versioned(activityId, "{\"content\":\"一、活动流程……二、分工安排……\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.proposal").value("一、活动流程……二、分工安排……"));
 
@@ -126,8 +126,8 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"description\":\"新生交流活动\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
-                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"图书馆报告厅\"}")))
+                .content(versioned(activityId, ("{\"description\":\"新生交流活动\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
+                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"图书馆报告厅\"}"))))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(owner.session()))
@@ -138,7 +138,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"location\":\"改地点\"}"))
+                .content(versioned(activityId, "{\"location\":\"改地点\"}")))
             .andExpect(status().isConflict())
             .andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
 
@@ -146,7 +146,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"note\":\"内容完整，同意\"}"))
+                .content(versioned(activityId, "{\"note\":\"内容完整，同意\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("APPROVED"))
             .andExpect(jsonPath("$.confirmType").value("SELF"));
@@ -155,25 +155,25 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"description\":\"更新后的简介\"}"))
+                .content(versioned(activityId, "{\"description\":\"更新后的简介\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"location\":\"新地点\"}"))
+                .content(versioned(activityId, "{\"location\":\"新地点\"}")))
             .andExpect(status().isConflict());
 
         // P2.3 撤回到草稿后可修改关键内容
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/withdraw-approval")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"场地变更需重新确认\"}"))
+                .content(versioned(activityId, "{\"reason\":\"场地变更需重新确认\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("DRAFT"));
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"location\":\"新报告厅\"}"))
+                .content(versioned(activityId, "{\"location\":\"新报告厅\"}")))
             .andExpect(status().isOk());
     }
 
@@ -190,13 +190,13 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"方案内容\"}"))
+                .content(versioned(activityId, "{\"content\":\"方案内容\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"description\":\"简介\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
-                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"报告厅\"}")))
+                .content(versioned(activityId, ("{\"description\":\"简介\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
+                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"报告厅\"}"))))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(activityOwner.session()))
@@ -207,14 +207,14 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{}"))
+                .content(versioned(activityId, "{}")))
             .andExpect(status().isForbidden());
 
         // 组织负责人审批他人提交 → OTHER
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{}"))
+                .content(versioned(activityId, "{}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.confirmType").value("OTHER"));
 
@@ -222,7 +222,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(activityOwner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"description\":\"尝试\"}"))
+                .content(versioned(activityId, "{\"description\":\"尝试\"}")))
             .andExpect(status().isConflict());
     }
 
@@ -238,13 +238,13 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(member.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"方案\"}"))
+                .content(versioned(activityId, "{\"content\":\"方案\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
                 .with(csrf()).session(member.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(("{\"description\":\"简介\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
-                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"操场\"}")))
+                .content(versioned(activityId, ("{\"description\":\"简介\",\"startTime\":\"2026-10-01T14:00:00+08:00\","
+                    + "\"endTime\":\"2026-10-01T16:00:00+08:00\",\"location\":\"操场\"}"))))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(member.session()))
@@ -263,7 +263,7 @@ class ActivityStateFlowTest extends ActivityTestBase {
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/reject")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"预算明细不足，请补充\"}"))
+                .content(versioned(activityId, "{\"reason\":\"预算明细不足，请补充\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("DRAFT"))
             .andExpect(jsonPath("$.reviewNote").value("预算明细不足，请补充"));

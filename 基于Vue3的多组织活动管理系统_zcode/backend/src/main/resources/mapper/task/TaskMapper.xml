@@ -20,6 +20,11 @@
         WHERE id = #{id}
     </select>
 
+    <!-- S08／F07：任务行共享锁，与任务改派的 UPDATE 互斥 -->
+    <select id="lockTaskShared" resultType="long">
+        SELECT id FROM task WHERE id = #{id} FOR SHARE
+    </select>
+
     <select id="listByActivity" resultType="com.example.activity.modules.task.Task">
         SELECT <include refid="baseColumns" />
         FROM task

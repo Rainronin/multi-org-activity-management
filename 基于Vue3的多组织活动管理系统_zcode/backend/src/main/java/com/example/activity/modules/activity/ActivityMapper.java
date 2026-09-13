@@ -34,10 +34,15 @@ public interface ActivityMapper {
         @Param("status") String status,
         @Param("ownerOnly") Long ownerOnly);
 
-    /** 仅更新显式传入的字段（PATCH 语义），由 Service 组装非空字段。 */
+    /** 仅更新显式传入的字段（PATCH 语义）；F05：必须携带期望版本，不做无版本覆盖。 */
     int updateDraft(Activity activity);
 
-    int updateProposal(@Param("id") Long id, @Param("orgId") Long orgId, @Param("proposal") String proposal);
+    /** F05：方案保存以期望版本为前置条件；返回 0 表示版本过期或状态已变化。 */
+    int updateProposal(
+        @Param("id") Long id,
+        @Param("orgId") Long orgId,
+        @Param("proposal") String proposal,
+        @Param("version") Long version);
 
     /** 带状态前置条件的流转更新；返回 0 表示当前状态不允许。 */
     int transitionStatus(

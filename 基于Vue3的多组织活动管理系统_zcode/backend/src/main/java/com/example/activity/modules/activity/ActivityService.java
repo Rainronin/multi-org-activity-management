@@ -41,6 +41,8 @@ public class ActivityService {
     private final com.example.activity.modules.material.MaterialMapper materialMapper;
     private final com.example.activity.modules.attachment.AttachmentMapper attachmentMapper;
     private final com.example.activity.modules.registration.RegistrationMapper registrationMapper;
+    // F08：关键活动变更的站内提示来源意图（计划书 6.7），与业务同事务落库
+    private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
 
     public ActivityService(
         ActivityMapper activityMapper,
@@ -50,7 +52,8 @@ public class ActivityService {
         com.example.activity.modules.task.TaskMapper taskMapper,
         com.example.activity.modules.material.MaterialMapper materialMapper,
         com.example.activity.modules.attachment.AttachmentMapper attachmentMapper,
-        com.example.activity.modules.registration.RegistrationMapper registrationMapper) {
+        com.example.activity.modules.registration.RegistrationMapper registrationMapper,
+        com.example.activity.modules.notification.NotificationMapper notificationMapper) {
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
         this.organizationMapper = organizationMapper;
@@ -59,6 +62,7 @@ public class ActivityService {
         this.materialMapper = materialMapper;
         this.attachmentMapper = attachmentMapper;
         this.registrationMapper = registrationMapper;
+        this.notificationMapper = notificationMapper;
     }
 
     /**
@@ -80,17 +84,14 @@ public class ActivityService {
         }
         // 与落库同规则地补齐默认值，保证重放比较与首次创建看到同一份内容
         applyCreationDefaults(draft);
+        String fingerprint = creationFingerprint(draft);
         // 防重：先查已提交结果（重放仍校验当前身份与可见性，不返回撤权前的私有结果）
         Activity existing = activityMapper.findByRequestKey(orgId, idempotencyKey);
         if (existing != null) {
             if (!existing.isVisibleTo(actor, creatorAccountId)) {
                 throw notFound();
             }
-            if (!sameCreationContent(existing, draft)) {
-                throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键",
-                    "该 Idempotency-Key 已用于创建内容不同的活动，请使用新的键重试。");
-            }
-            return toItem(existing);
+            return replayResult(existing, fingerprint);
         }
         validateOwnerMember(orgId, draft.getOwnerMemberId());
         validateTimes(draft);
@@ -98,7 +99,17 @@ public class ActivityService {
         draft.setStatus(Activity.STATUS_DRAFT);
         draft.setCreatedBy(creatorAccountId);
         draft.setRequestKey(idempotencyKey);
-        activityMapper.insert(draft);
+        draft.setRequestFingerprint(fingerprint);
+        try {
+            activityMapper.insert(draft);
+        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+            // F06：同键并发创建由唯一约束兜底；冲突后按已提交结果恢复，不返回 500
+            Activity committed = activityMapper.findByRequestKey(orgId, idempotencyKey);
+            if (committed == null) {
+                throw duplicate;
+            }
+            return replayResult(committed, fingerprint);
+        }
         auditService.record(creatorAccountId, "ACTIVITY", "ACTIVITY_DRAFT_CREATED",
             "activity:" + draft.getId(), null, java.util.Map.of("name", draft.getName()));
         return toItem(activityMapper.findById(draft.getId()));
@@ -114,21 +125,45 @@ public class ActivityService {
         }
     }
 
-    /** 防重内容比对：同一键只允许完全相同的创建内容（比较规范化后的业务字段）。 */
-    private boolean sameCreationContent(Activity stored, Activity incoming) {
-        return java.util.Objects.equals(stored.getName(), incoming.getName())
-            && java.util.Objects.equals(stored.getOwnerMemberId(), incoming.getOwnerMemberId())
-            && java.util.Objects.equals(stored.getDescription(), incoming.getDescription())
-            && java.util.Objects.equals(stored.getStartTime(), incoming.getStartTime())
-            && java.util.Objects.equals(stored.getEndTime(), incoming.getEndTime())
-            && java.util.Objects.equals(stored.getLocation(), incoming.getLocation())
-            && java.util.Objects.equals(stored.getRegistrationScope(), incoming.getRegistrationScope())
-            && java.util.Objects.equals(stored.getCapacity(), incoming.getCapacity())
-            && java.util.Objects.equals(stored.getRegistrationStart(), incoming.getRegistrationStart())
-            && java.util.Objects.equals(stored.getRegistrationEnd(), incoming.getRegistrationEnd())
-            && java.util.Objects.equals(
-                stored.getBudget() == null ? null : stored.getBudget().stripTrailingZeros(),
-                incoming.getBudget() == null ? null : incoming.getBudget().stripTrailingZeros());
+    /** F06：同键重放的结果核对——只比较创建时写下的指纹，不比较可能已被编辑的当前字段。 */
+    private ActivityItem replayResult(Activity existing, String fingerprint) {
+        // 指纹是 V14 引入的列：迁移前创建的记录没有指纹，无法核对内容，按“键已占用”处理
+        boolean same = fingerprint.equals(existing.getRequestFingerprint());
+        if (!same) {
+            throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键",
+                "该 Idempotency-Key 已用于创建内容不同的活动，请使用新的键重试。");
+        }
+        return toItem(existing);
+    }
+
+    /**
+     * F06：创建请求指纹——对规范化后的业务字段求 SHA-256。
+     * 只覆盖创建输入本身，创建后的编辑（改名、改地点、改状态）都不影响它，重放因此不会被误判。
+     */
+    private String creationFingerprint(Activity draft) {
+        String canonical = String.join("\u001f",
+            String.valueOf(draft.getName()),
+            String.valueOf(draft.getOwnerMemberId()),
+            String.valueOf(draft.getDescription()),
+            String.valueOf(draft.getStartTime()),
+            String.valueOf(draft.getEndTime()),
+            String.valueOf(draft.getLocation()),
+            String.valueOf(draft.getRegistrationScope()),
+            String.valueOf(draft.getCapacity()),
+            String.valueOf(draft.getRegistrationStart()),
+            String.valueOf(draft.getRegistrationEnd()),
+            draft.getBudget() == null ? "null" : draft.getBudget().stripTrailingZeros().toPlainString());
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 不可用", ex);
+        }
     }
 
     /**
@@ -169,15 +204,11 @@ public class ActivityService {
     public ActivityItem updateDraft(Long accountId, Long orgId, Long activityId, Activity patch) {
         organizationMapper.lockOrganizationShared(orgId);
         OrganizationMember actor = requireActiveMember(orgId, accountId);
+        // S08 锁协议：活动自身写入取活动行排他锁，再访问子记录（组织 → 活动 → 子记录）
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !canSeeDraft(activity, accountId)) {
-            throw notFound();
-        }
-        // S08 锁协议：活动自身写入取活动行排他锁，再访问子记录（组织 → 活动 → 子记录）
-        activityMapper.lockActivity(activityId);
-        activity = activityMapper.findById(activityId);
-        if (activity == null) {
             throw notFound();
         }
         boolean isOrgOwner = OrganizationMember.ROLE_OWNER.equals(actor.getRole());
@@ -185,6 +216,8 @@ public class ActivityService {
         if (!isOrgOwner && !isActivityOwner) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编辑草稿。");
         }
+        // F05：编辑必须携带期望版本；缺失版本不再静默覆盖（开发规范：编辑请求携带 version）
+        requireVersion(patch.getVersion());
         // 状态机（P2.2/P2.3）：待确认期不改字段；已确认活动仅组织负责人可改简介，关键内容须先撤回到草稿。
         if ("PENDING_APPROVAL".equals(activity.getStatus())) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动待确认中，请先撤回再修改。");
@@ -235,15 +268,14 @@ public class ActivityService {
         // 状态守卫：按当前实际状态限定更新（草稿自由编辑；已确认仅简介）
         patch.setStatus(activity.getStatus());
         if (activityMapper.updateDraft(patch) != 1) {
-            // S08：影响行数为 0 时区分「版本冲突」与「状态已变化」，两者都要求刷新后重试
+            // S08／F05：版本前置条件下影响行数为 0 即版本冲突（状态守卫不匹配时同样要求刷新）
             Activity current = activityMapper.findById(activityId);
-            if (patch.getVersion() != null && current != null
-                && !patch.getVersion().equals(current.getVersion())) {
-                throw conflict("EDIT_CONFLICT", "内容已被他人修改",
-                    "该活动已由其他操作保存（当前版本 " + current.getVersion()
-                        + "，你基于版本 " + patch.getVersion() + "），请刷新后重新编辑。");
+            if (current == null) {
+                throw notFound();
             }
-            throw notFound();
+            throw conflict("EDIT_CONFLICT", "内容已被他人修改",
+                "该活动已由其他操作保存（当前版本 " + current.getVersion()
+                    + "，你基于版本 " + patch.getVersion() + "），请刷新后重新编辑。");
         }
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_DRAFT_UPDATED", "activity:" + activityId,
             null, java.util.Map.of("fields", changedFields(patch)));
@@ -341,6 +373,22 @@ public class ActivityService {
             List.of(new com.example.activity.common.FieldErrorItem(field, message)));
     }
 
+    /** F05：编辑与审批请求必须携带期望版本，缺失即拒绝，不再按无版本兼容保存。 */
+    private void requireVersion(Long version) {
+        if (version == null) {
+            throw fieldError("version", "请携带当前版本号（version）后再提交");
+        }
+    }
+
+    /** F05：锁内比较请求版本与当前版本，过期请求返回 409 而不覆盖他人保存。 */
+    private void requireCurrentVersion(Activity activity, Long version, String action) {
+        if (!version.equals(activity.getVersion())) {
+            throw conflict("EDIT_CONFLICT", "内容已被他人修改",
+                action + "操作的版本已过期（当前版本 " + activity.getVersion()
+                    + "，你基于版本 " + version + "），请刷新后重新操作。");
+        }
+    }
+
 
     /**
      * 报名开关（S02／P4.2）：组织负责人或活动负责人；仅已确认且未到开始时间可变更。
@@ -350,6 +398,7 @@ public class ActivityService {
     public ActivityItem setRegistrationOpen(Long accountId, Long orgId, Long activityId, boolean open) {
         organizationMapper.lockOrganization(orgId);
         OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId) || !canSeeDraft(activity, accountId)) {
             throw notFound();
@@ -375,9 +424,11 @@ public class ActivityService {
 
     /** 保存方案文稿：草稿期由组织负责人或活动负责人编写（P2.2，不依赖 AI 也能完成）。 */
     @Transactional
-    public ActivityItem saveProposal(Long accountId, Long orgId, Long activityId, String content) {
+    public ActivityItem saveProposal(Long accountId, Long orgId, Long activityId, String content, Long version) {
+        requireVersion(version);
         organizationMapper.lockOrganizationShared(orgId);
         OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !canSeeDraft(activity, accountId)
@@ -389,9 +440,14 @@ public class ActivityService {
         if (!allowed) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编写方案。");
         }
-        if (activityMapper.updateProposal(activityId, orgId, content) != 1) {
-            throw notFound();
+        // F05：方案保存纳入与编辑相同的版本合同，锁内比较后条件更新
+        requireCurrentVersion(activity, version, "活动方案");
+        if (activityMapper.updateProposal(activityId, orgId, content, version) != 1) {
+            throw conflict("EDIT_CONFLICT", "内容已被他人修改",
+                "活动方案已被其他操作保存，请刷新后重新编辑。");
         }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_PROPOSAL_SAVED", "activity:" + activityId,
+            null, java.util.Map.of("version", version));
         return toItem(activityMapper.findById(activityId));
     }
 
@@ -400,6 +456,7 @@ public class ActivityService {
     public ActivityItem submit(Long accountId, Long orgId, Long activityId) {
         organizationMapper.lockOrganizationShared(orgId);
         OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !canSeeDraft(activity, accountId)
@@ -421,6 +478,7 @@ public class ActivityService {
     public ActivityItem withdraw(Long accountId, Long orgId, Long activityId) {
         organizationMapper.lockOrganizationShared(orgId);
         OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !canSeeDraft(activity, accountId)
@@ -441,14 +499,18 @@ public class ActivityService {
 
     /** 通过：组织负责人确认（自行确认或审核他人提交均在此留痕）。 */
     @Transactional
-    public ActivityItem approve(Long accountId, Long orgId, Long activityId, String note) {
+    public ActivityItem approve(Long accountId, Long orgId, Long activityId, String note, Long version) {
+        requireVersion(version);
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !"PENDING_APPROVAL".equals(activity.getStatus())) {
             throw notFound();
         }
+        // F05：审批锁定被审阅的那一版；撤回重提后旧审批请求不再生效
+        requireCurrentVersion(activity, version, "立项确认");
         if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "APPROVED") != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
@@ -458,19 +520,28 @@ public class ActivityService {
         activityMapper.updateReview(activityId, orgId, note, activity.getSubmittedBy(), accountId, confirmType);
         auditService.record(accountId, "ACTIVITY", "ACTIVITY_APPROVED", "activity:" + activityId,
             note, java.util.Map.of("confirmType", confirmType));
+        // F08：重新确认属关键活动变更，给既有报名者留下来源意图（计划书 6.1：重新通过后通知已报名者）
+        for (Long recipient : registrationMapper.listNotifiableAccountIds(activityId)) {
+            notificationMapper.insert(recipient, "ACTIVITY_RECONFIRMED", activityId,
+                "你报名的活动「" + activity.getName() + "」已重新确认，报名开关默认关闭，请以最新安排为准。");
+        }
         return toItem(activityMapper.findById(activityId));
     }
 
     /** 驳回：组织负责人写明原因后退回草稿。 */
     @Transactional
-    public ActivityItem reject(Long accountId, Long orgId, Long activityId, String reason) {
+    public ActivityItem reject(Long accountId, Long orgId, Long activityId, String reason, Long version) {
+        requireVersion(version);
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !"PENDING_APPROVAL".equals(activity.getStatus())) {
             throw notFound();
         }
+        // F05：同审批，锁定被驳回的那一版
+        requireCurrentVersion(activity, version, "立项确认");
         if (activityMapper.transitionStatus(activityId, orgId, "PENDING_APPROVAL", "DRAFT") != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
@@ -481,14 +552,18 @@ public class ActivityService {
 
     /** 撤回到草稿（P2.3 关键变更前置）：仅组织负责人。 */
     @Transactional
-    public ActivityItem withdrawApproval(Long accountId, Long orgId, Long activityId, String reason) {
+    public ActivityItem withdrawApproval(Long accountId, Long orgId, Long activityId, String reason, Long version) {
+        requireVersion(version);
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !"APPROVED".equals(activity.getStatus())) {
             throw notFound();
         }
+        // F05：撤回确认同样锁定被撤回的那一版，避免撤掉重新确认后的新版本
+        requireCurrentVersion(activity, version, "撤回确认");
         if (activityMapper.transitionStatus(activityId, orgId, "APPROVED", "DRAFT") != 1) {
             throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动状态已变化，请刷新后查看。");
         }
@@ -507,6 +582,7 @@ public class ActivityService {
     public void deleteDraft(Long accountId, Long orgId, Long activityId) {
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
         Activity activity = activityMapper.findById(activityId);
         if (activity == null || !activity.getOrgId().equals(orgId)
             || !"DRAFT".equals(activity.getStatus())) {

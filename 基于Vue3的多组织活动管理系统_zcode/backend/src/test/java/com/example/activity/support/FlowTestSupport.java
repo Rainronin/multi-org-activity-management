@@ -30,9 +30,6 @@ public abstract class FlowTestSupport extends ActivityTestBase {
     @Autowired
     protected MockMvc mockMvc;
 
-    @Autowired
-    protected JdbcTemplate jdbcTemplate;
-
     public record TestSession(String username, MockHttpSession session) {
     }
 
@@ -122,14 +119,14 @@ public abstract class FlowTestSupport extends ActivityTestBase {
                 .put("/api/organizations/" + orgId + "/activities/" + activityId + "/proposal")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"content\":\"方案\"}"))
+                .content(versioned(activityId, "{\"content\":\"方案\"}")))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/submit")
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isOk());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/approve")
                 .with(csrf()).session(owner.session())
-                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
             .andExpect(status().isOk());
     }
 
