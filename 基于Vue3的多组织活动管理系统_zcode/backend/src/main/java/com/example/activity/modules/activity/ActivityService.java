@@ -26,6 +26,10 @@ public class ActivityService {
         OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location, String budget,
         String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, boolean registrationOpen, Long version,
+        // P6：执行、取消、归档与总结
+        OffsetDateTime startedAt, OffsetDateTime endedAt, OffsetDateTime archivedAt, OffsetDateTime cancelledAt,
+        String cancelReason, String reopenReason, Integer reopenCount,
+        String summary, OffsetDateTime summaryConfirmedAt, Long summaryConfirmedBy,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
@@ -45,6 +49,10 @@ public class ActivityService {
     private final com.example.activity.modules.expense.ExpenseMapper expenseMapper;
     // F08：关键活动变更的站内提示来源意图（计划书 6.7），与业务同事务落库
     private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
+    // P6：执行记录与反馈资格依据（总结来源摘要需要反馈口径）
+    private final ExecutionRecordMapper executionRecordMapper;
+    private final com.example.activity.modules.feedback.FeedbackService feedbackService;
+    private final com.example.activity.modules.account.AccountMapper accountMapper;
 
     public ActivityService(
         ActivityMapper activityMapper,
@@ -56,7 +64,10 @@ public class ActivityService {
         com.example.activity.modules.attachment.AttachmentMapper attachmentMapper,
         com.example.activity.modules.registration.RegistrationMapper registrationMapper,
         com.example.activity.modules.expense.ExpenseMapper expenseMapper,
-        com.example.activity.modules.notification.NotificationMapper notificationMapper) {
+        com.example.activity.modules.notification.NotificationMapper notificationMapper,
+        ExecutionRecordMapper executionRecordMapper,
+        com.example.activity.modules.feedback.FeedbackService feedbackService,
+        com.example.activity.modules.account.AccountMapper accountMapper) {
         this.activityMapper = activityMapper;
         this.memberMapper = memberMapper;
         this.organizationMapper = organizationMapper;
@@ -67,6 +78,9 @@ public class ActivityService {
         this.registrationMapper = registrationMapper;
         this.expenseMapper = expenseMapper;
         this.notificationMapper = notificationMapper;
+        this.executionRecordMapper = executionRecordMapper;
+        this.feedbackService = feedbackService;
+        this.accountMapper = accountMapper;
     }
 
     /**
@@ -389,7 +403,419 @@ public class ActivityService {
                 ? "0.00" : activity.getBudget().setScale(2).toPlainString(),
             activity.getRegistrationScope(), activity.getCapacity(),
             activity.getRegistrationStart(), activity.getRegistrationEnd(), activity.isRegistrationOpen(),
-            activity.getVersion(), activity.getCreatedAt(), activity.getUpdatedAt());
+            activity.getVersion(),
+            activity.getStartedAt(), activity.getEndedAt(), activity.getArchivedAt(), activity.getCancelledAt(),
+            activity.getCancelReason(), activity.getReopenReason(), activity.getReopenCount(),
+            activity.getSummary(), activity.getSummaryConfirmedAt(), activity.getSummaryConfirmedBy(),
+            activity.getCreatedAt(), activity.getUpdatedAt());
+    }
+
+    /** P6：站内提示只有必要摘要；接收人按当次操作固定（计划书 6.7）。 */
+    private void notifyIntent(Long recipientAccountId, String type, Long activityId, String payload) {
+        if (recipientAccountId == null) {
+            return;
+        }
+        notificationMapper.insert(recipientAccountId, type, activityId,
+            payload.length() > 500 ? payload.substring(0, 500) : payload);
+    }
+
+    // ==================== P6：执行、取消、总结与归档 ====================
+
+    /**
+     * 启动执行（P6.1）：组织负责人或活动负责人明确启动，检查合法状态与报名审核已结束；
+     * 不根据报名开关或时间自动跳转，也不生成到场记录。启动时固定已批准报名者作为反馈资格依据。
+     */
+    @Transactional
+    public ActivityItem startExecution(Long accountId, Long orgId, Long activityId, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganization(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireManageable(orgId, activityId, actor, accountId);
+        if (!Activity.STATUS_APPROVED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许启动执行",
+                "只有已确认且未开始的活动可以启动执行。");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        long pending = registrationMapper.countByActivity(activityId, "PENDING");
+        if (pending > 0) {
+            throw conflict("REGISTRATION_PENDING_REMAINS", "仍有待审核报名",
+                "还有 " + pending + " 条待审核报名未处理，请先批准或驳回后再启动执行。");
+        }
+        String snapshotHash = sha256("registrations:"
+            + registrationMapper.listApprovedAccountIds(activityId).toString());
+        if (activityMapper.startExecution(activityId, orgId, snapshotHash, version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许启动执行", "活动状态已变化，请刷新后重试。");
+        }
+        feedbackService.snapshotApprovedRegistrants(activityId);
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_EXECUTION_STARTED", "activity:" + activityId,
+            null, java.util.Map.of("snapshot", snapshotHash));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /**
+     * 结束执行（P6.1）：执行中 → 复盘中；未完成任务不自动标为完成，
+     * 并在此时固定活动负责人与未取消任务承担者的反馈资格依据（计划书 6.5）。
+     */
+    @Transactional
+    public ActivityItem finishExecution(Long accountId, Long orgId, Long activityId, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganization(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireManageable(orgId, activityId, actor, accountId);
+        if (!Activity.STATUS_EXECUTING.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许结束执行", "只有执行中的活动可以进入复盘。");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        if (activityMapper.finishExecution(activityId, orgId, version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许结束执行", "活动状态已变化，请刷新后重试。");
+        }
+        List<Long> assigneeMemberIds = taskMapper.listUncancelledAssigneeMemberIds(activityId);
+        List<Long> assigneeAccountIds = new java.util.ArrayList<>();
+        for (Long memberId : assigneeMemberIds) {
+            OrganizationMember assignee = memberMapper.findById(memberId);
+            if (assignee != null) {
+                assigneeAccountIds.add(assignee.getAccountId());
+            }
+        }
+        OrganizationMember ownerMember = memberMapper.findById(activity.getOwnerMemberId());
+        feedbackService.snapshotExecutionRoles(activityId,
+            ownerMember == null ? null : ownerMember.getAccountId(), assigneeAccountIds);
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_EXECUTION_FINISHED", "activity:" + activityId,
+            null, java.util.Map.of("assignees", assigneeAccountIds.size()));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /**
+     * 取消活动（P6.2）：仅组织负责人填写原因后取消；停止报名、关闭待审、有效报名转为活动取消结果，
+     * 未完成任务转取消，保留已发生费用，向受影响账号写提示来源；重复取消不重复处理。
+     */
+    @Transactional
+    public ActivityItem cancel(Long accountId, Long orgId, Long activityId, String reason, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireById(orgId, activityId);
+        if (Activity.STATUS_CANCELLED.equals(activity.getStatus())) {
+            // 重复取消不产生第二次业务结果
+            return toItem(activity);
+        }
+        if (Activity.STATUS_ARCHIVED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许取消", "已归档活动不能取消，请先重新打开。");
+        }
+        if (Activity.STATUS_DRAFT.equals(activity.getStatus())
+            || Activity.STATUS_PENDING_APPROVAL.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许取消",
+                "未确认的活动请使用删除草稿或驳回处理。");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw fieldError("reason", "取消活动必须说明原因");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        if (activityMapper.cancel(activityId, orgId, reason.trim(), version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许取消", "活动状态已变化，请刷新后重试。");
+        }
+        List<Long> affected = new java.util.ArrayList<>();
+        for (com.example.activity.modules.registration.Registration registration
+            : registrationMapper.listCancellable(activityId)) {
+            if (registrationMapper.cancel(registration.getId(), "CANCELLED_ORG", accountId,
+                    "活动取消：" + reason.trim()) == 1) {
+                affected.add(registration.getAccountId());
+            }
+        }
+        int cancelledTasks = taskMapper.cancelOpenTasks(activityId);
+        for (Long recipient : affected) {
+            notifyIntent(recipient, "ACTIVITY_CANCELLED", activityId,
+                "活动「" + activity.getName() + "」已取消：" + reason.trim() + "（负责人将处理遗留事项）");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_CANCELLED", "activity:" + activityId, reason,
+            java.util.Map.of("registrations", affected.size(), "tasks", cancelledTasks));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /** 保存总结草稿（P6.4）：内容变化即作废上一次确认，需重新核对来源后确认。 */
+    @Transactional
+    public ActivityItem saveSummary(Long accountId, Long orgId, Long activityId, String summary, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireManageable(orgId, activityId, actor, accountId);
+        if (!Activity.STATUS_REVIEWING.equals(activity.getStatus())
+            && !Activity.STATUS_CANCELLED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许编写总结",
+                "总结在复盘期或取消后处理遗留事项时编写。");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        if (summary == null || summary.isBlank()) {
+            throw fieldError("summary", "总结内容不能为空");
+        }
+        if (activityMapper.updateSummary(activityId, orgId, summary.trim(), version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许编写总结", "活动状态已变化，请刷新后重试。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_SUMMARY_SAVED", "activity:" + activityId, null, null);
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /**
+     * 确认总结（P6.4）：保存确认人与当时的来源摘要；来源随后变化即与现值不一致，
+     * 归档前必须重新核对并确认（后端架构 5.4）。
+     */
+    @Transactional
+    public ActivityItem confirmSummary(Long accountId, Long orgId, Long activityId, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireManageable(orgId, activityId, actor, accountId);
+        if (activity.getSummary() == null || activity.getSummary().isBlank()) {
+            throw conflict("SUMMARY_REQUIRED", "尚未编写总结", "请先保存总结内容再确认。");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        String sourceHash = summarySourceHash(activity);
+        if (activityMapper.confirmSummary(activityId, orgId, accountId, sourceHash, version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许确认总结", "活动状态已变化，请刷新后重试。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_SUMMARY_CONFIRMED", "activity:" + activityId,
+            null, java.util.Map.of("sourceHash", sourceHash));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /**
+     * 归档（P6.5）：仅组织负责人；正常活动检查报名审核已结束、费用无待审、总结已确认且来源未变化、
+     * 任务与物资已结束或有处置说明；取消活动检查遗留费用与取消说明。归档后普通写入全部关闭。
+     */
+    @Transactional
+    public ActivityItem archive(Long accountId, Long orgId, Long activityId, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireById(orgId, activityId);
+        if (Activity.STATUS_ARCHIVED.equals(activity.getStatus())) {
+            return toItem(activity);
+        }
+        if (!Activity.STATUS_REVIEWING.equals(activity.getStatus())
+            && !Activity.STATUS_CANCELLED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许归档",
+                "只有复盘中或已取消的活动可以归档。");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        List<String> blocking = new java.util.ArrayList<>();
+        long pendingRegistrations = registrationMapper.countByActivity(activityId, "PENDING");
+        if (pendingRegistrations > 0) {
+            blocking.add("待审核报名 " + pendingRegistrations + " 条");
+        }
+        java.math.BigDecimal pendingExpense =
+            expenseMapper.sumAmountByStatus(activityId, com.example.activity.modules.expense.Expense.STATUS_PENDING);
+        if (pendingExpense != null && pendingExpense.signum() > 0) {
+            blocking.add("待确认费用 " + pendingExpense.setScale(2).toPlainString() + " 元");
+        }
+        int openTasks = taskMapper.countOpenByActivity(activityId);
+        if (openTasks > 0) {
+            blocking.add("未结束任务 " + openTasks + " 个");
+        }
+        if (activity.getSummary() == null || activity.getSummary().isBlank()
+            || activity.getSummaryConfirmedAt() == null) {
+            blocking.add("总结尚未确认");
+        } else if (!summarySourceHash(activity).equals(activity.getSummarySourceHash())) {
+            blocking.add("总结确认后来源已变化，需重新核对并确认");
+        }
+        if (Activity.STATUS_CANCELLED.equals(activity.getStatus())
+            && (activity.getCancelReason() == null || activity.getCancelReason().isBlank())) {
+            blocking.add("取消说明缺失");
+        }
+        if (!blocking.isEmpty()) {
+            throw conflict("ARCHIVE_BLOCKED", "归档条件未满足",
+                "归档前需要处理：" + String.join("、", blocking) + "。");
+        }
+        if (activityMapper.archive(activityId, orgId, activity.getStatus(), version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许归档", "活动状态已变化，请刷新后重试。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_ARCHIVED", "activity:" + activityId, null, null);
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    /**
+     * 重新打开（P6.5）：组织负责人填写理由；正常活动回到复盘，取消活动回到取消处理；
+     * 不恢复报名与反馈入口，历史确认快照保留（重新确认需再次确认总结）。
+     */
+    @Transactional
+    public ActivityItem reopen(Long accountId, Long orgId, Long activityId, String reason, Long version) {
+        requireVersion(version);
+        organizationMapper.lockOrganization(orgId);
+        requireOwner(orgId, accountId);
+        activityMapper.lockActivity(activityId);
+        Activity activity = requireById(orgId, activityId);
+        if (!Activity.STATUS_ARCHIVED.equals(activity.getStatus())
+            && !Activity.STATUS_CANCELLED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许重新打开",
+                "只有已归档活动可以重新打开；已取消活动可在此回到取消处理。");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw fieldError("reason", "重新打开必须说明理由");
+        }
+        if (!activity.getVersion().equals(version)) {
+            throw conflict("EDIT_CONFLICT", "活动已被他人修改", "活动版本已变化，请刷新后重试。");
+        }
+        String toStatus = Activity.STATUS_ARCHIVED.equals(activity.getStatus())
+            ? Activity.STATUS_REVIEWING : Activity.STATUS_CANCELLED;
+        if (activityMapper.reopen(activityId, orgId, activity.getStatus(), toStatus, reason.trim(), version) != 1) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许重新打开", "活动状态已变化，请刷新后重试。");
+        }
+        auditService.record(accountId, "ACTIVITY", "ACTIVITY_REOPENED", "activity:" + activityId, reason,
+            java.util.Map.of("toStatus", toStatus));
+        return toItem(activityMapper.findById(activityId));
+    }
+
+    // ---------- 执行记录 ----------
+
+    /** P6.1：执行记录只追加；执行中、复盘期与取消遗留处理期间可写，归档后只读。 */
+    @Transactional
+    public ExecutionRecordItem addExecutionRecord(
+        Long accountId, Long orgId, Long activityId, String category, String content) {
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivityShared(activityId);
+        Activity activity = requireManageable(orgId, activityId, actor, accountId);
+        if (!activity.isExecutionRecordable()) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许记录执行情况",
+                "执行记录在执行中、复盘期或取消后的遗留处理期间填写。");
+        }
+        if (!ExecutionRecord.CATEGORIES.contains(category)) {
+            throw fieldError("category", "未知的执行记录类型");
+        }
+        if (content == null || content.isBlank()) {
+            throw fieldError("content", "执行记录内容不能为空");
+        }
+        ExecutionRecord record = new ExecutionRecord();
+        record.setOrgId(orgId);
+        record.setActivityId(activityId);
+        record.setCategory(category);
+        record.setContent(content.trim());
+        record.setRecordedBy(accountId);
+        executionRecordMapper.insert(record);
+        auditService.record(accountId, "ACTIVITY", "EXECUTION_RECORD_ADDED", "activity:" + activityId,
+            null, java.util.Map.of("category", category));
+        return toItem(executionRecordMapper.listByActivity(activityId).getLast());
+    }
+
+    /** 执行记录列表：活动可见性适用（未发布活动仅负责人可见）。 */
+    public List<ExecutionRecordItem> listExecutionRecords(Long accountId, Long orgId, Long activityId) {
+        requireVisibleContext(accountId, orgId, activityId);
+        return executionRecordMapper.listByActivity(activityId).stream().map(this::toItem).toList();
+    }
+
+    public record ExecutionRecordItem(
+        Long recordId, String category, String content, Long recordedBy, String recordedByUsername,
+        java.time.OffsetDateTime createdAt) {
+    }
+
+    private ExecutionRecordItem toItem(ExecutionRecord record) {
+        return new ExecutionRecordItem(record.getId(), record.getCategory(), record.getContent(),
+            record.getRecordedBy(), resolveUsername(record.getRecordedBy()), record.getCreatedAt());
+    }
+
+    // ---------- 内部：P6 辅助 ----------
+
+    private record VisibleContext(OrganizationMember actor, Activity activity) {
+    }
+
+    /** 未发布活动只有负责人可见；返回锁内重读后的身份与活动。 */
+    private VisibleContext requireVisibleContext(Long accountId, Long orgId, Long activityId) {
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        Activity activity = requireById(orgId, activityId);
+        if (!activity.isVisibleTo(actor, accountId)) {
+            throw notFound();
+        }
+        return new VisibleContext(actor, activity);
+    }
+
+    /** 组织负责人或活动负责人；调用方已按锁顺序取锁。 */
+    private Activity requireManageable(Long orgId, Long activityId, OrganizationMember actor, Long accountId) {
+        Activity activity = requireById(orgId, activityId);
+        boolean allowed = OrganizationMember.ROLE_OWNER.equals(actor.getRole())
+            || actor.getId().equals(activity.getOwnerMemberId());
+        if (!allowed) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
+                "仅组织负责人或活动负责人可以执行此操作。");
+        }
+        return activity;
+    }
+
+    private Activity requireById(Long orgId, Long activityId) {
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)) {
+            throw notFound();
+        }
+        return activity;
+    }
+
+    /**
+     * 总结来源摘要（后端架构 5.4）：只取实际输入投影——活动事实、任务、报名、费用、执行记录与反馈，
+     * 固定字段与稳定排序；排除总结自身、AI 记录、通知与访问日志，避免保存总结就让来源失效。
+     */
+    private String summarySourceHash(Activity activity) {
+        StringBuilder canonical = new StringBuilder()
+            .append("activity:").append(activity.getId())
+            .append('|').append(activity.getName())
+            .append('|').append(activity.getStartTime())
+            .append('|').append(activity.getEndTime())
+            .append('|').append(activity.getLocation())
+            .append('|').append(activity.getBudget() == null ? "0.00" : activity.getBudget().toPlainString())
+            .append('|').append(activity.getRegistrationScope())
+            .append('|').append(activity.getCapacity())
+            .append('|').append(activity.getStatus())
+            .append('|').append(activity.getSummarySourceHash() == null ? "-" : "-");
+        for (com.example.activity.modules.task.Task task : taskMapper.listByActivity(activity.getId())) {
+            canonical.append("|task:").append(task.getId()).append(':').append(task.getStatus())
+                .append(':').append(task.getAssigneeMemberId());
+        }
+        for (com.example.activity.modules.registration.Registration registration
+            : registrationMapper.listByActivity(activity.getId(), null, 0, 1000)) {
+            canonical.append("|reg:").append(registration.getId()).append(':').append(registration.getStatus());
+        }
+        canonical.append("|expenseApproved:")
+            .append(expenseMapper.sumAmountByStatus(activity.getId(),
+                com.example.activity.modules.expense.Expense.STATUS_APPROVED))
+            .append("|expensePending:")
+            .append(expenseMapper.sumAmountByStatus(activity.getId(),
+                com.example.activity.modules.expense.Expense.STATUS_PENDING));
+        canonical.append("|records:").append(executionRecordMapper.countByActivity(activity.getId()));
+        canonical.append("|feedback:").append(feedbackService.summarySourcePart(activity.getId()));
+        return sha256(canonical.toString());
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 不可用", ex);
+        }
+    }
+
+    private String resolveUsername(Long accountId) {
+        return accountMapper.findUsernameById(accountId);
     }
 
     private ApiException fieldError(String field, String message) {

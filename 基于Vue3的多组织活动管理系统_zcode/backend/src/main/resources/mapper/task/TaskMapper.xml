@@ -82,4 +82,31 @@
         WHERE activity_id = #{activityId}
     </select>
 
+    <!-- P6.5：归档前的未结束任务清点 -->
+    <select id="countOpenByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM task
+        WHERE activity_id = #{activityId}
+          AND status IN ('PENDING', 'IN_PROGRESS')
+    </select>
+
+    <!-- P6.1：结束执行时的反馈资格依据——截至当时未取消任务的承担者 -->
+    <select id="listUncancelledAssigneeMemberIds" resultType="long">
+        SELECT DISTINCT assignee_member_id
+        FROM task
+        WHERE activity_id = #{activityId}
+          AND status &lt;&gt; 'CANCELLED'
+          AND assignee_member_id IS NOT NULL
+        ORDER BY assignee_member_id
+    </select>
+
+    <!-- P6.2：取消活动时未完成任务转为已取消（重复调用不产生第二次业务结果） -->
+    <update id="cancelOpenTasks">
+        UPDATE task
+        SET status = 'CANCELLED',
+            version = version + 1
+        WHERE activity_id = #{activityId}
+          AND status IN ('PENDING', 'IN_PROGRESS')
+    </update>
+
 </mapper>

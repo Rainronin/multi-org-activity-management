@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.feedback.FeedbackMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, account_id, rating, comment, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO feedback (org_id, activity_id, account_id, rating, comment)
+        VALUES (#{orgId}, #{activityId}, #{accountId}, #{rating}, #{comment})
+    </insert>
+
+    <update id="update">
+        UPDATE feedback
+        SET rating = #{rating},
+            comment = #{comment}
+        WHERE id = #{id}
+    </update>
+
+    <select id="findByActivityAndAccount" resultType="com.example.activity.modules.feedback.Feedback">
+        SELECT <include refid="baseColumns" />
+        FROM feedback
+        WHERE activity_id = #{activityId}
+          AND account_id = #{accountId}
+    </select>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.feedback.Feedback">
+        SELECT <include refid="baseColumns" />
+        FROM feedback
+        WHERE activity_id = #{activityId}
+        ORDER BY created_at ASC, id ASC
+    </select>
+
+    <select id="countByActivity" resultType="long">
+        SELECT COUNT(*)
+        FROM feedback
+        WHERE activity_id = #{activityId}
+    </select>
+
+    <select id="averageRating" resultType="java.math.BigDecimal">
+        SELECT AVG(rating)
+        FROM feedback
+        WHERE activity_id = #{activityId}
+    </select>
+
+    <!-- 资格依据：重复记录由唯一键兜底，重放不报错 -->
+    <insert id="insertEligibility">
+        INSERT IGNORE INTO feedback_eligibility (activity_id, account_id, source)
+        VALUES (#{activityId}, #{accountId}, #{source})
+    </insert>
+
+    <select id="countEligibility" resultType="int">
+        SELECT COUNT(*)
+        FROM feedback_eligibility
+        WHERE activity_id = #{activityId}
+          AND account_id = #{accountId}
+    </select>
+
+    <select id="listEligibleAccountIds" resultType="long">
+        SELECT DISTINCT account_id
+        FROM feedback_eligibility
+        WHERE activity_id = #{activityId}
+        ORDER BY account_id
+    </select>
+
+</mapper>

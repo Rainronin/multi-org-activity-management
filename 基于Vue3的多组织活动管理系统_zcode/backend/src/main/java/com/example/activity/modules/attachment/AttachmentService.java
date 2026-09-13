@@ -51,6 +51,8 @@ public class AttachmentService {
     private final com.example.activity.modules.account.AccountMapper accountMapper;
     private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
     private final com.example.activity.modules.task.TaskMapper taskMapper;
+    /** P6.5：凭证删除前读取费用状态（只读依赖；写入仍归 expense 模块）。 */
+    private final com.example.activity.modules.expense.ExpenseMapper expenseMapper;
     private final Path storageDir;
     private final Path tempDir;
 
@@ -62,6 +64,7 @@ public class AttachmentService {
         com.example.activity.modules.account.AccountMapper accountMapper,
         com.example.activity.modules.organization.OrganizationMapper organizationMapper,
         com.example.activity.modules.task.TaskMapper taskMapper,
+        com.example.activity.modules.expense.ExpenseMapper expenseMapper,
         @Value("${app.upload.dir:./uploads}") String storageDir) {
         this.attachmentMapper = attachmentMapper;
         this.activityMapper = activityMapper;
@@ -70,6 +73,7 @@ public class AttachmentService {
         this.accountMapper = accountMapper;
         this.organizationMapper = organizationMapper;
         this.taskMapper = taskMapper;
+        this.expenseMapper = expenseMapper;
         this.storageDir = Path.of(storageDir).toAbsolutePath().normalize();
         this.tempDir = this.storageDir.resolve("tmp");
     }
@@ -324,11 +328,32 @@ public class AttachmentService {
         }
     }
 
-    /** F02：调整期待确认期间已上传资料只读，删除也要拒绝。 */
+    /** F02：调整期待确认期间已上传资料只读，删除也要拒绝。P6.5：归档后资料与票据不可删除。 */
     private void requireNotFrozen(Context locked) {
         if (locked.activity().isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
                 "活动安排调整中，期间资料只读；重新确认后再处理。");
+        }
+        if (locked.activity().isArchived()) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动已归档",
+                "归档资料按保留规则不可删除；如需更正请先由组织负责人重新打开活动。");
+        }
+    }
+
+    /** P6.5／计划书 6.6：已确认费用的票据属于保留资料，不能直接删除。 */
+    private void requireVoucherRemovable(Attachment attachment) {
+        if (attachment.getExpenseId() == null) {
+            return;
+        }
+        com.example.activity.modules.expense.Expense expense = expenseMapper.findById(attachment.getExpenseId());
+        if (expense == null) {
+            return;
+        }
+        String status = expense.getStatus();
+        if (com.example.activity.modules.expense.Expense.STATUS_APPROVED.equals(status)
+            || com.example.activity.modules.expense.Expense.STATUS_VOIDED.equals(status)) {
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "已确认费用的票据不可删除",
+                "该凭证属于已确认或已作废的费用记录，保留为核对依据；如需更正请建立更正登记。");
         }
     }
 
@@ -416,6 +441,8 @@ public class AttachmentService {
                 throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人、活动负责人、上传者或任务承担者可以删除附件。");
             }
         }
+        // P6.5：已确认费用的票据保留为核对依据，不能直接删除
+        requireVoucherRemovable(attachment);
         if (attachmentMapper.markDeleted(attachmentId) != 1) {
             throw notFound();
         }

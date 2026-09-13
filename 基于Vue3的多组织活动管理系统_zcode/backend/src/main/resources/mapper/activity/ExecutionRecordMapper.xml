@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.activity.ExecutionRecordMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, category, content, recorded_by, created_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO execution_record (org_id, activity_id, category, content, recorded_by)
+        VALUES (#{orgId}, #{activityId}, #{category}, #{content}, #{recordedBy})
+    </insert>
+
+    <select id="listByActivity" resultType="com.example.activity.modules.activity.ExecutionRecord">
+        SELECT <include refid="baseColumns" />
+        FROM execution_record
+        WHERE activity_id = #{activityId}
+        ORDER BY created_at ASC, id ASC
+    </select>
+
+    <select id="countByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM execution_record
+        WHERE activity_id = #{activityId}
+    </select>
+
+</mapper>

@@ -93,6 +93,24 @@
         ORDER BY account_id
     </select>
 
+    <!-- P6.1：启动执行时的已批准报名者（反馈资格依据） -->
+    <select id="listApprovedAccountIds" resultType="long">
+        SELECT account_id
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND status = 'APPROVED'
+        ORDER BY account_id
+    </select>
+
+    <!-- P6.2：取消活动时需要关闭的报名（待审与有效） -->
+    <select id="listCancellable" resultType="com.example.activity.modules.registration.Registration">
+        SELECT <include refid="baseColumns" />
+        FROM registration
+        WHERE activity_id = #{activityId}
+          AND status IN ('PENDING', 'APPROVED')
+        ORDER BY id
+    </select>
+
     <!--
       S07-B／F03：退出联动定位需要取消的报名。
       计划书 6.2：取消“尚未进入执行的内部活动”的待审与有效报名，与活动主状态无关——

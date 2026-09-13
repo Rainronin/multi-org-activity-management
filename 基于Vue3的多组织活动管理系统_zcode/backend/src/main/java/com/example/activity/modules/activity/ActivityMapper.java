@@ -78,4 +78,40 @@ public interface ActivityMapper {
     /** S02：报名开关（独立于申请时间窗）；开关仅影响新申请，不影响既有申请审核。 */
     int updateRegistrationOpen(
         @Param("id") Long id, @Param("orgId") Long orgId, @Param("open") boolean open);
+
+    // ---------- P6：执行、取消、归档与总结 ----------
+
+    /** 启动执行：APPROVED → EXECUTING，记录开始时间与批准报名快照摘要。 */
+    int startExecution(
+        @Param("id") Long id, @Param("orgId") Long orgId,
+        @Param("snapshotHash") String snapshotHash, @Param("version") Long version);
+
+    /** 结束执行：EXECUTING → REVIEWING。 */
+    int finishExecution(@Param("id") Long id, @Param("orgId") Long orgId, @Param("version") Long version);
+
+    /** 归档：fromStatus → ARCHIVED。 */
+    int archive(
+        @Param("id") Long id, @Param("orgId") Long orgId,
+        @Param("fromStatus") String fromStatus, @Param("version") Long version);
+
+    /** 取消：已确认／执行中／复盘中 → CANCELLED，写原因并关闭报名开关。 */
+    int cancel(
+        @Param("id") Long id, @Param("orgId") Long orgId,
+        @Param("reason") String reason, @Param("version") Long version);
+
+    /** 重新打开：归档或取消活动回到复盘／取消处理，记录理由与次数。 */
+    int reopen(
+        @Param("id") Long id, @Param("orgId") Long orgId, @Param("fromStatus") String fromStatus,
+        @Param("toStatus") String toStatus, @Param("reason") String reason, @Param("version") Long version);
+
+    /** 保存总结草稿：内容变化即作废上一次确认。 */
+    int updateSummary(
+        @Param("id") Long id, @Param("orgId") Long orgId,
+        @Param("summary") String summary, @Param("version") Long version);
+
+    /** 确认总结：记录确认人与当时的来源摘要。 */
+    int confirmSummary(
+        @Param("id") Long id, @Param("orgId") Long orgId,
+        @Param("accountId") Long accountId, @Param("sourceHash") String sourceHash,
+        @Param("version") Long version);
 }

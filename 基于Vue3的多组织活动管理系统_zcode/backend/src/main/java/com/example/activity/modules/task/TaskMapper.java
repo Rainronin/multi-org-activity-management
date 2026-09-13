@@ -44,4 +44,13 @@ public interface TaskMapper {
 
     /** S07：草稿删除前的依赖检查。 */
     int countByActivity(@Param("activityId") Long activityId);
+
+    /** P6.5：归档前检查活动下未结束任务（待处理／进行中）。 */
+    int countOpenByActivity(@Param("activityId") Long activityId);
+
+    /** P6.1：结束执行时固定反馈资格依据——截至当时未取消任务的承担者 memberId。 */
+    List<Long> listUncancelledAssigneeMemberIds(@Param("activityId") Long activityId);
+
+    /** P6.2：取消活动时把未完成任务转为已取消，保留已完成与已取消记录。 */
+    int cancelOpenTasks(@Param("activityId") Long activityId);
 }

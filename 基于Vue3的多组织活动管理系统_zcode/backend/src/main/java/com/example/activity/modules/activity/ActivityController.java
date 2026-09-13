@@ -45,6 +45,10 @@ public class ActivityController {
         OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, boolean registrationOpen, Long version,
+        // P6：执行、取消、归档与总结
+        OffsetDateTime startedAt, OffsetDateTime endedAt, OffsetDateTime archivedAt, OffsetDateTime cancelledAt,
+        String cancelReason, String reopenReason, Integer reopenCount,
+        String summary, OffsetDateTime summaryConfirmedAt, Long summaryConfirmedBy,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
@@ -245,6 +249,152 @@ public class ActivityController {
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
+    // ==================== P6：执行、取消、总结与归档 ====================
+
+    public record StartExecutionRequest(
+        @jakarta.validation.constraints.Min(value = 1, message = "版本号必须为正整数") Long version) {
+    }
+
+    public record SummaryRequest(
+        @jakarta.validation.constraints.NotBlank(message = "总结内容不能为空")
+        @Size(max = 20000, message = "总结不超过 20000 字符") String summary,
+        @jakarta.validation.constraints.Min(value = 1, message = "版本号必须为正整数") Long version) {
+    }
+
+    public record CancelActivityRequest(
+        @jakarta.validation.constraints.NotBlank(message = "取消活动必须说明原因")
+        @Size(max = 500, message = "取消原因不超过 500 字符") String reason,
+        @jakarta.validation.constraints.Min(value = 1, message = "版本号必须为正整数") Long version) {
+    }
+
+    public record ReopenActivityRequest(
+        @jakarta.validation.constraints.NotBlank(message = "重新打开必须说明理由")
+        @Size(max = 500, message = "理由不超过 500 字符") String reason,
+        @jakarta.validation.constraints.Min(value = 1, message = "版本号必须为正整数") Long version) {
+    }
+
+    public record ExecutionRecordRequest(
+        @jakarta.validation.constraints.NotBlank(message = "请选择执行记录类型")
+        @jakarta.validation.constraints.Pattern(
+            regexp = "^(PROGRESS|ISSUE|ARRANGEMENT|DEVIATION|HANDLING)$", message = "未知的执行记录类型")
+        String category,
+        @jakarta.validation.constraints.NotBlank(message = "执行记录内容不能为空")
+        @Size(max = 1000, message = "单条记录不超过 1000 字符") String content) {
+    }
+
+    public record ExecutionRecordResponse(
+        String recordId, String category, String content, Long recordedBy, String recordedByUsername,
+        java.time.OffsetDateTime createdAt) {
+    }
+
+    public record ExecutionRecordsResponse(List<ExecutionRecordResponse> items) {
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/start-execution")
+    public ResponseEntity<ActivityResponse> startExecution(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody StartExecutionRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.startExecution(
+                principal.getAccountId(), orgId, activityId, request.version())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/finish-execution")
+    public ResponseEntity<ActivityResponse> finishExecution(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody StartExecutionRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.finishExecution(
+                principal.getAccountId(), orgId, activityId, request.version())));
+    }
+
+    /** 取消活动：仅组织负责人，填写原因；停止报名、关闭待审、有效报名转取消结果。 */
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/cancel")
+    public ResponseEntity<ActivityResponse> cancel(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody CancelActivityRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.cancel(
+                principal.getAccountId(), orgId, activityId, request.reason(), request.version())));
+    }
+
+    @PutMapping("/api/organizations/{orgId}/activities/{activityId}/summary")
+    public ResponseEntity<ActivityResponse> saveSummary(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody SummaryRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.saveSummary(
+                principal.getAccountId(), orgId, activityId, request.summary(), request.version())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/summary/confirm")
+    public ResponseEntity<ActivityResponse> confirmSummary(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody StartExecutionRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.confirmSummary(
+                principal.getAccountId(), orgId, activityId, request.version())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/archive")
+    public ResponseEntity<ActivityResponse> archive(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody StartExecutionRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.archive(
+                principal.getAccountId(), orgId, activityId, request.version())));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/reopen")
+    public ResponseEntity<ActivityResponse> reopen(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody ReopenActivityRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(activityService.reopen(
+                principal.getAccountId(), orgId, activityId, request.reason(), request.version())));
+    }
+
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/execution-records")
+    public ResponseEntity<ExecutionRecordsResponse> listExecutionRecords(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId) {
+        List<ExecutionRecordResponse> items = activityService
+            .listExecutionRecords(principal.getAccountId(), orgId, activityId).stream()
+            .map(item -> new ExecutionRecordResponse(String.valueOf(item.recordId()), item.category(),
+                item.content(), item.recordedBy(), item.recordedByUsername(), item.createdAt()))
+            .toList();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(new ExecutionRecordsResponse(items));
+    }
+
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/execution-records")
+    public ResponseEntity<ExecutionRecordResponse> addExecutionRecord(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody ExecutionRecordRequest request) {
+        ActivityService.ExecutionRecordItem item = activityService.addExecutionRecord(
+            principal.getAccountId(), orgId, activityId, request.category(), request.content());
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+            .body(new ExecutionRecordResponse(String.valueOf(item.recordId()), item.category(),
+                item.content(), item.recordedBy(), item.recordedByUsername(), item.createdAt()));
+    }
+
     @PatchMapping("/api/organizations/{orgId}/activities/{activityId}")
     public ResponseEntity<ActivityResponse> updateDraft(
         @AuthenticationPrincipal AccountUserDetails principal,
@@ -279,6 +429,9 @@ public class ActivityController {
             item.submittedBy(), item.confirmedBy(), item.confirmType(),
             item.confirmedAt(), item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
-            item.registrationOpen(), item.version(), item.createdAt(), item.updatedAt());
+            item.registrationOpen(), item.version(),
+            item.startedAt(), item.endedAt(), item.archivedAt(), item.cancelledAt(), item.cancelReason(),
+            item.reopenReason(), item.reopenCount(), item.summary(), item.summaryConfirmedAt(),
+            item.summaryConfirmedBy(), item.createdAt(), item.updatedAt());
     }
 }

@@ -220,6 +220,10 @@ public class RegistrationService {
         if (!activity.isBeforeStart()) {
             throw conflict("活动已开始，不能再自助取消报名。");
         }
+        // P6.1：启动执行后停止自助取消（即使执行早于计划开始时间）
+        if (activity.isStartedOrBeyond()) {
+            throw conflict("活动已进入执行，不能再自助取消报名。");
+        }
         Registration registration = registrationMapper.findByActivityAndAccount(activityId, accountId);
         if (registration == null) {
             throw notFound();

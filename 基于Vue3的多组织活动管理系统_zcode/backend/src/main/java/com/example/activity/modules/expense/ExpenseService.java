@@ -362,16 +362,17 @@ public class ExpenseService {
         return ctx;
     }
 
-    /** 调整期待确认期间费用只读；已确认活动与执行阶段可登记（执行期维护实际费用属 P6）。 */
+    /** 调整期待确认期间费用只读；已取消活动仍允许处理遗留费用（计划书 6.3）。 */
     private void requirePreparationWritable(Activity activity) {
         if (activity.isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
                 "活动安排调整中，期间费用只读；重新确认后再处理。");
         }
-        if (Activity.STATUS_DRAFT.equals(activity.getStatus())
-            || Activity.STATUS_PENDING_APPROVAL.equals(activity.getStatus())) {
+        if (!activity.isExpenseWritable()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动尚未进入筹备",
-                "费用只能在活动确认后的筹备与执行阶段登记。");
+                Activity.STATUS_ARCHIVED.equals(activity.getStatus())
+                    ? "活动已归档，费用只读；如需更正请先由组织负责人重新打开活动。"
+                    : "费用只能在活动确认后的筹备、执行、复盘或取消遗留处理阶段登记。");
         }
     }
 
