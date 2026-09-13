@@ -59,6 +59,14 @@
           AND org_id = #{orgId}
     </update>
 
+    <!-- S07-B：成员退出／移除前的活动职责清点；归档状态在 P6 引入，当前所有活动都属未归档 -->
+    <select id="countOwnedByMember" resultType="int">
+        SELECT COUNT(*)
+        FROM activity
+        WHERE org_id = #{orgId}
+          AND owner_member_id = #{memberId}
+    </select>
+
     <update id="updateProposal">
         UPDATE activity
         SET proposal = #{proposal}

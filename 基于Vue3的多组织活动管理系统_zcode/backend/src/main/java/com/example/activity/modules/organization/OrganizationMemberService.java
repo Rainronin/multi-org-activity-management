@@ -20,21 +20,30 @@ public class OrganizationMemberService {
     private final OrganizationMapper organizationMapper;
     private final OrganizationMemberMapper memberMapper;
     private final AuditService auditService;
-    // 只读职责查询：organization → task/material 单向依赖（后端架构 2.1）
+    // 只读职责查询：organization → task/material/activity/registration 单向依赖（后端架构 2.1）
     private final com.example.activity.modules.task.TaskMapper taskMapper;
     private final com.example.activity.modules.material.MaterialMapper materialMapper;
+    private final com.example.activity.modules.activity.ActivityMapper activityMapper;
+    private final com.example.activity.modules.registration.RegistrationMapper registrationMapper;
+    private final com.example.activity.modules.notification.NotificationMapper notificationMapper;
 
     public OrganizationMemberService(
         OrganizationMapper organizationMapper,
         OrganizationMemberMapper memberMapper,
         AuditService auditService,
         com.example.activity.modules.task.TaskMapper taskMapper,
-        com.example.activity.modules.material.MaterialMapper materialMapper) {
+        com.example.activity.modules.material.MaterialMapper materialMapper,
+        com.example.activity.modules.activity.ActivityMapper activityMapper,
+        com.example.activity.modules.registration.RegistrationMapper registrationMapper,
+        com.example.activity.modules.notification.NotificationMapper notificationMapper) {
         this.organizationMapper = organizationMapper;
         this.memberMapper = memberMapper;
         this.auditService = auditService;
         this.taskMapper = taskMapper;
         this.materialMapper = materialMapper;
+        this.activityMapper = activityMapper;
+        this.registrationMapper = registrationMapper;
+        this.notificationMapper = notificationMapper;
     }
 
     public record MemberItem(Long memberId, Long accountId, String username, String role, java.time.OffsetDateTime joinedAt) {
@@ -73,6 +82,8 @@ public class OrganizationMemberService {
         }
         ensureNotLastOwner(orgId, member.getId(), member.getRole());
         ensureNoOpenDuties(orgId, member.getId());
+        // S07-B：退出前按计划书 6.1／4 节处理内部报名，再完成成员状态变更
+        cancelInternalRegistrations(orgId, member.getAccountId(), accountId);
         if (memberMapper.updateStatus(member.getId(), "LEFT") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
@@ -98,6 +109,8 @@ public class OrganizationMemberService {
         }
         ensureNotLastOwner(orgId, target.getId(), target.getRole());
         ensureNoOpenDuties(orgId, target.getId());
+        // S07-B：被移除成员同样处理内部报名，接收人按当次操作固定为被移除账号
+        cancelInternalRegistrations(orgId, target.getAccountId(), actorAccountId);
         if (memberMapper.updateStatus(target.getId(), "REMOVED") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
@@ -185,13 +198,43 @@ public class OrganizationMemberService {
         return target;
     }
 
-    /** 退出/移除前的未结责任检查：未完成任务或未就绪物资须先移交（P1.4 联动）。 */
+    /**
+     * 退出/移除前的未结责任检查（P1.4 联动、S07-B）：活动职责、未完成任务、未就绪物资
+     * 都要求先安排接手人或合法结束，不允许留下无人负责的事项。
+     */
     private void ensureNoOpenDuties(Long orgId, Long memberMemberId) {
+        int ownedActivities = activityMapper.countOwnedByMember(orgId, memberMemberId);
+        if (ownedActivities > 0) {
+            throw conflict("MEMBER_HAS_ACTIVITY_DUTIES", "仍有负责的活动",
+                "该成员仍负责 " + ownedActivities + " 个未归档活动，请先变更活动负责人后再操作。");
+        }
         int openTasks = taskMapper.countOpenByAssignee(orgId, memberMemberId);
         int openMaterials = materialMapper.countOpenByAssignee(orgId, memberMemberId);
         if (openTasks > 0 || openMaterials > 0) {
             throw conflict("MEMBER_HAS_OPEN_DUTIES", "存在未完成任务或未就绪物资",
                 "该成员还有未完成任务或未就绪物资，请先改派或取消后再操作。");
+        }
+    }
+
+    /**
+     * S07-B 退出联动：取消该账号在「尚未进入执行的内部活动」中的待审与有效报名，
+     * 保留原因、按主记录原状态释放名额，并给受影响账号留下站内提示意图（计划书 6.1、4 节第 4 条）。
+     * 已开始或公开活动的报名保留为历史，不因退出改写。
+     */
+    private void cancelInternalRegistrations(Long orgId, Long memberAccountId, Long actorAccountId) {
+        var affected = registrationMapper.listBlockingForLeave(orgId, memberAccountId);
+        for (var registration : affected) {
+            String reason = "成员退出组织，内部报名自动取消";
+            if (registrationMapper.cancel(registration.getId(), "CANCELLED_ORG", actorAccountId, reason) != 1) {
+                // 并发下已被处理：不重复释放名额，也不重复写提示
+                continue;
+            }
+            auditService.record(actorAccountId, "ORGANIZATION", "REGISTRATION_CANCELLED_ON_LEAVE",
+                "registration:" + registration.getId(), reason,
+                java.util.Map.of("activityId", registration.getActivityId(),
+                    "accountId", memberAccountId, "fromStatus", registration.getStatus()));
+            notificationMapper.insert(memberAccountId, "REGISTRATION_CANCELLED",
+                registration.getActivityId(), "你已退出组织，1 条内部活动报名已取消：" + reason);
         }
     }
 

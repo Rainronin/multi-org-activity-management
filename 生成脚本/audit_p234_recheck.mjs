@@ -14,9 +14,18 @@ async function dbExec(sql) {
   execFileSync(MYSQL_EXE, ['-h', '127.0.0.1', '-u', 'root', '-D', 'activity_test', '-e', sql],
     { stdio: 'inherit', env: { ...process.env, MYSQL_PWD: process.env.AUDIT_MYSQL_PASSWORD || '' } })
 }
+
+/** 只读标量查询：返回首行首列的值。 */
+function dbQuery(sql) {
+  const out = execFileSync(MYSQL_EXE,
+    ['-h', '127.0.0.1', '-u', 'root', '-D', 'activity_test', '-N', '-B', '-e', sql],
+    { encoding: 'utf8', env: { ...process.env, MYSQL_PWD: process.env.AUDIT_MYSQL_PASSWORD || '' } })
+  const value = out.trim().split('\n')[0]
+  return Number.isNaN(Number(value)) ? value : Number(value)
+}
 try {
-  const contexts = await Promise.all([1, 2, 3, 4].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
-  const [owner, member, outsider, delegate] = contexts
+  const contexts = await Promise.all([1, 2, 3, 4, 5].map(() => browser.newContext({ baseURL: 'http://127.0.0.1:5174', viewport: { width: 1440, height: 1000 } })))
+  const [owner, member, outsider, delegate, leaver] = contexts
   async function call(ctx, method, path, data, multipart) {
     const headers = {}
     if (method !== 'GET') {
@@ -117,6 +126,25 @@ try {
   // 撤回后仍可调整容量到与已通过人数一致（容量下限规则）
   const capacityOnly = await call(owner, 'PATCH', aPath, { capacity: 1 })
   console.log(JSON.stringify({ check: 'S07 调整期容量调整', status: capacityOnly.status(), capacity: (await capacityOnly.json()).capacity }))
+
+  // S07-B 成员职责与退出联动：负责活动时不能退出；改派后可退出并取消未开始内部活动的报名
+  const leaverInvitation = await json(owner, 'POST', `/api/organizations/${org.id}/invitations`, {})
+  await json(leaver, 'POST', '/api/invitations/accept', { code: leaverInvitation.code })
+  const leaverMember = (await json(owner, 'GET', `/api/organizations/${org.id}/members`)).items
+    .find(x => x.username === usernames[4]).memberId
+  // 草稿期即可改派负责人，因此先用草稿演示职责阻断退出，再改派、确认并产生报名
+  const dutyActivity = await createActivity('退出联动活动', leaverMember)
+  const leaveWithDuty = await call(leaver, 'DELETE', `/api/organizations/${org.id}/members/me`)
+  const leaveWithDutyBody = await leaveWithDuty.json()
+  await json(owner, 'PATCH', `${path}/${dutyActivity.id}`, { ownerMemberId: ownerMember })
+  await approveActivity(dutyActivity)
+  await openRegistration(dutyActivity)
+  await json(leaver, 'POST', `/api/activities/${dutyActivity.id}/registrations`, { displayName: '退出成员' })
+  const leaveAfterReassign = await call(leaver, 'DELETE', `/api/organizations/${org.id}/members/me`)
+  const leaverRegistrationState = (await json(leaver, 'GET', '/api/me/registrations')).items
+    .find(x => x.activityId === dutyActivity.id)?.status
+  const leaveNotifications = await dbQuery(`SELECT COUNT(*) FROM notification n JOIN account a ON a.id = n.recipient_account_id WHERE n.type = 'REGISTRATION_CANCELLED' AND a.username = '${usernames[4]}'`)
+  console.log(JSON.stringify({ check: 'S07-B 退出联动', leaveWithActivityDuty: leaveWithDuty.status(), dutyCode: leaveWithDutyBody.code, leaveAfterReassign: leaveAfterReassign.status(), registrationState: leaverRegistrationState, cancelNotificationRows: leaveNotifications }))
 
   const past = await createActivity('已到开始时间的活动')
   await approveActivity(past)

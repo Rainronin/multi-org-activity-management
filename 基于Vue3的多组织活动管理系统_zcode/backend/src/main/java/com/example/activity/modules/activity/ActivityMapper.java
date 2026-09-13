@@ -50,6 +50,9 @@ public interface ActivityMapper {
     /** S07：立项确认时记录确认时间；撤回草稿保留该值以识别调整期待确认。 */
     int markConfirmed(@Param("id") Long id, @Param("orgId") Long orgId);
 
+    /** S07-B：退出／移除前的活动职责清点（该成员仍负责的未归档活动数）。 */
+    int countOwnedByMember(@Param("orgId") Long orgId, @Param("memberId") Long memberId);
+
     /** S02：报名开关（独立于申请时间窗）；开关仅影响新申请，不影响既有申请审核。 */
     int updateRegistrationOpen(
         @Param("id") Long id, @Param("orgId") Long orgId, @Param("open") boolean open);
