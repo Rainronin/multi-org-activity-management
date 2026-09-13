@@ -192,6 +192,15 @@ try {
   const upload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: 'fake.webp', mimeType: 'image/webp', buffer: Buffer.from('This is not a WebP image') } })
   const attachment = await upload.json()
   console.log(JSON.stringify({ check: '草稿子资源与文件内容', parentDetail: (await call(member, 'GET', `${path}/${draft.id}`)).status(), tasks: (await call(member, 'GET', `${path}/${draft.id}/tasks`)).status(), fakeWebpUpload: upload.status(), draftDownload: attachment.attachmentId ? (await call(member, 'GET', `${path}/${draft.id}/attachments/${attachment.attachmentId}/download`)).status() : null, taskCreated: Boolean(draftTask.taskId) }))
+
+  // S09 附件：合法文件可上传并带用途；上传者删除后不可再下载，且校验失败不留下孤立文件
+  const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4])
+  const realUpload = await call(owner, 'POST', `${path}/${draft.id}/attachments`, undefined, { file: { name: '真实资料.png', mimeType: 'image/png', buffer: pngBytes } })
+  const realAttachment = await realUpload.json()
+  const ownerDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}/download`) : null
+  const deleteAttachment = realAttachment.attachmentId ? await call(owner, 'DELETE', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}`) : null
+  const afterDeleteDownload = realAttachment.attachmentId ? await call(owner, 'GET', `${path}/${draft.id}/attachments/${realAttachment.attachmentId}/download`) : null
+  console.log(JSON.stringify({ check: 'S09 附件校验与删除时序', realPngUpload: realUpload.status(), purpose: realAttachment.purpose, ownerDownload: ownerDownload && ownerDownload.status(), deleteAttachment: deleteAttachment && deleteAttachment.status(), afterDeleteDownload: afterDeleteDownload && afterDeleteDownload.status() }))
   const deletable = await createActivity('曾确认后撤回删除')
   await approveActivity(deletable)
   await json(owner, 'POST', `${path}/${deletable.id}/withdraw-approval`, { reason: '调整' })

@@ -38,7 +38,7 @@ public class AttachmentController {
 
     public record AttachmentResponse(
         String attachmentId, String activityId, String originalName, String contentType,
-        long sizeBytes, String uploaderUsername, java.time.OffsetDateTime createdAt) {
+        long sizeBytes, String uploaderUsername, String purpose, java.time.OffsetDateTime createdAt) {
     }
 
     public record AttachmentsResponse(List<AttachmentResponse> items) {
@@ -47,9 +47,13 @@ public class AttachmentController {
     private AttachmentResponse toResponse(AttachmentService.AttachmentItem item) {
         return new AttachmentResponse(String.valueOf(item.attachmentId()), item.activityId(),
             item.originalName(), item.contentType(), item.sizeBytes(), item.uploaderUsername(),
-            item.createdAt());
+            item.purpose(), item.createdAt());
     }
 
+    /**
+     * 上传（后端架构 6.1）：先在事务外完成校验与落盘，再调用事务方法登记；
+     * 登记失败只清理本次生成且未被引用的文件。两次调用都经过 Spring 代理，事务不会被自调用绕过。
+     */
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/attachments")
     public ResponseEntity<AttachmentResponse> upload(
         @AuthenticationPrincipal AccountUserDetails principal,
@@ -60,8 +64,15 @@ public class AttachmentController {
             throw new com.example.activity.common.ApiException(HttpStatus.BAD_REQUEST,
                 "ATTACHMENT_INVALID", "文件过大", "单个文件不超过 20MB。");
         }
-        return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
-            .body(toResponse(attachmentService.upload(principal.getAccountId(), orgId, activityId, file)));
+        AttachmentService.StagedFile staged =
+            attachmentService.stage(principal.getAccountId(), orgId, activityId, file);
+        try {
+            return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
+                .body(toResponse(attachmentService.register(principal.getAccountId(), orgId, activityId, staged)));
+        } catch (RuntimeException ex) {
+            attachmentService.cleanupIfUnreferenced(staged);
+            throw ex;
+        }
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/attachments")

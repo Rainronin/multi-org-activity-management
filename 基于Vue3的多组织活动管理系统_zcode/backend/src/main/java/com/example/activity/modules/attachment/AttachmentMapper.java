@@ -17,4 +17,7 @@ public interface AttachmentMapper {
 
     /** S07：草稿删除前的依赖检查（只统计未删除附件）。 */
     int countByActivity(@Param("activityId") Long activityId);
+
+    /** S09：登记失败补偿前确认存储名是否已被引用（含已软删除记录，避免误删在用文件）。 */
+    int countByStoredName(@Param("storedName") String storedName);
 }

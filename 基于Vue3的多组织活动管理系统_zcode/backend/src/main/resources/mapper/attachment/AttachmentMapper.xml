@@ -44,4 +44,11 @@
           AND deleted_at IS NULL
     </select>
 
+    <!-- S09：存储名引用检查（不排除软删除记录：文件可能仍被历史引用） -->
+    <select id="countByStoredName" resultType="int">
+        SELECT COUNT(*)
+        FROM attachment
+        WHERE stored_name = #{storedName}
+    </select>
+
 </mapper>
