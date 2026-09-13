@@ -1,4 +1,6 @@
-export type ActivityStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED'
+export type ActivityStatus =
+  | 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED'
+  | 'EXECUTING' | 'REVIEWING' | 'ARCHIVED' | 'CANCELLED'
 export type RegistrationScope = 'INTERNAL' | 'PUBLIC'
 
 export interface ActivityItem {
@@ -25,6 +27,17 @@ export interface ActivityItem {
   registrationOpen: boolean
   /** S08／F05：编辑、方案保存与审批都需要回传的当前版本。 */
   version: number
+  // P6：执行、取消、归档与总结
+  startedAt: string | null
+  endedAt: string | null
+  archivedAt: string | null
+  cancelledAt: string | null
+  cancelReason: string | null
+  reopenReason: string | null
+  reopenCount: number
+  summary: string | null
+  summaryConfirmedAt: string | null
+  summaryConfirmedBy: number | null
   createdAt: string
   updatedAt: string
 }

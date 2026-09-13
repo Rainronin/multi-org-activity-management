@@ -27,6 +27,7 @@ import { formatDateTime, scopeLabel, type ActivityDetail } from './types'
 import ActivityP3Sections from './ActivityP3Sections.vue'
 import RegistrationPanel from './RegistrationPanel.vue'
 import ExpenseSection from '../expense/ExpenseSection.vue'
+import ActivityLifecyclePanel from './ActivityLifecyclePanel.vue'
 
 const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' } | null }>()
 
@@ -408,6 +409,14 @@ async function confirmDelete() {
       <!-- P5：经费区块（组织负责人或本活动负责人可见，权限仍由后端判定） -->
       <ExpenseSection
         v-if="activity.status !== 'DRAFT'"
+        :org-detail="activity"
+        :org-role="orgRole"
+        @changed="loadActivity"
+      />
+
+      <!-- P6：执行、取消、执行记录、反馈、总结与归档 -->
+      <ActivityLifecyclePanel
+        v-if="activity.status !== 'DRAFT' && activity.status !== 'PENDING_APPROVAL'"
         :org-detail="activity"
         :org-role="orgRole"
         @changed="loadActivity"
