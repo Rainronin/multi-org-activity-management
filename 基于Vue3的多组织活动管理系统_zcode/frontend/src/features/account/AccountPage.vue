@@ -6,6 +6,11 @@ import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { useOrganizationsStore } from '../../stores/organizations'
 import { reissueRecoveryCode } from './api'
+import {
+  fetchMyRegistrations, registrationStatusLabel,
+  type RegistrationItem, type RegistrationStatus,
+} from '../activity/registrations'
+import { formatDateTime } from '../activity/types'
 import { roleLabel } from '../organization/types'
 import type { OrganizationDirectoryItem } from '../organization/types'
 import RecoveryCodeDialog from './RecoveryCodeDialog.vue'
@@ -60,6 +65,34 @@ const createDialogVisible = ref(false)
 const joinDialogVisible = ref(false)
 const directoryError = ref('')
 
+// P4.3 我的报名（跨组织）：入口放在账号页，外部参与者不需要进入组织工作区。
+const registrations = ref<RegistrationItem[]>([])
+const registrationsError = ref('')
+
+const registrationTagType = (status: RegistrationStatus): 'success' | 'info' | 'warning' | 'danger' =>
+  status === 'APPROVED' ? 'success' : status === 'PENDING' ? 'warning'
+    : status === 'REJECTED' ? 'danger' : 'info'
+
+async function loadRegistrations(): Promise<void> {
+  registrationsError.value = ''
+  const gen = session.capture()
+  try {
+    const items = await fetchMyRegistrations()
+    if (gen !== session.generation) {
+      return
+    }
+    registrations.value = items
+  } catch (error) {
+    if (session.observeUnauthorized(error, gen)) {
+      return
+    }
+    registrations.value = []
+    registrationsError.value = error instanceof ApiError && error.isTransportError
+      ? '网络连接失败，请检查网络后重试。'
+      : '报名记录加载失败，请重试。'
+  }
+}
+
 async function loadDirectory(): Promise<void> {
   directoryError.value = ''
   const gen = session.capture()
@@ -77,6 +110,7 @@ async function loadDirectory(): Promise<void> {
 
 onMounted(() => {
   void loadDirectory()
+  void loadRegistrations()
 })
 
 function enterOrganization(org: OrganizationDirectoryItem): void {
@@ -231,6 +265,58 @@ async function handleLogout() {
         class="account-page__hint"
       >
         尚未创建或加入任何组织。创建组织后即可开始协作。
+      </p>
+    </section>
+
+    <section class="account-page__card">
+      <div class="account-page__card-head">
+        <h2>我的报名</h2>
+        <ElButton
+          plain
+          @click="router.push('/public/activities')"
+        >
+          浏览公开活动
+        </ElButton>
+      </div>
+      <p
+        v-if="registrationsError"
+        class="account-page__hint"
+        role="alert"
+      >
+        {{ registrationsError }}
+      </p>
+      <ul
+        v-else-if="registrations.length > 0"
+        class="account-page__orgs"
+      >
+        <li
+          v-for="item in registrations"
+          :key="item.registrationId"
+        >
+          <div>
+            <span class="account-page__org-name">{{ item.displayName }}</span>
+            <ElTag
+              :type="registrationTagType(item.status)"
+              size="small"
+            >
+              {{ registrationStatusLabel[item.status] ?? item.status }}
+            </ElTag>
+          </div>
+          <span class="account-page__hint">{{ formatDateTime(item.createdAt) }}</span>
+        </li>
+      </ul>
+      <p
+        v-else
+        class="account-page__hint"
+      >
+        暂无报名记录。登录后可在公开活动页报名，并在活动开始前取消。
+      </p>
+      <p
+        v-if="registrations.some((item) => item.cancelReason)"
+        class="account-page__hint"
+      >
+        处理说明：
+        {{ registrations.filter((item) => item.cancelReason).map((item) => item.cancelReason).join('；') }}
       </p>
     </section>
 

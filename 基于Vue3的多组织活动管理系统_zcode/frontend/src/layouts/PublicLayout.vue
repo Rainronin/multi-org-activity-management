@@ -1,0 +1,182 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
+import { useSessionStore } from '../stores/session'
+
+// 公开参与壳（UI 规范 5.4）：独立于组织管理壳，只保留品牌、报名入口与账号状态，
+// 不暴露内部导航、预算、成员或附件。手机为紧凑文档流。
+const session = useSessionStore()
+const router = useRouter()
+const authenticated = computed(() => session.status === 'authenticated')
+
+function onAccountCommand(command: string) {
+  if (command === 'account') {
+    void router.push('/')
+  } else if (command === 'logout') {
+    void session.logout()
+  }
+}
+</script>
+
+<template>
+  <div class="public-page">
+    <header class="public-topbar">
+      <RouterLink
+        class="public-brand"
+        to="/public/activities"
+      >
+        <span
+          class="public-mark"
+          aria-hidden="true"
+        ><span /><span /><span /></span>
+        多组织活动管理
+      </RouterLink>
+      <nav
+        class="public-nav"
+        aria-label="公开区导航"
+      >
+        <RouterLink to="/public/activities">
+          公开活动
+        </RouterLink>
+      </nav>
+      <div class="public-account">
+        <template v-if="authenticated">
+          <ElDropdown
+            trigger="click"
+            @command="onAccountCommand"
+          >
+            <button
+              class="public-account-button"
+              aria-label="账号菜单"
+            >
+              {{ session.account?.username }}
+              <ArrowDown />
+            </button>
+            <template #dropdown>
+              <ElDropdownMenu>
+                <ElDropdownItem command="account">
+                  返回我的工作区
+                </ElDropdownItem>
+                <ElDropdownItem command="logout">
+                  退出登录
+                </ElDropdownItem>
+              </ElDropdownMenu>
+            </template>
+          </ElDropdown>
+        </template>
+        <template v-else>
+          <ElButton
+            text
+            @click="router.push({ path: '/login', query: { next: '/public/activities' } })"
+          >
+            登录
+          </ElButton>
+        </template>
+      </div>
+    </header>
+    <main class="public-main">
+      <RouterView />
+    </main>
+    <footer class="public-footer">
+      <span>多组织活动管理系统</span>
+      <span>公开活动浏览</span>
+    </footer>
+  </div>
+</template>
+
+<style scoped>
+.public-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--ui-color-surface-muted);
+}
+
+.public-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-6);
+  min-height: var(--ui-layout-topbar-height);
+  padding: 0 var(--ui-layout-page-padding);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+  background: var(--ui-color-surface);
+}
+
+.public-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  color: var(--ui-color-text);
+  font-weight: var(--ui-font-weight-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.public-mark {
+  display: inline-flex;
+  gap: var(--ui-space-1);
+}
+
+.public-mark span {
+  width: var(--ui-space-2);
+  height: var(--ui-space-2);
+  border-radius: var(--ui-radius-circle);
+  background: var(--ui-color-text);
+}
+
+.public-mark span:last-child {
+  background: var(--ui-color-accent);
+}
+
+.public-nav {
+  display: flex;
+  gap: var(--ui-space-4);
+  font-size: var(--ui-font-size-small);
+}
+
+.public-nav a {
+  color: var(--ui-color-text-muted);
+  text-decoration: none;
+}
+
+.public-nav a.router-link-active {
+  color: var(--ui-color-text);
+  font-weight: var(--ui-font-weight-semibold);
+}
+
+.public-account {
+  margin-left: auto;
+}
+
+.public-account-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.public-main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--ui-layout-content-max);
+  margin: 0 auto;
+  padding: var(--ui-layout-page-padding);
+}
+
+.public-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding: var(--ui-space-4) var(--ui-layout-page-padding);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+</style>

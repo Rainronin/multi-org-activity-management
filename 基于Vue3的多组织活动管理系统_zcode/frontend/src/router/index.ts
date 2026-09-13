@@ -28,6 +28,24 @@ export const router = createRouter({
       meta: { public: true, title: '找回账号' },
     },
     {
+      path: '/public',
+      component: () => import('../layouts/PublicLayout.vue'),
+      children: [
+        {
+          path: 'activities',
+          name: 'public-activities',
+          component: () => import('../features/activity/PublicActivitiesPage.vue'),
+          meta: { public: true, title: '公开活动' },
+        },
+        {
+          path: 'activities/:activityId',
+          name: 'public-activity-detail',
+          component: () => import('../features/activity/PublicActivityDetailPage.vue'),
+          meta: { public: true, title: '活动详情' },
+        },
+      ],
+    },
+    {
       path: '/org/:orgId',
       component: () => import('../layouts/OrganizationLayout.vue'),
       children: [

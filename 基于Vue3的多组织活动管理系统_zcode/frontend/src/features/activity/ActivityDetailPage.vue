@@ -25,6 +25,7 @@ import {
 } from './api'
 import { formatDateTime, scopeLabel, type ActivityDetail } from './types'
 import ActivityP3Sections from './ActivityP3Sections.vue'
+import RegistrationPanel from './RegistrationPanel.vue'
 
 const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' } | null }>()
 
@@ -385,6 +386,13 @@ async function confirmDelete() {
       </p>
       <ActivityP3Sections
         v-if="activity.status !== 'DRAFT'"
+        :org-detail="activity"
+        :org-role="orgRole"
+        @changed="loadActivity"
+      />
+
+      <RegistrationPanel
+        v-if="activity.status === 'APPROVED'"
         :org-detail="activity"
         :org-role="orgRole"
         @changed="loadActivity"
