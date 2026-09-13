@@ -1,6 +1,6 @@
 # 基于 Vue 的多组织活动管理系统设计与实现
 
-当前正式工程已推进到 P1.3，账号、组织和成员管理已有实现；审核发现并发邀请、会话隔离和手机布局等缺陷，须先按[开发进度审核报告](项目文档/开发进度审核报告.md)收尾，再进入 P1.4／P2。进度以[功能开发清单](项目文档/功能开发清单.md)为准，重大动作记录见[开发日志](项目文档/开发日志.md)。开工条件及剩余落实项见[文档审核报告](项目文档/文档审核报告.md)。UI 基线已确认，统一规则见[前端 UI 设计与规范](项目文档/前端UI设计与规范.md)，外观参考[黑白橙风格演示](UI演示/README.md)。演示使用虚构数据，存量样式尚未全部 token 化，不代表正式业务实现。
+当前正式工程已提交 P2、P3 和 P4 后端代码；2026-09-13 审核确认这些阶段尚未完成验收，存在报名越权、状态约束及 P3 页面故障，须先按[开发进度审核报告](项目文档/开发进度审核报告.md)收尾并补齐当前业务联动，再继续 P4 前端。进度以[功能开发清单](项目文档/功能开发清单.md)为准，重大动作记录见[开发日志](项目文档/开发日志.md)。开工条件及剩余落实项见[文档审核报告](项目文档/文档审核报告.md)。UI 基线已确认，统一规则见[前端 UI 设计与规范](项目文档/前端UI设计与规范.md)，外观参考[黑白橙风格演示](UI演示/README.md)。演示使用虚构数据，存量样式尚未全部 token 化，不代表正式业务实现。
 
 ## 当前文档与阅读顺序
 
@@ -27,13 +27,13 @@
 | `项目文档/` | 当前有效 Markdown 文档，每种职责只保留一份正文 |
 | `图示成果/` | [功能图与概念 ER 图 HTML](图示成果/项目ER图.html)、[功能图 PNG](图示成果/系统功能图.png)及 SVG；不作为业务实现或物理建表证据 |
 | `UI演示/` | Vue 3、TypeScript、Vite 与 Element Plus 轻量风格样例，含源码及预览；运行方式见[演示说明](UI演示/README.md) |
-| `基于Vue3的多组织活动管理系统_zcode/` | 业务工程：`frontend/` 与 `backend/`，账号、组织、邀请和成员管理的阶段实现 |
+| `基于Vue3的多组织活动管理系统_zcode/` | 业务工程：`frontend/` 与 `backend/`，账号、组织、活动、任务、物资、附件及报名的阶段实现 |
 | `生成脚本/` | 图示生成与当前文档检查工具 |
 | `历史参考/` | 原始 Word、旧原型和修订前压缩快照；仅明确追溯历史时读取，不用于默认开发上下文 |
 
 业务工程位于 `基于Vue3的多组织活动管理系统_zcode/`，其下 `frontend/`、`backend/` 按实际功能建立目录。P0.1 最小工程已建立并验证联通；尚无部署服务。正式名称以本文件标题为准。
 
-根目录使用一套本地 Git 仓库，已存在阶段提交；本次审核代码基准为 `842a223`。[.gitignore](.gitignore)排除依赖、构建、缓存和本机敏感配置；[.editorconfig](.editorconfig)统一文本格式。源码、锁文件、图示成果和正式文档保留；现有目录分类无需搬动，历史参考不加入默认开发上下文。
+根目录使用一套本地 Git 仓库，已存在阶段提交；本次审核代码基准为 `7aa7fce`。[.gitignore](.gitignore)排除依赖、构建、缓存和本机敏感配置；[.editorconfig](.editorconfig)统一文本格式。源码、锁文件、图示成果和正式文档保留；现有目录分类无需搬动，历史参考不加入默认开发上下文。
 
 ## 下一步开发入口
 
@@ -45,7 +45,7 @@
 
 ## 正式工程运行与检查
 
-前置：Node v24.16.0、JDK 21（Temurin 21.0.11）、MySQL 8.4.9（本机 `C:\Program Files\MySQL\MySQL Server 8.4\`）。开发数据库为独立数据目录实例（仅监听 127.0.0.1:3306，`activity_dev`/`activity_test` 两库，root 空密码仅限本机回环）。**本地凭据文件为 `backend/config/application-local.yml`（仓库外目录，不入库不进构建包；示例见 `backend/src/main/resources/application-local.example.yml`）**，后端经 `spring.config.additional-location=optional:file:./config/` 加载；测试侧为 `backend/src/test/resources/application-local.yml`（示例同目录 `application-local.example.yml`），且 `ActivityTestBase` 强制测试连接 `activity_test`。
+前置：Node v24.16.0、JDK 21（Temurin 21.0.11）、MySQL 8.4.9（本机 `C:\Program Files\MySQL\MySQL Server 8.4\`）。开发数据库为独立数据目录实例（仅监听 127.0.0.1:3306，`activity_dev`/`activity_test` 两库，root 空密码仅限本机回环）。**本地凭据文件为 `backend/config/application-local.yml`（主资源目录之外，不入库不进构建包；示例见 `backend/src/main/resources/application-local.example.yml`）**，后端经 `spring.config.additional-location=optional:file:./config/` 加载；测试侧为 `backend/src/test/resources/application-local.yml`（示例同目录 `application-local.example.yml`），且 `ActivityTestBase` 强制测试连接 `activity_test`。
 
 ```powershell
 # 启动 MySQL 开发实例（数据目录在 C:\Users\MsRain\AppData\Local\activity-mysql-dev\）
@@ -67,7 +67,7 @@ npm run build      # 类型检查 + 产物构建
 
 浏览器打开 <http://127.0.0.1:5174>，未登录进入登录页，登录后进入账号及组织目录；`GET /api/health` 提供只读健康状态。注册、恢复和 CSRF 入口允许匿名访问，写请求仍需 CSRF，组织接口逐请求鉴权。锁定版本：Spring Boot 3.5.16、MyBatis Starter 3.0.4、Flyway 11.7.2、MySQL Connector/J 9.7.0、Vue 3.5.42、Element Plus 2.14.5、Vite 7.3.6。
 
-审核 R08 已修复：主资源构建排除 `application-local.yml`，凭据经仓库外 `config/` 目录或环境变量注入；分发前可用 `jar tf target/activity-0.0.1-SNAPSHOT.jar | findstr application-local` 复核（应只见无凭据的 example 文件）。测试连接由 `ActivityTestBase` 强制指向 `activity_test`，无需人工确认 URL。
+审核 R08 已修复：主资源构建排除 `application-local.yml`，凭据经不入库的外置 `config/` 目录或环境变量注入；分发前可用 `jar tf target/activity-0.0.1-SNAPSHOT.jar | findstr application-local` 复核（应只见无凭据的 example 文件）。测试连接由 `ActivityTestBase` 强制指向 `activity_test`，无需人工确认 URL。
 
 ## 查看 UI 演示
 
