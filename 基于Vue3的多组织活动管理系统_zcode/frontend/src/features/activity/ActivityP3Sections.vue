@@ -8,7 +8,7 @@ import { fetchMembers } from '../organization/api'
 import {
   advanceTask, changeMaterialStatus, createMaterial, createTask, deleteAttachment,
   downloadAttachment, fetchAttachments, fetchMaterials, fetchTasks, resolveMyMemberId,
-  transitionTask, updateMaterial, updateTask,
+  transitionTask, updateMaterial, updateTask, uploadAttachment,
 } from './p3'
 import type { AttachmentItem, MaterialItem, TaskItem } from './p3'
 
@@ -47,6 +47,14 @@ const materialForm = ref({ name: '', quantity: 1, unit: '个', assigneeMemberId:
 
 const uploadInput = ref<HTMLInputElement>()
 const uploading = ref(false)
+
+// S10：任务资料弹窗（任务承担者也可上传本人任务的资料）
+const taskAttachmentVisible = ref(false)
+const taskAttachmentTarget = ref<TaskItem | null>(null)
+const taskAttachments = ref<AttachmentItem[]>([])
+const taskAttachmentLoading = ref(false)
+const taskUploading = ref(false)
+const taskUploadInput = ref<HTMLInputElement>()
 
 const statusLabel: Record<string, string> = {
   PENDING: '待处理', IN_PROGRESS: '进行中', COMPLETED: '已完成', CANCELLED: '已取消',
@@ -340,6 +348,66 @@ function download(attachment: AttachmentItem) {
   downloadAttachment(orgId.value, activityId.value, attachment.attachmentId, attachment.originalName)
 }
 
+async function openTaskAttachments(task: TaskItem) {
+  taskAttachmentTarget.value = task
+  taskAttachmentVisible.value = true
+  await loadTaskAttachments()
+}
+
+async function loadTaskAttachments(): Promise<void> {
+  const task = taskAttachmentTarget.value
+  if (!task || !orgId.value || !activityId.value) {
+    return
+  }
+  taskAttachmentLoading.value = true
+  await guard(async () => {
+    taskAttachments.value = await fetchAttachments(orgId.value, activityId.value,
+      { kind: 'task', taskId: task.taskId })
+  })
+  taskAttachmentLoading.value = false
+}
+
+function triggerTaskUpload() {
+  taskUploadInput.value?.click()
+}
+
+async function onTaskFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  const task = taskAttachmentTarget.value
+  if (!file || !task) {
+    return
+  }
+  taskUploading.value = true
+  await guard(async () => {
+    await uploadAttachment(orgId.value, activityId.value, file, { kind: 'task', taskId: task.taskId })
+    await loadTaskAttachments()
+    await loadAll()
+  })
+  taskUploading.value = false
+  input.value = ''
+}
+
+function confirmDeleteTaskAttachment(attachment: AttachmentItem) {
+  const task = taskAttachmentTarget.value
+  if (!task) {
+    return
+  }
+  acting.value = attachment.attachmentId
+  void ElMessageBox.confirm(`确定删除「${attachment.originalName}」？`, '删除任务资料', {
+    confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+  })
+    .then(() => guard(async () => {
+      await deleteAttachment(orgId.value, activityId.value, attachment.attachmentId)
+      await loadTaskAttachments()
+      await loadAll()
+    }))
+    .catch(() => undefined)
+    .finally(() => {
+      acting.value = ''
+    })
+}
+
 defineExpose({ reload: loadAll })
 </script>
 
@@ -415,6 +483,12 @@ defineExpose({ reload: loadAll })
           min-width="220"
         >
           <template #default="{ row }">
+            <ElButton
+              size="small"
+              @click="openTaskAttachments(row as TaskItem)"
+            >
+              资料
+            </ElButton>
             <template v-if="canManage">
               <ElButton
                 v-if="row.status !== 'COMPLETED' && row.status !== 'CANCELLED' && !frozen"
@@ -650,6 +724,91 @@ defineExpose({ reload: loadAll })
         </template>
       </ElTable>
     </section>
+
+    <ElDialog
+      v-model="taskAttachmentVisible"
+      :title="`任务资料：${taskAttachmentTarget?.title ?? ''}`"
+      width="var(--ui-dialog-width)"
+    >
+      <div class="p3-block__head">
+        <span class="p3-note">任务承担者可以上传与删除本人任务的资料。</span>
+        <ElButton
+          size="small"
+          type="primary"
+          plain
+          :loading="taskUploading"
+          :disabled="frozen"
+          @click="triggerTaskUpload"
+        >
+          上传资料
+        </ElButton>
+        <input
+          ref="taskUploadInput"
+          type="file"
+          class="p3-upload-input"
+          accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.docx,.xlsx,.pptx,.zip"
+          @change="onTaskFileChange"
+        >
+      </div>
+      <ElTable
+        v-loading="taskAttachmentLoading"
+        :data="taskAttachments"
+      >
+        <ElTableColumn
+          prop="originalName"
+          label="文件名"
+          min-width="160"
+        />
+        <ElTableColumn
+          label="大小"
+          min-width="90"
+        >
+          <template #default="{ row }">
+            {{ Math.max(1, Math.round(row.sizeBytes / 1024)) }} KB
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="上传者"
+          min-width="110"
+        >
+          <template #default="{ row }">
+            {{ row.uploaderUsername }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="操作"
+          min-width="140"
+        >
+          <template #default="{ row }">
+            <ElButton
+              size="small"
+              @click="download(row as AttachmentItem)"
+            >
+              下载
+            </ElButton>
+            <ElButton
+              v-if="canManage || row.uploaderUsername === session.account?.username"
+              size="small"
+              type="danger"
+              plain
+              :loading="acting === row.attachmentId"
+              :disabled="frozen"
+              @click="confirmDeleteTaskAttachment(row as AttachmentItem)"
+            >
+              删除
+            </ElButton>
+          </template>
+        </ElTableColumn>
+        <template #empty>
+          <span class="p3-note">该任务暂无资料。</span>
+        </template>
+      </ElTable>
+      <template #footer>
+        <ElButton @click="taskAttachmentVisible = false">
+          关闭
+        </ElButton>
+      </template>
+    </ElDialog>
 
     <ElDialog
       v-model="taskDialogVisible"

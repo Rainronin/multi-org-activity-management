@@ -57,6 +57,89 @@ class AttachmentTransactionTest extends FlowTestSupport {
             .andReturn();
     }
 
+    /** S10：任务资料上传（同一套校验与落盘／登记流程，归属改为任务）。 */
+    private MvcResult uploadForTask(TestSession actor, Long orgId, Long activityId, String taskId,
+        String name, String contentType, byte[] content, int expectedStatus) throws Exception {
+        return mockMvc.perform(multipart("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/" + taskId + "/attachments")
+                .file(new MockMultipartFile("file", name, contentType, content))
+                .with(csrf()).session(actor.session()))
+            .andExpect(status().is(expectedStatus))
+            .andReturn();
+    }
+
+    private String createTask(TestSession actor, Long orgId, Long activityId, Long assigneeMemberId)
+        throws Exception {
+        MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/tasks")
+                .with(csrf()).session(actor.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(("{\"title\":\"任务资料核对\",\"assigneeMemberId\":%d}").formatted(assigneeMemberId)))
+            .andExpect(status().isCreated())
+            .andReturn();
+        return readField(created, "$.taskId");
+    }
+
+    @Test
+    void taskAttachmentsAreScopedAndPermissionChecked() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession assignee = registerAndLogin();
+        TestSession outsider = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, assignee, orgId);
+        inviteAndAccept(owner, outsider, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-04-01T14:00:00+08:00");
+        String taskId = createTask(owner, orgId, activityId, memberIdOf(orgId, assignee.username()));
+        String otherTaskId = createTask(owner, orgId, activityId, memberIdOf(orgId, owner.username()));
+
+        // 任务承担者可以上传任务资料，用途与归属正确
+        MvcResult uploaded = uploadForTask(assignee, orgId, activityId, taskId, "现场照片.png", "image/png", PNG, 201);
+        assertThat(readField(uploaded, "$.purpose")).isEqualTo("TASK_ATTACHMENT");
+        assertThat(readField(uploaded, "$.taskId")).isEqualTo(taskId);
+        String attachmentId = readField(uploaded, "$.attachmentId");
+
+        // 非承担者的普通成员不能上传到该任务
+        uploadForTask(outsider, orgId, activityId, taskId, "越权.png", "image/png", PNG, 403);
+
+        // 任务资料不出现在活动资料列表，只出现在该任务下
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/attachments")
+                .session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(0));
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/" + taskId + "/attachments").session(assignee.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.items[0].attachmentId").value(attachmentId));
+        // 归属不同任务的资料互不可见
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/" + otherTaskId + "/attachments").session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(0));
+
+        // 任务资料可以下载；不存在的任务返回 404
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/attachments/" + attachmentId + "/download").session(owner.session()))
+            .andExpect(status().isOk());
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/999999/attachments").session(owner.session()))
+            .andExpect(status().isNotFound());
+
+        // 承担者可以删除自己上传的任务资料；无关成员的删除被拒
+        mockMvc.perform(delete("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/attachments/" + attachmentId)
+                .with(csrf()).session(outsider.session()))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(delete("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/attachments/" + attachmentId)
+                .with(csrf()).session(assignee.session()))
+            .andExpect(status().isNoContent());
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId
+                + "/tasks/" + taskId + "/attachments").session(assignee.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(0));
+    }
+
     @Test
     void contentSniffingRejectsDisguisedFiles() throws Exception {
         TestSession owner = registerAndLogin();

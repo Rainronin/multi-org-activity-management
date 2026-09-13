@@ -37,7 +37,7 @@ public class AttachmentController {
     }
 
     public record AttachmentResponse(
-        String attachmentId, String activityId, String originalName, String contentType,
+        String attachmentId, String activityId, String taskId, String originalName, String contentType,
         long sizeBytes, String uploaderUsername, String purpose, java.time.OffsetDateTime createdAt) {
     }
 
@@ -45,7 +45,7 @@ public class AttachmentController {
     }
 
     private AttachmentResponse toResponse(AttachmentService.AttachmentItem item) {
-        return new AttachmentResponse(String.valueOf(item.attachmentId()), item.activityId(),
+        return new AttachmentResponse(String.valueOf(item.attachmentId()), item.activityId(), item.taskId(),
             item.originalName(), item.contentType(), item.sizeBytes(), item.uploaderUsername(),
             item.purpose(), item.createdAt());
     }
@@ -60,15 +60,34 @@ public class AttachmentController {
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
         @RequestParam("file") MultipartFile file) {
+        return uploadFor(principal, orgId, activityId, AttachmentService.ACTIVITY_DOC, file);
+    }
+
+    /** S10：任务资料上传；权限为组织负责人、活动负责人或该任务承担者。 */
+    @PostMapping("/api/organizations/{orgId}/activities/{activityId}/tasks/{taskId}/attachments")
+    public ResponseEntity<AttachmentResponse> uploadForTask(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @PathVariable("taskId") Long taskId,
+        @RequestParam("file") MultipartFile file) {
+        return uploadFor(principal, orgId, activityId,
+            attachmentService.taskOwner(orgId, activityId, taskId), file);
+    }
+
+    private ResponseEntity<AttachmentResponse> uploadFor(
+        AccountUserDetails principal, Long orgId, Long activityId,
+        AttachmentService.AttachmentOwner owner, MultipartFile file) {
         if (file != null && file.getSize() > maxSizeBytes) {
             throw new com.example.activity.common.ApiException(HttpStatus.BAD_REQUEST,
                 "ATTACHMENT_INVALID", "文件过大", "单个文件不超过 20MB。");
         }
         AttachmentService.StagedFile staged =
-            attachmentService.stage(principal.getAccountId(), orgId, activityId, file);
+            attachmentService.stage(principal.getAccountId(), orgId, activityId, owner, file);
         try {
             return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
-                .body(toResponse(attachmentService.register(principal.getAccountId(), orgId, activityId, staged)));
+                .body(toResponse(attachmentService.register(
+                    principal.getAccountId(), orgId, activityId, owner, staged)));
         } catch (RuntimeException ex) {
             attachmentService.cleanupIfUnreferenced(staged);
             throw ex;
@@ -82,6 +101,19 @@ public class AttachmentController {
         @PathVariable("activityId") Long activityId) {
         List<AttachmentResponse> items = attachmentService.list(principal.getAccountId(), orgId, activityId)
             .stream().map(this::toResponse).toList();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new AttachmentsResponse(items));
+    }
+
+    /** S10：按任务列出资料。 */
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/tasks/{taskId}/attachments")
+    public ResponseEntity<AttachmentsResponse> listByTask(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @PathVariable("taskId") Long taskId) {
+        List<AttachmentResponse> items =
+            attachmentService.listByTask(principal.getAccountId(), orgId, activityId, taskId)
+                .stream().map(this::toResponse).toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new AttachmentsResponse(items));
     }
 

@@ -6,6 +6,7 @@ import com.example.activity.modules.activity.Activity;
 import com.example.activity.modules.activity.ActivityMapper;
 import com.example.activity.modules.organization.OrganizationMember;
 import com.example.activity.modules.organization.OrganizationMemberMapper;
+import com.example.activity.modules.task.Task;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -49,6 +50,7 @@ public class AttachmentService {
     private final AuditService auditService;
     private final com.example.activity.modules.account.AccountMapper accountMapper;
     private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
+    private final com.example.activity.modules.task.TaskMapper taskMapper;
     private final Path storageDir;
     private final Path tempDir;
 
@@ -59,6 +61,7 @@ public class AttachmentService {
         AuditService auditService,
         com.example.activity.modules.account.AccountMapper accountMapper,
         com.example.activity.modules.organization.OrganizationMapper organizationMapper,
+        com.example.activity.modules.task.TaskMapper taskMapper,
         @Value("${app.upload.dir:./uploads}") String storageDir) {
         this.attachmentMapper = attachmentMapper;
         this.activityMapper = activityMapper;
@@ -66,16 +69,61 @@ public class AttachmentService {
         this.auditService = auditService;
         this.accountMapper = accountMapper;
         this.organizationMapper = organizationMapper;
+        this.taskMapper = taskMapper;
         this.storageDir = Path.of(storageDir).toAbsolutePath().normalize();
         this.tempDir = this.storageDir.resolve("tmp");
     }
 
     public record AttachmentItem(
-        Long attachmentId, String activityId, String originalName, String contentType,
+        Long attachmentId, String activityId, String taskId, String originalName, String contentType,
         long sizeBytes, Long uploadedBy, String uploaderUsername, String purpose, OffsetDateTime createdAt) {
     }
 
     private record Context(OrganizationMember actor, Activity activity, boolean canManage) {
+    }
+
+    /**
+     * 附件归属对象（后端架构 6.1：只能关联一个合法业务对象）。
+     * 活动级资料用 {@code ofActivity}，任务资料用 {@code ofTask}（此时 Task 必须属于该活动）。
+     */
+    public sealed interface AttachmentOwner {
+        String purpose();
+
+        record OfActivity() implements AttachmentOwner {
+            @Override
+            public String purpose() {
+                return Attachment.PURPOSE_ACTIVITY_DOC;
+            }
+        }
+
+        record OfTask(Task task) implements AttachmentOwner {
+            @Override
+            public String purpose() {
+                return Attachment.PURPOSE_TASK_ATTACHMENT;
+            }
+        }
+    }
+
+    public static final AttachmentOwner ACTIVITY_DOC = new AttachmentOwner.OfActivity();
+
+    /** 解析任务资料归属：任务必须存在且属于该活动，否则 404。 */
+    public AttachmentOwner taskOwner(Long orgId, Long activityId, Long taskId) {
+        return new AttachmentOwner.OfTask(requireTask(orgId, activityId, taskId));
+    }
+
+    private Long taskIdOf(AttachmentOwner owner) {
+        return owner instanceof AttachmentOwner.OfTask ofTask ? ofTask.task().getId() : null;
+    }
+
+    private AttachmentOwner ownerOf(Attachment attachment) {
+        if (attachment.getTaskId() == null) {
+            return ACTIVITY_DOC;
+        }
+        Task task = taskMapper.findById(attachment.getTaskId());
+        if (task == null) {
+            throw notFound();
+        }
+        return new AttachmentOwner.OfTask(task);
     }
 
     /** 粗粒度检查：只验证有效成员与活动归属，不做锁（锁在登记事务内）。 */
@@ -104,17 +152,24 @@ public class AttachmentService {
         return attachmentMapper.listActiveByActivity(activityId).stream().map(this::toItem).toList();
     }
 
+    /** S10：任务资料列表；任务归属与活动可见性先校验，权限与活动级资料一致。 */
+    public List<AttachmentItem> listByTask(Long accountId, Long orgId, Long activityId, Long taskId) {
+        requireContext(accountId, orgId, activityId);
+        requireTask(orgId, activityId, taskId);
+        return attachmentMapper.listActiveByTask(activityId, taskId).stream().map(this::toItem).toList();
+    }
+
     /**
      * 上传（第二步）：在短事务内锁内复检权限后登记归属并写审计。
      * 与 {@link #stage} 分开，确保 @Transactional 经过 Spring 代理（避免同类自调用失效，后端架构 5.1）。
      * 登记失败时由调用方清理本次生成且未被引用的文件。
+     * S10：任务资料要求操作者是组织负责人、活动负责人或该任务承担者（后端架构 6.1）。
      */
     @Transactional
-    public AttachmentItem register(Long accountId, Long orgId, Long activityId, StagedFile staged) {
+    public AttachmentItem register(
+        Long accountId, Long orgId, Long activityId, AttachmentOwner owner, StagedFile staged) {
         Context locked = requireLockedContext(accountId, orgId, activityId);
-        if (!locked.canManage()) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以上传活动资料。");
-        }
+        requireUploadPermission(locked, owner);
         // 调整期待确认期间筹备数据只读（S07-A），附件同属筹备数据
         if (locked.activity().isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
@@ -127,7 +182,8 @@ public class AttachmentService {
         Attachment attachment = new Attachment();
         attachment.setOrgId(orgId);
         attachment.setActivityId(activityId);
-        attachment.setPurpose(staged.purpose());
+        attachment.setTaskId(taskIdOf(owner));
+        attachment.setPurpose(owner.purpose());
         attachment.setStoredName(staged.storedName());
         attachment.setOriginalName(staged.originalName());
         attachment.setContentType(staged.contentType());
@@ -135,8 +191,23 @@ public class AttachmentService {
         attachment.setUploadedBy(accountId);
         attachmentMapper.insert(attachment);
         auditService.record(accountId, "ACTIVITY", "ATTACHMENT_UPLOADED", "attachment:" + attachment.getId(),
-            null, Map.of("activityId", activityId, "size", staged.sizeBytes(), "purpose", staged.purpose()));
+            null, Map.of("activityId", activityId, "size", staged.sizeBytes(), "purpose", owner.purpose()));
         return toItem(attachmentMapper.findActiveById(attachment.getId()));
+    }
+
+    /** 上传权限：活动级资料限管理者；任务资料额外允许该任务承担者。 */
+    private void requireUploadPermission(Context locked, AttachmentOwner owner) {
+        if (locked.canManage()) {
+            return;
+        }
+        boolean taskAssignee = owner instanceof AttachmentOwner.OfTask ofTask
+            && ofTask.task().getAssigneeMemberId().equals(locked.actor().getId());
+        if (!taskAssignee) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
+                owner instanceof AttachmentOwner.OfTask
+                    ? "仅组织负责人、活动负责人或该任务承担者可以上传任务资料。"
+                    : "仅组织负责人或活动负责人可以上传活动资料。");
+        }
     }
 
     /** 上传（第一步）的返回：已通过校验并落盘的文件元数据与持久路径。 */
@@ -148,12 +219,12 @@ public class AttachmentService {
     /**
      * 上传（第一步）：粗粒度鉴权 → 受控临时目录完成大小／类型／内容检查 → 生成不可变存储名并移入持久目录。
      * 不含数据库事务；登记由 {@link #register} 在短事务内完成（后端架构 6.1）。
+     * S10：任务资料允许该任务承担者上传。
      */
-    public StagedFile stage(Long accountId, Long orgId, Long activityId, MultipartFile file) {
+    public StagedFile stage(
+        Long accountId, Long orgId, Long activityId, AttachmentOwner owner, MultipartFile file) {
         Context coarse = requireContext(accountId, orgId, activityId);
-        if (!coarse.canManage()) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以上传活动资料。");
-        }
+        requireUploadPermission(coarse, owner);
         ValidatedFile validated = validateAndStage(file);
         Path target = storageDir.resolve(validated.storedName()).normalize();
         if (!target.startsWith(storageDir)) {
@@ -166,7 +237,7 @@ public class AttachmentService {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "服务内部错误", "文件保存失败，请稍后重试。");
         }
         return new StagedFile(validated.originalName(), validated.contentType(), validated.storedName(),
-            validated.sizeBytes(), validated.purpose(), target);
+            validated.sizeBytes(), owner.purpose(), target);
     }
 
     /** 登记失败后的补偿：只清理本次生成且确认没有数据库引用的文件（后端架构 6.1）。 */
@@ -198,8 +269,9 @@ public class AttachmentService {
     }
 
     /**
-     * 删除：组织负责人、活动负责人或上传者。先在事务中标记不可访问，提交后再清理磁盘
-     * （后端架构 6.1）；磁盘清理失败保留重试依据，不恢复业务可见性。
+     * 删除：组织负责人、活动负责人或上传者；任务资料另允许该任务承担者。
+     * 先在事务中标记不可访问，提交后再清理磁盘（后端架构 6.1）；
+     * 磁盘清理失败保留重试依据，不恢复业务可见性。
      */
     @Transactional
     public void delete(Long accountId, Long orgId, Long activityId, Long attachmentId) {
@@ -209,8 +281,14 @@ public class AttachmentService {
             || !attachment.getActivityId().equals(activityId)) {
             throw notFound();
         }
-        if (!ctx.canManage() && !attachment.getUploadedBy().equals(accountId)) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人、活动负责人或上传者可以删除附件。");
+        boolean isUploader = attachment.getUploadedBy().equals(accountId);
+        if (!ctx.canManage() && !isUploader) {
+            AttachmentOwner owner = ownerOf(attachment);
+            boolean taskAssignee = owner instanceof AttachmentOwner.OfTask ofTask
+                && ofTask.task().getAssigneeMemberId().equals(ctx.actor().getId());
+            if (!taskAssignee) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人、活动负责人、上传者或任务承担者可以删除附件。");
+            }
         }
         if (attachmentMapper.markDeleted(attachmentId) != 1) {
             throw notFound();
@@ -387,9 +465,20 @@ public class AttachmentService {
         return new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "附件不存在或无权访问。");
     }
 
+    /** 任务归属校验：任务必须存在且属于该活动。 */
+    private Task requireTask(Long orgId, Long activityId, Long taskId) {
+        Task task = taskMapper.findById(taskId);
+        if (task == null || !task.getOrgId().equals(orgId) || !task.getActivityId().equals(activityId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "任务不存在或无权访问。");
+        }
+        return task;
+    }
+
     private AttachmentItem toItem(Attachment attachment) {
         return new AttachmentItem(
-            attachment.getId(), String.valueOf(attachment.getActivityId()), attachment.getOriginalName(),
+            attachment.getId(), String.valueOf(attachment.getActivityId()),
+            attachment.getTaskId() == null ? null : String.valueOf(attachment.getTaskId()),
+            attachment.getOriginalName(),
             attachment.getContentType(), attachment.getSizeBytes(), attachment.getUploadedBy(),
             accountMapper.findUsernameById(attachment.getUploadedBy()), attachment.getPurpose(),
             attachment.getCreatedAt());

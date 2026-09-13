@@ -3,14 +3,14 @@
 <mapper namespace="com.example.activity.modules.attachment.AttachmentMapper">
 
     <sql id="baseColumns">
-        id, org_id, activity_id, purpose, stored_name, original_name, content_type,
+        id, org_id, activity_id, task_id, purpose, stored_name, original_name, content_type,
         size_bytes, uploaded_by, created_at, deleted_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO attachment (org_id, activity_id, purpose, stored_name, original_name,
+        INSERT INTO attachment (org_id, activity_id, task_id, purpose, stored_name, original_name,
                                 content_type, size_bytes, uploaded_by)
-        VALUES (#{orgId}, #{activityId}, #{purpose}, #{storedName}, #{originalName},
+        VALUES (#{orgId}, #{activityId}, #{taskId}, #{purpose}, #{storedName}, #{originalName},
                 #{contentType}, #{sizeBytes}, #{uploadedBy})
     </insert>
 
@@ -21,10 +21,22 @@
           AND deleted_at IS NULL
     </select>
 
+    <!-- 活动级资料：不含任务资料（任务资料按其任务单独列出） -->
     <select id="listActiveByActivity" resultType="com.example.activity.modules.attachment.Attachment">
         SELECT <include refid="baseColumns" />
         FROM attachment
         WHERE activity_id = #{activityId}
+          AND task_id IS NULL
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <!-- S10：按任务列资料 -->
+    <select id="listActiveByTask" resultType="com.example.activity.modules.attachment.Attachment">
+        SELECT <include refid="baseColumns" />
+        FROM attachment
+        WHERE activity_id = #{activityId}
+          AND task_id = #{taskId}
           AND deleted_at IS NULL
         ORDER BY created_at DESC, id DESC
     </select>

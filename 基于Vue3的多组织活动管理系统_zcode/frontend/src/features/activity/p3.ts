@@ -136,19 +136,31 @@ export async function changeMaterialStatus(
 export interface AttachmentItem {
   attachmentId: string
   activityId: string
+  /** S10：任务资料时指向任务；活动资料为 null。 */
+  taskId: string | null
   originalName: string
   contentType: string
   sizeBytes: number
   uploaderUsername: string
-  /** S09：用途；当前为 ACTIVITY_DOC，任务附件与票据随对应模块接入。 */
+  /** S09：用途；ACTIVITY_DOC 或 TASK_ATTACHMENT。 */
   purpose: string
   createdAt: string
 }
 
-export async function fetchAttachments(orgId: string, activityId: string): Promise<AttachmentItem[]> {
-  const response = await request<{ items: AttachmentItem[] }>(
-    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments`,
-  )
+/** 附件作用域：活动资料或某条任务的资料（S10，后端架构 6.1 二选一）。 */
+export type AttachmentScope = { kind: 'activity' } | { kind: 'task'; taskId: string }
+
+function attachmentsUrl(orgId: string, activityId: string, scope: AttachmentScope): string {
+  const root = `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}`
+  return scope.kind === 'task'
+    ? `${root}/tasks/${encodeURIComponent(scope.taskId)}/attachments`
+    : `${root}/attachments`
+}
+
+export async function fetchAttachments(
+  orgId: string, activityId: string, scope: AttachmentScope = { kind: 'activity' },
+): Promise<AttachmentItem[]> {
+  const response = await request<{ items: AttachmentItem[] }>(attachmentsUrl(orgId, activityId, scope))
   return response.data.items
 }
 
@@ -165,14 +177,14 @@ export async function resolveMyMemberId(orgId: string, username: string): Promis
 }
 
 export async function uploadAttachment(
-  orgId: string, activityId: string, file: File,
+  orgId: string, activityId: string, file: File, scope: AttachmentScope = { kind: 'activity' },
 ): Promise<void> {
   const csrfResp = await request<{ token: string; headerName: string }>('/api/auth/csrf')
   const form = new FormData()
   form.append('file', file)
   // 走统一 fetch 入口并带 CSRF 头（与 ActivityAttachments 约定一致）
   await request(
-    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments`,
+    attachmentsUrl(orgId, activityId, scope),
     { method: 'POST', form, headers: { [csrfResp.data.headerName]: csrfResp.data.token }, response: 'none' },
   )
 }

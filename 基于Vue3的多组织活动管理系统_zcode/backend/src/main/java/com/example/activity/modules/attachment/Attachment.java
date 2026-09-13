@@ -6,10 +6,13 @@ import java.time.OffsetDateTime;
 public class Attachment {
 
     public static final String PURPOSE_ACTIVITY_DOC = "ACTIVITY_DOC";
+    public static final String PURPOSE_TASK_ATTACHMENT = "TASK_ATTACHMENT";
 
     private Long id;
     private Long orgId;
     private Long activityId;
+    /** S10：任务资料时指向任务；活动资料为 null（二选一，后端架构 6.1）。 */
+    private Long taskId;
     private String purpose;
     private String storedName;
     private String originalName;
@@ -41,6 +44,14 @@ public class Attachment {
 
     public void setActivityId(Long activityId) {
         this.activityId = activityId;
+    }
+
+    public Long getTaskId() {
+        return taskId;
+    }
+
+    public void setTaskId(Long taskId) {
+        this.taskId = taskId;
     }
 
     public String getPurpose() {

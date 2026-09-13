@@ -124,14 +124,32 @@ try {
     advance: await member.page.getByRole('button', { name: '标记完成' }).count(),
   }
 
+  // S10 任务资料：承担者打开任务资料弹窗，上传真实 PNG，活动资料列表不受影响
+  const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4])
+  await member.page.getByRole('button', { name: '资料' }).first().click()
+  await member.page.waitForSelector('text=任务资料：', { timeout: 10000 })
+  const dialog = member.page.locator('.el-dialog').filter({ hasText: '任务资料：' })
+  const uploadPath = fileURLToPath(new URL('../验证截图/S10-任务资料.png', import.meta.url))
+  await dialog.locator('input[type=file]').setInputFiles({
+    name: '现场照片.png', mimeType: 'image/png', buffer: pngBytes,
+  })
+  await member.page.waitForSelector('text=现场照片.png', { timeout: 10000 })
+  await member.page.screenshot({ path: uploadPath, fullPage: true })
+  const taskAttachmentRows = await dialog.locator('tbody tr').count()
+  // 活动级资料表只包含活动资料：任务资料不得串入（应为空态 1 行）
+  const activityAttachmentRows = await member.page
+    .locator('.p3-block', { has: member.page.getByRole('heading', { name: '资料', exact: true }) })
+    .locator('tbody tr').count()
+
   console.log(JSON.stringify({
     check: 'S10 P3 页面操作与角色按钮',
     ownerChecks,
     memberChecks,
     reassignSaved: reassigned.includes('改派后的任务标题'),
     staleVersionSave: { status: stale.status(), code: staleBody.code },
+    taskAttachment: { uploadedRows: taskAttachmentRows, activitySectionRows: activityAttachmentRows },
     browserErrors: [...owner.errors, ...member.errors],
-    screenshots: shots.map((p) => p.split('验证截图').pop()),
+    screenshots: [...shots, uploadPath].map((p) => p.split('验证截图').pop()),
   }))
 } finally {
   await browser.close()
