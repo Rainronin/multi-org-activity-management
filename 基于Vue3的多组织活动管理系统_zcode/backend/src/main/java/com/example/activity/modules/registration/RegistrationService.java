@@ -54,14 +54,26 @@ public class RegistrationService {
     /** 报名/重新申请：活动须已确认且在有效窗口内；重复申请幂等或更新主记录。 */
     @Transactional
     public RegistrationItem apply(Long accountId, Long activityId, String displayName, String note) {
-        // 活动行排他锁：报名与名额串行化（后端架构 5.2）
         Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "活动不存在或不在报名阶段。");
+        if (activity == null) {
+            throw notFound();
         }
+        // 组织行排他锁：报名与名额串行化（后端架构 5.2）
         organizationMapper.lockOrganization(activity.getOrgId());
-
-        // 检查报名开关与时间窗
+        // S02：锁内重读活动当前状态，防止锁等待期间状态变化
+        activity = activityMapper.findById(activityId);
+        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
+            throw notFound();
+        }
+        // S02：INTERNAL 活动仅限本组织有效成员报名
+        if ("INTERNAL".equals(activity.getRegistrationScope())) {
+            OrganizationMember member = memberMapper.findActive(activity.getOrgId(), accountId);
+            if (member == null) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权报名",
+                    "该活动仅限本组织成员报名。");
+            }
+        }
+        // S02：报名开关与时间窗校验
         if (activity.getRegistrationStart() != null && OffsetDateTime.now().isBefore(activity.getRegistrationStart())) {
             throw invalid("报名尚未开始。");
         }
@@ -96,14 +108,15 @@ public class RegistrationService {
         return toItem(registration, resolveUsername(accountId));
     }
 
-    /** 审核通过：活动行排他锁内校验名额（并发批准只有一人能获得最后一个名额）。 */
+    /** 审核通过：活动须已确认；组织负责人或活动负责人可审核（S04）。 */
     @Transactional
     public RegistrationItem approve(Long approverAccountId, Long orgId, Long activityId, Long registrationId) {
         organizationMapper.lockOrganization(orgId);
-        requireOrgOwner(orgId, approverAccountId);
+        requireReviewPermission(orgId, activityId, approverAccountId);
         Activity activity = activityMapper.findById(activityId);
-        if (activity == null || !activity.getOrgId().equals(orgId)) {
-            throw notFound();
+        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
+            // S04：活动非已确认状态（草稿/待确认/撤回）不可批准
+            throw conflict();
         }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
@@ -126,7 +139,11 @@ public class RegistrationService {
     @Transactional
     public RegistrationItem reject(Long approverAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
         organizationMapper.lockOrganization(orgId);
-        requireOrgOwner(orgId, approverAccountId);
+        requireReviewPermission(orgId, activityId, approverAccountId);
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !"APPROVED".equals(activity.getStatus())) {
+            throw conflict();
+        }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
             throw conflict();
@@ -139,20 +156,28 @@ public class RegistrationService {
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
     }
 
-    /** 本人取消：有效报名或待审可取消（释放名额一次）；重复取消幂等。 */
+    /** 本人取消：待审或有效报名可取消（释放名额一次）；重复取消幂等不重复变更。 */
     @Transactional
     public void cancelSelf(Long accountId, Long activityId) {
-        organizationMapper.lockOrganization(activityMapper.findById(activityId).getOrgId());
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null) {
+            throw notFound();
+        }
+        organizationMapper.lockOrganization(activity.getOrgId());
         Registration registration = registrationMapper.findByActivityAndAccount(activityId, accountId);
         if (registration == null) {
             throw notFound();
         }
-        if (Registration.STATUS_PENDING.equals(registration.getStatus())) {
-            registrationMapper.review(registration.getId(), Registration.STATUS_CANCELLED_SELF, accountId, "本人取消");
-        } else if (Registration.STATUS_APPROVED.equals(registration.getStatus())) {
-            registrationMapper.review(registration.getId(), Registration.STATUS_CANCELLED_SELF, accountId, "本人取消");
+        boolean cancellable = Registration.STATUS_PENDING.equals(registration.getStatus())
+            || Registration.STATUS_APPROVED.equals(registration.getStatus());
+        if (!cancellable) {
+            // 已取消/已驳回的重复取消：幂等不重复变更
+            return;
         }
-        // 已取消/已驳回的重复取消：幂等不重复变更
+        // S03：专用取消条件更新（支持 PENDING 和 APPROVED 源状态），检查行数
+        if (registrationMapper.cancel(registration.getId(), Registration.STATUS_CANCELLED_SELF, accountId, "本人取消") != 1) {
+            return; // 并发下已被处理，幂等返回
+        }
         auditService.record(accountId, "REGISTRATION", "REGISTRATION_CANCELLED_SELF",
             "registration:" + registration.getId(), null, java.util.Map.of("activityId", activityId));
     }
@@ -167,7 +192,10 @@ public class RegistrationService {
             && !Registration.STATUS_APPROVED.equals(registration.getStatus())) {
             throw conflict();
         }
-        registrationMapper.review(registrationId, Registration.STATUS_CANCELLED_ORG, actorAccountId, reason);
+        // S03：专用取消条件更新（支持 PENDING 和 APPROVED 源状态），检查行数
+        if (registrationMapper.cancel(registrationId, Registration.STATUS_CANCELLED_ORG, actorAccountId, reason) != 1) {
+            throw conflict();
+        }
         auditService.record(actorAccountId, "REGISTRATION", "REGISTRATION_CANCELLED_ORG",
             "registration:" + registrationId, reason, java.util.Map.of("activityId", activityId));
         return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
@@ -176,6 +204,11 @@ public class RegistrationService {
     public RegistrationPage listForReview(
         Long accountId, Long orgId, Long activityId, int page, int pageSize, String status) {
         requireOrgOwner(orgId, accountId);
+        // S01：校验活动确实属于该组织，防止跨组织读取报名名单
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)) {
+            throw notFound();
+        }
         String filter = status == null || status.isBlank() ? null : status;
         long total = registrationMapper.countByActivity(activityId, filter);
         List<RegistrationItem> items = registrationMapper
@@ -196,6 +229,24 @@ public class RegistrationService {
         var member = memberMapper.findActive(orgId, accountId);
         if (member == null || !OrganizationMember.ROLE_OWNER.equals(member.getRole())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以执行此操作。");
+        }
+    }
+
+    /** S04：审核权限 = 组织负责人或本活动负责人。 */
+    private void requireReviewPermission(Long orgId, Long activityId, Long accountId) {
+        var member = memberMapper.findActive(orgId, accountId);
+        if (member == null) {
+            throw notFound();
+        }
+        Activity activity = activityMapper.findById(activityId);
+        if (activity == null || !activity.getOrgId().equals(orgId)) {
+            throw notFound();
+        }
+        boolean isOrgOwner = OrganizationMember.ROLE_OWNER.equals(member.getRole());
+        boolean isActivityOwner = member.getId().equals(activity.getOwnerMemberId());
+        if (!isOrgOwner && !isActivityOwner) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
+                "仅组织负责人或活动负责人可以审核报名。");
         }
     }
 

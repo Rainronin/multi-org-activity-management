@@ -74,21 +74,20 @@ public class ActivityService {
 
     /** 列表：组织负责人见全部草稿；普通成员当前返回空集（发布可见性随 P2.2 扩展）。 */
     public ActivityPage list(Long accountId, Long orgId, int page, int pageSize, String query, String status) {
-        requireActiveMember(orgId, accountId);
-        String effectiveStatus = status == null || status.isBlank() ? Activity.STATUS_DRAFT : status;
-        long total;
-        List<ActivityItem> items;
-        if (isOwner(orgId, accountId)) {
-            total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus);
-            items = activityMapper
-                .listPage(orgId, blankToNull(query), effectiveStatus, (long) (page - 1) * pageSize, pageSize)
-                .stream()
-                .map(this::toItem)
-                .toList();
-        } else {
-            total = 0;
-            items = List.of();
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        boolean orgOwner = OrganizationMember.ROLE_OWNER.equals(actor.getRole());
+        String effectiveStatus = status == null || status.isBlank()
+            ? (orgOwner ? Activity.STATUS_DRAFT : Activity.STATUS_APPROVED) : status;
+        // S06：普通成员只能看到已确认活动
+        if (!orgOwner && Activity.STATUS_DRAFT.equals(effectiveStatus)) {
+            return new ActivityPage(List.of(), page, pageSize, 0);
         }
+        long total = activityMapper.countPage(orgId, blankToNull(query), effectiveStatus);
+        List<ActivityItem> items = activityMapper
+            .listPage(orgId, blankToNull(query), effectiveStatus, (long) (page - 1) * pageSize, pageSize)
+            .stream()
+            .map(this::toItem)
+            .toList();
         return new ActivityPage(items, page, pageSize, total);
     }
 
@@ -223,10 +222,14 @@ public class ActivityService {
         return member != null && OrganizationMember.ROLE_OWNER.equals(member.getRole());
     }
 
+    /** S06：统一可见性——草稿/待确认仅 OWNER 与活动负责人；已确认对全部有效成员可见。 */
     private boolean canSeeDraft(Activity activity, Long accountId) {
         OrganizationMember member = memberMapper.findActive(activity.getOrgId(), accountId);
         if (member == null) {
             return false;
+        }
+        if (!"DRAFT".equals(activity.getStatus()) && !"PENDING_APPROVAL".equals(activity.getStatus())) {
+            return true;
         }
         return OrganizationMember.ROLE_OWNER.equals(member.getRole())
             || member.getId().equals(activity.getOwnerMemberId());

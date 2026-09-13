@@ -80,4 +80,14 @@
         WHERE id = #{id}
     </update>
 
+    <update id="cancel">
+        UPDATE registration
+        SET status = #{toStatus},
+            decided_by = #{decidedBy},
+            decided_at = CURRENT_TIMESTAMP(6),
+            cancel_reason = #{reason}
+        WHERE id = #{id}
+          AND status IN ('PENDING', 'APPROVED')
+    </update>
+
 </mapper>

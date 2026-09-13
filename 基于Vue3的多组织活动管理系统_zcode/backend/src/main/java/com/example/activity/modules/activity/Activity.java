@@ -7,6 +7,8 @@ import java.time.OffsetDateTime;
 public class Activity {
 
     public static final String STATUS_DRAFT = "DRAFT";
+    public static final String STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
+    public static final String STATUS_APPROVED = "APPROVED";
     public static final String SCOPE_INTERNAL = "INTERNAL";
     public static final String SCOPE_PUBLIC = "PUBLIC";
 

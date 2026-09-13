@@ -35,6 +35,13 @@ public interface RegistrationMapper {
     int countApproved(@Param("activityId") Long activityId);
 
     /** 重新申请：更新主记录状态并保留历史（不新增行）。 */
+    /** 取消：支持从 PENDING 或 APPROVED 源状态取消（S03）。 */
+    int cancel(
+        @Param("id") Long id,
+        @Param("toStatus") String toStatus,
+        @Param("decidedBy") Long decidedBy,
+        @Param("reason") String reason);
+
     int reapply(
         @Param("id") Long id,
         @Param("displayName") String displayName,

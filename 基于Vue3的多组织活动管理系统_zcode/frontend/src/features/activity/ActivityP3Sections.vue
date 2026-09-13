@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElSelect, ElTable, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import {
@@ -285,7 +285,7 @@ defineExpose({ reload: loadAll })
               v-if="row.status === 'COMPLETED'"
               size="small"
               :loading="acting === row.taskId"
-              @click="reopenTask(row)"
+              @click="reopenTask(row as TaskItem)"
             >
               重新打开
             </ElButton>
@@ -356,7 +356,7 @@ defineExpose({ reload: loadAll })
               v-if="row.status === 'PENDING'"
               size="small"
               :loading="acting === row.materialId"
-              @click="setMaterialStatus(row, 'IN_PROGRESS')"
+              @click="setMaterialStatus(row as MaterialItem, 'IN_PROGRESS')"
             >
               开始准备
             </ElButton>
@@ -366,7 +366,7 @@ defineExpose({ reload: loadAll })
               type="primary"
               plain
               :loading="acting === row.materialId"
-              @click="setMaterialStatus(row, 'READY')"
+              @click="setMaterialStatus(row as MaterialItem, 'READY')"
             >
               标记就绪
             </ElButton>
@@ -376,7 +376,7 @@ defineExpose({ reload: loadAll })
               type="danger"
               plain
               :loading="acting === row.materialId"
-              @click="setMaterialStatus(row, 'CANCELLED')"
+              @click="setMaterialStatus(row as MaterialItem, 'CANCELLED')"
             >
               取消
             </ElButton>
@@ -440,7 +440,7 @@ defineExpose({ reload: loadAll })
           <template #default="{ row }">
             <ElButton
               size="small"
-              @click="download(row)"
+              @click="download(row as AttachmentItem)"
             >
               下载
             </ElButton>
@@ -449,7 +449,7 @@ defineExpose({ reload: loadAll })
               type="danger"
               plain
               :loading="acting === row.attachmentId"
-              @click="confirmDeleteAttachment(row)"
+              @click="confirmDeleteAttachment(row as AttachmentItem)"
             >
               删除
             </ElButton>

@@ -129,13 +129,20 @@ public class TaskService {
         return toItem(taskMapper.findById(taskId));
     }
 
-    /** 普通成员推进本人任务：待处理→进行中→已完成。 */
+    /** 普通成员推进本人任务：仅限 待处理→进行中→已完成（S05），不可取消或重开。 */
     @Transactional
     public TaskItem advanceOwn(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
         Context ctx = requireVisibleContext(accountId, orgId, activityId);
         Task task = requireTask(orgId, activityId, taskId);
         if (!task.getAssigneeMemberId().equals(ctx.actor().getId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "只能推进本人任务。");
+        }
+        // S05：普通成员仅可按流程推进，不可取消或重新打开
+        boolean allowed = (Task.STATUS_PENDING.equals(task.getStatus()) && Task.STATUS_IN_PROGRESS.equals(toStatus))
+            || (Task.STATUS_IN_PROGRESS.equals(task.getStatus()) && Task.STATUS_COMPLETED.equals(toStatus));
+        if (!allowed) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_STATE_CONFLICT", "任务状态不允许此操作",
+                "普通成员只能将任务从待处理推进为进行中，再从进行中标记为已完成。");
         }
         transition(task, toStatus, accountId);
         return toItem(taskMapper.findById(taskId));
