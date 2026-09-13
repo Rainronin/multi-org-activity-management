@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.ai.AiConfigMapper">
+
+    <sql id="baseColumns">
+        id, org_id, protocol, endpoint, model, auth_scheme, api_key_cipher, api_key_key_id,
+        max_output_tokens, output_limit_field, timeout_seconds, enabled, connection_revision,
+        tested_revision, tested_at, tested_by, operator_account_id, version, created_at, updated_at
+    </sql>
+
+    <select id="findByOrgId" resultType="com.example.activity.modules.ai.AiConfig">
+        SELECT <include refid="baseColumns" />
+        FROM ai_config
+        WHERE org_id = #{orgId}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO ai_config (org_id, protocol, endpoint, model, auth_scheme, api_key_cipher, api_key_key_id,
+                               max_output_tokens, output_limit_field, timeout_seconds, enabled,
+                               connection_revision, operator_account_id, version)
+        VALUES (#{orgId}, #{protocol}, #{endpoint}, #{model}, #{authScheme}, #{apiKeyCipher}, #{apiKeyKeyId},
+                #{maxOutputTokens}, #{outputLimitField}, #{timeoutSeconds}, #{enabled},
+                #{connectionRevision}, #{operatorAccountId}, 0)
+    </insert>
+
+    <!--
+      保存：带期望版本。密钥只在服务层判定为替换时写入，未传表示保留原密文（apiKeyCipher 为 null 时不动该列）。
+      connection_revision 是否递增由服务层判定；递增时同时清空旧测试状态（revision 变化使旧测试失效）。
+    -->
+    <update id="update">
+        UPDATE ai_config
+        SET protocol = #{protocol},
+            endpoint = #{endpoint},
+            model = #{model},
+            auth_scheme = #{authScheme},
+            <if test="apiKeyCipher != null">
+                api_key_cipher = #{apiKeyCipher},
+                api_key_key_id = #{apiKeyKeyId},
+            </if>
+            max_output_tokens = #{maxOutputTokens},
+            output_limit_field = #{outputLimitField},
+            timeout_seconds = #{timeoutSeconds},
+            enabled = #{enabled},
+            connection_revision = #{connectionRevision},
+            tested_revision = #{testedRevision},
+            tested_at = #{testedAt},
+            tested_by = #{testedBy},
+            operator_account_id = #{operatorAccountId},
+            version = version + 1
+        WHERE org_id = #{orgId}
+          AND version = #{version}
+    </update>
+
+    <!-- 测试：只标记仍与测试时相同配置版本的记录，过期响应不写 -->
+    <update id="markTested">
+        UPDATE ai_config
+        SET tested_revision = #{revision},
+            tested_at = CURRENT_TIMESTAMP(6),
+            tested_by = #{testedBy}
+        WHERE org_id = #{orgId}
+          AND connection_revision = #{revision}
+    </update>
+
+    <!-- 启用／停用：只改启用状态，不递增 connection_revision（单纯启用不使刚通过的测试失效） -->
+    <update id="setEnabled">
+        UPDATE ai_config
+        SET enabled = #{enabled},
+            operator_account_id = #{operatorAccountId},
+            version = version + 1
+        WHERE org_id = #{orgId}
+          AND version = #{expectedVersion}
+    </update>
+
+    <update id="clearKey">
+        UPDATE ai_config
+        SET api_key_cipher = NULL,
+            api_key_key_id = NULL,
+            enabled = 0,
+            connection_revision = #{revision},
+            tested_revision = NULL,
+            tested_at = NULL,
+            tested_by = NULL,
+            operator_account_id = #{operatorAccountId},
+            version = version + 1
+        WHERE org_id = #{orgId}
+          AND version = #{expectedVersion}
+    </update>
+</mapper>

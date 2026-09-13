@@ -732,6 +732,285 @@ public class ActivityService {
             record.getRecordedBy(), resolveUsername(record.getRecordedBy()), record.getCreatedAt());
     }
 
+    // ---------- P8：AI 文本辅助的授权输入投影 ----------
+
+    /** 生成类型标识（与 modules/ai 生成记录的类型一致）。 */
+    public static final String AI_TYPE_SUMMARY = "ACTIVITY_SUMMARY";
+    public static final String AI_TYPE_PLAN = "ACTIVITY_PLAN";
+
+    /** 单段自由文本进入模型前的截断长度与列表条数上限：只发送本次生成必需的信息。 */
+    private static final int AI_TEXT_LIMIT = 1500;
+    private static final int AI_LIST_LIMIT = 15;
+
+    /**
+     * AI 授权输入投影（P8.2／P8.3）：来源摘要、事实文本、缺失项与输入范围说明。
+     *
+     * <p>来源摘要由本侧计算，排除总结自身、AI 记录、通知与访问日志，避免保存草稿就让来源失效；
+     * 查询生成记录时用同一投影重算，即可判断生成后来源是否变化。
+     */
+    public record AiInput(String sourceHash, String facts, List<String> missing, List<String> scope) {
+    }
+
+    /**
+     * 生成前的授权校验与输入投影：短事务内取锁并重读身份与活动，未发布活动不可见即 404，
+     * 非负责人 403，状态不符 409；方案生成只在草稿期，总结生成只在复盘期或取消遗留处理期。
+     */
+    @Transactional
+    public AiInput aiInput(Long accountId, Long orgId, Long activityId, String type) {
+        organizationMapper.lockOrganizationShared(orgId);
+        OrganizationMember actor = requireActiveMember(orgId, accountId);
+        activityMapper.lockActivityShared(activityId);
+        if (AI_TYPE_SUMMARY.equals(type)) {
+            Activity activity = requireManageable(orgId, activityId, actor, accountId);
+            if (!Activity.STATUS_REVIEWING.equals(activity.getStatus())
+                && !Activity.STATUS_CANCELLED.equals(activity.getStatus())) {
+                throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不能生成总结",
+                    "总结生成在复盘期或取消后处理遗留事项时使用。");
+            }
+            return summaryAiInput(activity);
+        }
+        if (AI_TYPE_PLAN.equals(type)) {
+            Activity activity = requireById(orgId, activityId);
+            if (!canSeeDraft(activity, accountId)) {
+                throw notFound();
+            }
+            boolean allowed = OrganizationMember.ROLE_OWNER.equals(actor.getRole())
+                || actor.getId().equals(activity.getOwnerMemberId());
+            if (!allowed) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以使用方案生成。");
+            }
+            if (!Activity.STATUS_DRAFT.equals(activity.getStatus())) {
+                throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不能生成方案",
+                    "方案生成只在活动草稿的编辑期可用；保存方案仍走原有草稿流程。");
+            }
+            return planAiInput(activity);
+        }
+        throw fieldError("type", "未知的生成类型");
+    }
+
+    /** 总结输入：活动事实、已确认方案、任务、报名、执行记录、已确认费用与反馈，缺失项显式列出。 */
+    private AiInput summaryAiInput(Activity activity) {
+        Long activityId = activity.getId();
+        StringBuilder facts = new StringBuilder();
+        List<String> missing = new java.util.ArrayList<>();
+        List<String> scope = new java.util.ArrayList<>();
+        facts.append("活动名称：").append(activity.getName()).append('\n');
+        facts.append("活动说明／目标：").append(
+            activity.getDescription() == null || activity.getDescription().isBlank() ? "未记录" : activity.getDescription())
+            .append('\n');
+        if (activity.getDescription() == null || activity.getDescription().isBlank()) {
+            missing.add("活动目标（活动说明为空）");
+        }
+        facts.append("活动状态：").append(statusLabel(activity.getStatus())).append('\n');
+        facts.append("活动时间：").append(activity.getStartTime()).append(" 至 ").append(activity.getEndTime()).append('\n');
+        facts.append("活动地点：").append(
+            activity.getLocation() == null || activity.getLocation().isBlank() ? "未记录" : activity.getLocation())
+            .append('\n');
+        if (activity.getLocation() == null || activity.getLocation().isBlank()) {
+            missing.add("活动地点");
+        }
+        facts.append("活动预算：").append(money(activity.getBudget())).append(" 元\n");
+        facts.append("报名范围：")
+            .append(Activity.SCOPE_PUBLIC.equals(activity.getRegistrationScope()) ? "公开报名" : "仅组织成员")
+            .append("；名额：").append(activity.getCapacity() == null ? "未设置" : activity.getCapacity()).append('\n');
+        String proposal = activity.getProposal();
+        facts.append("已确认方案：").append(
+            proposal == null || proposal.isBlank() ? "未记录" : truncate(proposal, AI_TEXT_LIMIT)).append('\n');
+        if (proposal == null || proposal.isBlank()) {
+            missing.add("已确认方案");
+        }
+        scope.add("活动基本信息（名称、说明、状态、时间、地点、预算、报名范围与名额）");
+        scope.add(proposal == null || proposal.isBlank() ? "已确认方案：未记录" : "已确认方案全文");
+
+        appendTasks(facts, missing, scope, activityId);
+        appendRegistrations(facts, missing, scope, activityId);
+        appendExecutionRecords(facts, missing, scope, activityId);
+        appendExpenses(facts, missing, scope, activityId);
+        appendFeedback(facts, missing, scope, activityId);
+        facts.append("\n以上人数、金额与比例均为系统按当前记录计算的结果。\n");
+        scope.add("已排除：参与者联系方式、账号凭据、通知与访问日志、AI 生成记录自身");
+        String hash = sha256(summarySourceHash(activity) + "|projection:" + facts);
+        return new AiInput(hash, facts.toString(), List.copyOf(missing), List.copyOf(scope));
+    }
+
+    /** 方案输入：活动已有记录作为事实参考，条件由调用方在请求中给出。 */
+    private AiInput planAiInput(Activity activity) {
+        StringBuilder facts = new StringBuilder();
+        List<String> missing = new java.util.ArrayList<>();
+        facts.append("活动名称：").append(activity.getName()).append('\n');
+        facts.append("活动说明／目标：").append(
+            activity.getDescription() == null || activity.getDescription().isBlank() ? "未记录" : activity.getDescription())
+            .append('\n');
+        if (activity.getDescription() == null || activity.getDescription().isBlank()) {
+            missing.add("活动目标（活动说明为空）");
+        }
+        facts.append("活动时间：").append(activity.getStartTime()).append(" 至 ").append(activity.getEndTime()).append('\n');
+        facts.append("活动地点：").append(
+            activity.getLocation() == null || activity.getLocation().isBlank() ? "未记录" : activity.getLocation())
+            .append('\n');
+        facts.append("活动预算：").append(money(activity.getBudget())).append(" 元\n");
+        facts.append("报名范围：")
+            .append(Activity.SCOPE_PUBLIC.equals(activity.getRegistrationScope()) ? "公开报名" : "仅组织成员")
+            .append("；名额：").append(activity.getCapacity() == null ? "未设置" : activity.getCapacity()).append('\n');
+        String proposal = activity.getProposal();
+        facts.append("当前方案草稿：").append(
+            proposal == null || proposal.isBlank() ? "未填写" : truncate(proposal, AI_TEXT_LIMIT)).append('\n');
+        List<String> scope = new java.util.ArrayList<>();
+        scope.add("活动基本信息（名称、说明、时间、地点、预算、报名范围与名额）");
+        scope.add(proposal == null || proposal.isBlank() ? "当前方案草稿：未填写" : "当前方案草稿全文");
+        scope.add("本次填写的生成条件（主题、目标、对象、人数、预算、时间地点、补充限制）");
+        scope.add("已排除：参与者联系方式、账号凭据、通知与访问日志、任务与经费明细");
+        String hash = sha256("plan|" + facts);
+        return new AiInput(hash, facts.toString(), List.copyOf(missing), List.copyOf(scope));
+    }
+
+    private void appendTasks(StringBuilder facts, List<String> missing, List<String> scope, Long activityId) {
+        List<com.example.activity.modules.task.Task> tasks = new java.util.ArrayList<>(taskMapper.listByActivity(activityId));
+        tasks.sort(java.util.Comparator.comparing(com.example.activity.modules.task.Task::getId));
+        long open = tasks.stream().filter(t -> !com.example.activity.modules.task.Task.STATUS_COMPLETED.equals(t.getStatus())
+            && !com.example.activity.modules.task.Task.STATUS_CANCELLED.equals(t.getStatus())).count();
+        if (tasks.isEmpty()) {
+            missing.add("任务记录");
+        } else {
+            facts.append("任务汇总：共 ").append(tasks.size()).append(" 个（未开始 ")
+                .append(tasks.stream().filter(t -> com.example.activity.modules.task.Task.STATUS_PENDING.equals(t.getStatus())).count())
+                .append("、进行中 ")
+                .append(tasks.stream().filter(t -> com.example.activity.modules.task.Task.STATUS_IN_PROGRESS.equals(t.getStatus())).count())
+                .append("、已完成 ")
+                .append(tasks.stream().filter(t -> com.example.activity.modules.task.Task.STATUS_COMPLETED.equals(t.getStatus())).count())
+                .append("、已取消 ")
+                .append(tasks.stream().filter(t -> com.example.activity.modules.task.Task.STATUS_CANCELLED.equals(t.getStatus())).count())
+                .append("），未完成 ")
+                .append(open).append(" 个\n任务明细（最多 ").append(AI_LIST_LIMIT).append(" 条）：\n");
+            OffsetDateTime now = OffsetDateTime.now();
+            for (com.example.activity.modules.task.Task task : tasks.subList(0, Math.min(AI_LIST_LIMIT, tasks.size()))) {
+                facts.append("- ").append(truncate(task.getTitle(), 80)).append('：').append(taskStatusLabel(task.getStatus()));
+                if (task.getDueAt() != null) {
+                    facts.append("，截止 ").append(task.getDueAt());
+                    if (!com.example.activity.modules.task.Task.STATUS_COMPLETED.equals(task.getStatus())
+                        && !com.example.activity.modules.task.Task.STATUS_CANCELLED.equals(task.getStatus())
+                        && task.getDueAt().isBefore(now)) {
+                        facts.append("（已逾期）");
+                    }
+                }
+                facts.append('\n');
+            }
+            scope.add("任务 " + tasks.size() + " 个（标题、状态、截止时间与逾期情况）");
+        }
+    }
+
+    private void appendRegistrations(StringBuilder facts, List<String> missing, List<String> scope, Long activityId) {
+        long approved = registrationMapper.countByActivity(activityId, "APPROVED");
+        long pending = registrationMapper.countByActivity(activityId, "PENDING");
+        long rejected = registrationMapper.countByActivity(activityId, "REJECTED");
+        long cancelled = registrationMapper.countByActivity(activityId, "CANCELLED_SELF")
+            + registrationMapper.countByActivity(activityId, "CANCELLED_ORG");
+        long total = approved + pending + rejected + cancelled;
+        if (total == 0) {
+            missing.add("报名记录");
+            return;
+        }
+        facts.append("报名汇总（系统统计）：已通过 ").append(approved).append("、待审核 ").append(pending)
+            .append("、已驳回 ").append(rejected).append("、已取消 ").append(cancelled).append('\n');
+        scope.add("报名汇总（已通过／待审核／已驳回／已取消人数，不含参与者姓名与联系方式）");
+    }
+
+    private void appendExecutionRecords(
+        StringBuilder facts, List<String> missing, List<String> scope, Long activityId) {
+        List<ExecutionRecord> records = new java.util.ArrayList<>(executionRecordMapper.listByActivity(activityId));
+        if (records.isEmpty()) {
+            missing.add("执行记录");
+            return;
+        }
+        facts.append("执行记录（最多 ").append(AI_LIST_LIMIT).append(" 条）：\n");
+        for (ExecutionRecord record : records.subList(0, Math.min(AI_LIST_LIMIT, records.size()))) {
+            facts.append("- ").append(record.getCategory()).append('：')
+                .append(truncate(record.getContent(), 200)).append('\n');
+        }
+        scope.add("执行记录 " + records.size() + " 条（类型与内容）");
+    }
+
+    private void appendExpenses(StringBuilder facts, List<String> missing, List<String> scope, Long activityId) {
+        String approved = money(expenseMapper.sumAmountByStatus(
+            activityId, com.example.activity.modules.expense.Expense.STATUS_APPROVED));
+        String pending = money(expenseMapper.sumAmountByStatus(
+            activityId, com.example.activity.modules.expense.Expense.STATUS_PENDING));
+        List<com.example.activity.modules.expense.Expense> items = expenseMapper.listByActivity(activityId, null, 0, 200);
+        List<com.example.activity.modules.expense.Expense> confirmed = items.stream()
+            .filter(item -> com.example.activity.modules.expense.Expense.STATUS_APPROVED.equals(item.getStatus()))
+            .sorted(java.util.Comparator.comparing(com.example.activity.modules.expense.Expense::getId))
+            .toList();
+        facts.append("经费（系统统计）：已确认支出 ").append(approved)
+            .append(" 元、待确认 ").append(pending).append(" 元\n");
+        if (confirmed.isEmpty()) {
+            missing.add("已确认费用明细");
+        } else {
+            facts.append("已确认支出明细（最多 ").append(AI_LIST_LIMIT).append(" 条）：\n");
+            for (com.example.activity.modules.expense.Expense item
+                : confirmed.subList(0, Math.min(AI_LIST_LIMIT, confirmed.size()))) {
+                facts.append("- ").append(truncate(item.getPurpose(), 80)).append(' ')
+                    .append(money(item.getAmount())).append(" 元（").append(item.getCategory())
+                    .append("，").append(item.getIncurredOn()).append("）\n");
+            }
+        }
+        scope.add("经费汇总与已确认支出明细（用途、金额、分类与发生日期，不含凭证文件）");
+    }
+
+    private void appendFeedback(StringBuilder facts, List<String> missing, List<String> scope, Long activityId) {
+        com.example.activity.modules.feedback.FeedbackService.FeedbackDigest digest =
+            feedbackService.digest(activityId, 10, 200);
+        if (digest.count() == 0) {
+            missing.add("反馈");
+            facts.append("反馈：暂无反馈\n");
+            return;
+        }
+        facts.append("反馈（系统统计）：").append(digest.count()).append(" 份，平均分 ").append(digest.averageRating())
+            .append('\n');
+        if (!digest.comments().isEmpty()) {
+            facts.append("反馈文字要点：\n");
+            for (String comment : digest.comments()) {
+                facts.append("- ").append(truncate(comment, 200)).append('\n');
+            }
+        }
+        scope.add("反馈 " + digest.count() + " 份（份数、平均分与文字要点，不含反馈人身份）");
+    }
+
+    private static String money(BigDecimal value) {
+        return (value == null ? BigDecimal.ZERO : value)
+            .setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+    }
+
+    private static String truncate(String value, int limit) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= limit ? trimmed : trimmed.substring(0, limit) + "…";
+    }
+
+    private static String statusLabel(String status) {
+        return switch (status) {
+            case Activity.STATUS_DRAFT -> "草稿";
+            case Activity.STATUS_PENDING_APPROVAL -> "待确认";
+            case Activity.STATUS_APPROVED -> "筹备中";
+            case Activity.STATUS_EXECUTING -> "执行中";
+            case Activity.STATUS_REVIEWING -> "复盘中";
+            case Activity.STATUS_ARCHIVED -> "已归档";
+            case Activity.STATUS_CANCELLED -> "已取消";
+            default -> status;
+        };
+    }
+
+    private static String taskStatusLabel(String status) {
+        return switch (status) {
+            case com.example.activity.modules.task.Task.STATUS_PENDING -> "未开始";
+            case com.example.activity.modules.task.Task.STATUS_IN_PROGRESS -> "进行中";
+            case com.example.activity.modules.task.Task.STATUS_COMPLETED -> "已完成";
+            case com.example.activity.modules.task.Task.STATUS_CANCELLED -> "已取消";
+            default -> status;
+        };
+    }
+
     // ---------- 内部：P6 辅助 ----------
 
     private record VisibleContext(OrganizationMember actor, Activity activity) {

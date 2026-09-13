@@ -177,6 +177,33 @@ public class FeedbackService {
             + (average == null ? "-" : average.setScale(2, RoundingMode.HALF_UP).toPlainString());
     }
 
+    /** P8.2：总结输入投影中的反馈要点：份数、平均分与有限条文字，不含反馈人身份。 */
+    public record FeedbackDigest(long count, String averageRating, List<String> comments) {
+    }
+
+    /**
+     * 反馈摘要：调用方已按活动可见性完成鉴权；只返回口径与文字要点，
+     * 输出给模型的文字按条数上限截取，避免把完整反馈送入外部服务。
+     */
+    public FeedbackDigest digest(Long activityId, int maxComments, int maxCharsPerComment) {
+        BigDecimal average = feedbackMapper.averageRating(activityId);
+        List<String> comments = new java.util.ArrayList<>();
+        for (Feedback feedback : feedbackMapper.listByActivity(activityId)) {
+            if (comments.size() >= maxComments) {
+                break;
+            }
+            String comment = feedback.getComment();
+            if (comment == null || comment.isBlank()) {
+                continue;
+            }
+            String trimmed = comment.trim();
+            comments.add(trimmed.length() <= maxCharsPerComment
+                ? trimmed : trimmed.substring(0, maxCharsPerComment) + "…");
+        }
+        return new FeedbackDigest(feedbackMapper.countByActivity(activityId),
+            average == null ? "—" : average.setScale(1, RoundingMode.HALF_UP).toPlainString(), List.copyOf(comments));
+    }
+
     private Activity requireVisibleActivity(Long accountId, Long orgId, Long activityId) {
         Activity activity = activityMapper.findById(activityId);
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);

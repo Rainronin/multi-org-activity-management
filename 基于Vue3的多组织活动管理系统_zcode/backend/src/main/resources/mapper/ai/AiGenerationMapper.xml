@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.activity.modules.ai.AiGenerationMapper">
+
+    <sql id="baseColumns">
+        id, org_id, activity_id, type, operator_account_id, status, request_key, request_fingerprint,
+        source_hash, source_scope, protocol, model, endpoint_host, config_version, connection_revision,
+        output_text, error_code, request_id, adopted_at, adopted_by, created_at, updated_at
+    </sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO ai_generation (org_id, activity_id, type, operator_account_id, status, request_key,
+                                   request_fingerprint, source_hash, source_scope, protocol, model, endpoint_host,
+                                   config_version, connection_revision)
+        VALUES (#{orgId}, #{activityId}, #{type}, #{operatorAccountId}, #{status}, #{requestKey},
+                #{requestFingerprint}, #{sourceHash}, #{sourceScope}, #{protocol}, #{model}, #{endpointHost},
+                #{configVersion}, #{connectionRevision})
+    </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.ai.AiGeneration">
+        SELECT <include refid="baseColumns" />
+        FROM ai_generation
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.ai.AiGeneration">
+        SELECT <include refid="baseColumns" />
+        FROM ai_generation
+        WHERE org_id = #{orgId}
+          AND operator_account_id = #{operatorAccountId}
+          AND request_key = #{requestKey}
+    </select>
+
+    <!-- 结束调用：仅 RUNNING 可结束，重复结束返回 0（进程中断后的核对同样走这里） -->
+    <update id="finish">
+        UPDATE ai_generation
+        SET status = #{status},
+            output_text = #{outputText},
+            error_code = #{errorCode},
+            request_id = COALESCE(#{requestId}, request_id)
+        WHERE id = #{id}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="markAdopted">
+        UPDATE ai_generation
+        SET adopted_at = COALESCE(adopted_at, CURRENT_TIMESTAMP(6)),
+            adopted_by = COALESCE(adopted_by, #{accountId})
+        WHERE id = #{id}
+    </update>
+
+    <!-- 组织调用额度：按持久生成记录统计（含连接测试） -->
+    <select id="countSince" resultType="long">
+        SELECT COUNT(*)
+        FROM ai_generation
+        WHERE org_id = #{orgId}
+          AND created_at &gt;= #{since}
+    </select>
+
+    <update id="failStaleRunning">
+        UPDATE ai_generation
+        SET status = 'FAILED',
+            error_code = #{errorCode}
+        WHERE org_id = #{orgId}
+          AND status = 'RUNNING'
+          AND created_at &lt; #{before}
+    </update>
+
+    <select id="listRecent" resultType="com.example.activity.modules.ai.AiGeneration">
+        SELECT <include refid="baseColumns" />
+        FROM ai_generation
+        WHERE activity_id = #{activityId}
+          AND type = #{type}
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+</mapper>
