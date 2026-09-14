@@ -11,6 +11,8 @@ import {
   ElLoading,
   ElMessageBox,
   ElPagination,
+  ElSkeleton,
+
   ElTable,
   ElTableColumn,
   ElTag,
@@ -433,6 +435,12 @@ async function confirmLeave() {
           </template>
         </ElTableColumn>
         <template #empty>
+          <ElSkeleton
+            v-if="loading"
+            :rows="5"
+            animated
+            data-table-skeleton
+          />
           <span class="members-note">{{ appliedQuery ? '没有匹配的成员。' : '暂无其他成员，可通过邀请添加。' }}</span>
         </template>
       </ElTable>

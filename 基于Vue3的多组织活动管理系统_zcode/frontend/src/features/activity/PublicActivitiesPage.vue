@@ -1,3 +1,4 @@
+/* micro-lift */
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
@@ -280,6 +281,27 @@ function startApply(item: PublicActivityItem): void {
   color: var(--ui-color-selected-text);
   font-size: var(--ui-font-size-small);
   text-decoration: none;
+}
+
+/* 微交互：与工作台同口径的悬停反馈（token 驱动，减少动效下取消） */
+@media (hover: hover) and (pointer: fine) {
+  .public-card {
+    transition: transform var(--ui-motion-base) var(--ui-motion-ease),
+      box-shadow var(--ui-motion-base) var(--ui-motion-ease);
+  }
+
+  .public-card:hover {
+    transform: translateY(calc(var(--ui-motion-lift) * -1));
+    box-shadow: var(--ui-shadow-hover);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-card,
+  .public-card:hover {
+    transition: none;
+    transform: none;
+  }
 }
 
 .public-link:hover {

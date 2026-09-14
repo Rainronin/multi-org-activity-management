@@ -181,6 +181,7 @@ try {
       const nav = document.querySelector('.unified-sidebar')
       return {
         clientWidth: document.documentElement.clientWidth,
+        clientHeight: document.documentElement.clientHeight,
         scrollWidth: document.documentElement.scrollWidth,
         focusTop: focus ? Math.round(focus.getBoundingClientRect().top) : null,
         navWidth: nav ? Math.round(nav.getBoundingClientRect().width) : null,
@@ -196,6 +197,10 @@ try {
     await shotPage.close()
   }
   const mobileFirstScreen = narrowChecks.find((item) => item.width === 390)
+  const narrowFirstScreenOk = narrowChecks.every((item) => item.focusTop !== null
+    && item.focusTop <= item.clientHeight * 0.75)
+  assert.ok(narrowFirstScreenOk,
+    `窄屏首屏可用性未通过：${JSON.stringify(narrowChecks.map((i) => ({ width: i.width, focusTop: i.focusTop, clientHeight: i.clientHeight })))}`)
 
   // ---------- 同视口演示对照（U06）----------
   await mkdir(new URL('../验证截图/UI独立审核/', import.meta.url), { recursive: true })
@@ -293,8 +298,8 @@ try {
     },
     aiTargetedEntry: aiTargets,
     narrowWidths: narrowChecks,
-    mobileFirstScreenOk: Boolean(mobileFirstScreen && mobileFirstScreen.focusTop !== null
-      && mobileFirstScreen.focusTop < mobileFirstScreen.width),
+    mobileFirstScreenOk: narrowFirstScreenOk,
+    mobileFirstScreen,
     demoComparison: {
       demoReachable,
       demoErrors,

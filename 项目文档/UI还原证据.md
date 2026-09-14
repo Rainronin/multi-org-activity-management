@@ -137,8 +137,8 @@ cd .\基于Vue3的多组织活动管理系统_zcode\frontend; npm run typecheck;
 | R01 lint | **已修**：`frontend/scripts/check-ui.mjs` 的规则自检改为 `pick(pattern, label)` 形式，去掉三处未使用绑定（原第 166／168／172 行）；`npm run lint` 通过 | `npm run lint`、`npm run check:ui` 均通过 |
 | R02 AI 定向入口 | **已修**：AI 卡按钮按模式跳转并携带目标页签（总结→`?tab=lifecycle`、方案→`?tab=proposal`），详情页按当前状态与权限校验后选中，不合法时回概览 | 真机：总结入口 `/org/4922/activities/4015?tab=lifecycle` → 选中「执行与复盘」；方案入口 `…/4016?tab=proposal` → 选中「方案」 |
 | R03 登录证据 | **已修**：改用独立匿名 context 访问 `/login`，断言最终路径包含 `/login` 且存在密码输入框后截图 | 核对输出 `shell.loginEvidence`：`url=/login`、`formVisible=true`、页面错误 0 |
-| R04 手机导航 | **未解决**：实测 320／390 宽时导航高 612px、主体首屏顶距 868px（`mobileFirstScreenOk=false`）。两次尝试（窄屏强制折叠、复用同一导航压成横向条）分别无效与引入横向溢出，已回退，未留下回归 | 核对输出 `narrowWidths`、`mobileFirstScreenOk`；需下轮按 tokens.css 断点重做并补 320／768／1024 与短屏验收 |
+| R04 手机导航 | **已修**：导航改为消费 tokens.css 的导航 token，并在 ≤700px 决策块内集中调整（隐藏品牌行与分组标题、图标条、六格单行）；实测 320／390 导航高 612→223px、首屏顶距 868→479px、`mobileFirstScreenOk=true`，四档宽度溢出 0 | 核对输出 `narrowWidths`、`mobileFirstScreenOk`；截图 `验证截图/UI核对-工作台-320.png`、`UI核对-工作台-390.png` |
 | R05 工作台密度 | **已修**：图表与待办同排、明细整行并在下方，口径说明默认收起（一键展开），环图中心显示真实占比 | `WorkbenchSection.vue` 结构调整 + `data-detail-hints-toggle`；截图见 `验证截图/UI核对-工作台-1440.png`（本轮末次运行生成） |
-| U05 其余页面 | **未完成**：成员／组织设置／公开参与页的骨架与微交互仍待统一 | 见第六节第 1 条 |
+| U05 其余页面 | **已完成**：成员管理／活动管理／我的任务三张表首次加载用 `#empty` 槽给 `ElSkeleton`（刷新沿用 `v-loading`），组织设置由文字提示改为骨架，公开活动卡片补悬停上浮（token 驱动、减少动效取消） | `OrgMembersPage.vue`、`ActivitiesPage.vue`、`MyTasksPage.vue`、`AiConfigSection.vue`、`PublicActivitiesPage.vue` |
 
 本轮复查命令与输出：`node .\生成脚本\audit_ui_workbench.mjs`（含 R02 定向入口、R03 匿名登录证据、320／390／768／1024 溢出与首屏顶距实测），前端 typecheck／lint／check:ui／38 项单测通过；后端未改动。

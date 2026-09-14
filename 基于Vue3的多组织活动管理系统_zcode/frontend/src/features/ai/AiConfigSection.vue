@@ -8,6 +8,7 @@ import {
   ElInput,
   ElInputNumber,
   ElMessage,
+  ElSkeleton,
   ElOption,
   ElSelect,
   ElTag,
@@ -209,13 +210,13 @@ defineExpose({ reload: load })
       未配置、停用或调用失败时，方案与总结仍可手工编写。
     </p>
 
-    <p
+    <ElSkeleton
       v-if="loading"
-      class="ai-config__note"
-      aria-live="polite"
-    >
-      正在加载模型配置……
-    </p>
+      :rows="6"
+      animated
+      data-ai-config-skeleton
+      aria-busy="true"
+    />
     <p
       v-else-if="errorText"
       class="ai-config__error"

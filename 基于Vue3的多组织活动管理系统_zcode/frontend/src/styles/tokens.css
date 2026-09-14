@@ -275,14 +275,16 @@
   .workspace, .workspace[data-nav-collapsed="true"], .workspace[data-group-collapsed="true"][data-nav-collapsed="false"] {
     --ui-layout-nav-width: auto;
     --ui-layout-main-offset: 0px;
-    --ui-nav-label-display: block;
+    --ui-nav-label-display: none;
     --ui-nav-group-display: none;
     --ui-nav-meta-display: none;
+    --ui-nav-brand-display: none;
     --ui-nav-toggle-display: none;
     --ui-nav-display: grid;
     --ui-nav-items-display: contents;
-    --ui-nav-columns: repeat(3, minmax(0, 1fr));
+    --ui-nav-columns: repeat(6, minmax(0, 1fr));
     --ui-nav-item-direction: column;
+    --ui-nav-item-justify: center;
     --ui-nav-item-padding: var(--ui-space-2);
     --ui-nav-height: auto;
     --ui-nav-margin: var(--ui-layout-outer-gap);

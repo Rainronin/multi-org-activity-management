@@ -13,6 +13,8 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
+  ElSkeleton,
+
   ElTable,
   ElTableColumn,
   ElTag,
@@ -364,6 +366,12 @@ async function submitCreate() {
           </template>
         </ElTableColumn>
         <template #empty>
+          <ElSkeleton
+            v-if="loading"
+            :rows="5"
+            animated
+            data-table-skeleton
+          />
           <span class="activities-note">
             {{ amOwner ? '尚未创建活动。' : '暂无可查看的活动；活动经组织负责人确认发布后会在这里展示。' }}
           </span>

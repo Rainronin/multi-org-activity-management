@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElButton, ElRadioButton, ElRadioGroup, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElButton, ElRadioButton, ElRadioGroup, ElSkeleton, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { advanceTask, fetchMyTasks, type TaskItem } from './p3'
@@ -237,6 +237,12 @@ function priorityLabel(priority: string): string {
           </template>
         </ElTableColumn>
         <template #empty>
+          <ElSkeleton
+            v-if="loading"
+            :rows="4"
+            animated
+            data-table-skeleton
+          />
           <span class="my-tasks__note">暂无分配给你的未完成任务。</span>
         </template>
       </ElTable>

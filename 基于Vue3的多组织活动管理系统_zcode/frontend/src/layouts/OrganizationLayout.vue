@@ -378,6 +378,8 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
 }
 
 .u-brand-row {
+  display: var(--ui-nav-brand-display);
+  align-items: center;
   padding: var(--ui-space-2) 0;
 }
 
@@ -444,6 +446,7 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
 }
 
 .u-eyebrow {
+  display: var(--ui-nav-meta-display);
   color: var(--ui-color-on-dark-muted);
   font-size: var(--ui-font-size-caption);
   margin-bottom: var(--ui-space-2);
@@ -502,9 +505,9 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   gap: var(--ui-space-2);
 }
 
-/* 分组标题：小号字距标题，折叠后随标签一起隐藏 */
+/* 分组标题：小号字距标题；是否显示由导航 token 决定（窄屏为 none） */
 .unified-sidebar .u-group {
-  display: flex;
+  display: var(--ui-nav-group-display);
   align-items: center;
   justify-content: space-between;
   width: 100%;
@@ -526,8 +529,9 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   transform: rotate(180deg);
 }
 
+/* 子项容器：宽屏为块级列表，窄屏 token 变为 contents，让各项进入导航网格 */
 .unified-sidebar .u-subitems {
-  display: flex;
+  display: var(--ui-nav-items-display);
   flex-direction: column;
   gap: var(--ui-space-1);
 }
@@ -537,9 +541,10 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   display: flex;
   flex-direction: var(--ui-nav-item-direction);
   align-items: center;
+  justify-content: var(--ui-nav-item-justify, flex-start);
   gap: var(--ui-space-2);
   min-height: var(--ui-control-min-touch);
-  padding: var(--ui-space-2) var(--ui-space-3);
+  padding: var(--ui-nav-item-padding);
   border-radius: var(--ui-radius-control);
   white-space: nowrap;
   color: var(--ui-color-on-dark-muted);
