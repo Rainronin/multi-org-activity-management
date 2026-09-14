@@ -1,7 +1,7 @@
 ﻿// 工作台视觉还原核对：登录演示账号，同视口截图并断言新结构存在、数值与接口一致、无横向溢出。
 // 只读页面 + 一次登录，不写业务数据。
 import assert from 'node:assert/strict'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '../UI演示/node_modules/playwright/index.mjs'
 
@@ -65,6 +65,124 @@ try {
   const mobileShot = fileURLToPath(new URL('../验证截图/UI核对-工作台-390.png', import.meta.url))
   await mobile.screenshot({ path: mobileShot, fullPage: true })
 
+  // ---------- 活动详情：功能区进入页签，首屏只留状态与关键信息（U03） ----------
+  const activities = await (await ctx.request.get(`/api/organizations/${org.id}/activities?pageSize=50`)).json()
+  const detailTarget = activities.items.find((item) => item.status !== 'DRAFT') ?? activities.items[0]
+  assert.ok(detailTarget, '组织没有可用于详情核对的活动')
+  const detailPage = await ctx.newPage()
+  const detailErrors = []
+  detailPage.on('pageerror', (e) => detailErrors.push(e.message))
+  await detailPage.setViewportSize({ width: 1440, height: 1000 })
+  await detailPage.goto(`/org/${org.id}/activities/${detailTarget.id}`, { waitUntil: 'networkidle' })
+  await detailPage.waitForSelector('.detail-tabs', { timeout: 20000 })
+  await detailPage.waitForTimeout(500)
+  const detail = {
+    status: detailTarget.status,
+    tabLabels: (await detailPage.locator('.detail-tabs .el-tabs__item').allInnerTexts()).map((x) => x.trim()),
+    bodyHeight: await detailPage.evaluate(() => document.body.scrollHeight),
+    statusHintShown: (await detailPage.locator('.detail-status__hint').count()) > 0,
+  }
+  const tabToSwitch = detail.tabLabels.find((label) => label !== '概览')
+  if (tabToSwitch) {
+    await detailPage.locator('.detail-tabs .el-tabs__item', { hasText: tabToSwitch }).first().click()
+    await detailPage.waitForTimeout(600)
+  }
+  const tabSwitched = detail.tabLabels.length > 1
+    ? (await detailPage.locator('.el-tabs__item.is-active').first().innerText()).trim()
+    : '概览'
+  const detailOverflow = await detailPage.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }))
+  const detailShot = fileURLToPath(new URL('../验证截图/UI核对-活动详情-1440.png', import.meta.url))
+  await detailPage.screenshot({ path: detailShot, fullPage: true })
+  assert.equal(detailOverflow.scrollWidth - detailOverflow.clientWidth, 0, '详情页无横向溢出')
+  assert.equal(detailErrors.length, 0, `详情页错误：${detailErrors.join('; ')}`)
+  assert.ok(detail.tabLabels.length >= 3, `详情页页签数量不足：${detail.tabLabels.length}`)
+  assert.ok(detail.statusHintShown, '详情首屏缺少状态与下一步说明')
+
+  // ---------- 侧栏折叠（图标岛）与减少动效 ----------
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
+  await page.waitForSelector('[data-focus-activity]', { timeout: 20000 })
+  const collapseButton = page.getByRole('button', { name: /折叠侧栏|展开侧栏/ }).first()
+  await collapseButton.click()
+  await page.waitForTimeout(500)
+  const collapsedAttr = await page.locator('[data-nav-collapsed]').first().getAttribute('data-nav-collapsed')
+  const navShot = fileURLToPath(new URL('../验证截图/UI核对-侧栏折叠.png', import.meta.url))
+  await page.screenshot({ path: navShot })
+  await collapseButton.click()
+  await page.waitForTimeout(300)
+
+  const reducedPage = await ctx.newPage()
+  await reducedPage.emulateMedia({ reducedMotion: 'reduce' })
+  await reducedPage.setViewportSize({ width: 1440, height: 1000 })
+  await reducedPage.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
+  await reducedPage.waitForSelector('[data-focus-activity]', { timeout: 20000 })
+  const reducedTransition = await reducedPage.locator('.spotlight').first()
+    .evaluate((element) => getComputedStyle(element).transitionDuration)
+
+  const loginPage = await ctx.newPage()
+  await loginPage.setViewportSize({ width: 1440, height: 1000 })
+  await loginPage.goto('/login', { waitUntil: 'networkidle' })
+  await loginPage.waitForTimeout(500)
+  const loginShot = fileURLToPath(new URL('../验证截图/UI核对-登录-1440.png', import.meta.url))
+  await loginPage.screenshot({ path: loginShot })
+
+  // ---------- 同视口演示对照（U06）----------
+  await mkdir(new URL('../验证截图/UI独立审核/', import.meta.url), { recursive: true })
+  const demoContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const demoPage = await demoContext.newPage()
+  const demoErrors = []
+  demoPage.on('pageerror', (e) => demoErrors.push(e.message))
+  let demoReachable = true
+  try {
+    await demoPage.goto('http://127.0.0.1:5173/', { waitUntil: 'networkidle', timeout: 20000 })
+    await demoPage.waitForTimeout(1500)
+    await demoPage.screenshot({
+      path: fileURLToPath(new URL('../验证截图/UI独立审核/演示-工作台-1440.png', import.meta.url)),
+    })
+    await demoPage.goto('http://127.0.0.1:5173/?view=login', { waitUntil: 'networkidle', timeout: 20000 })
+    await demoPage.waitForTimeout(800)
+    await demoPage.screenshot({
+      path: fileURLToPath(new URL('../验证截图/UI独立审核/演示-登录-1440.png', import.meta.url)),
+    })
+  } catch (error) {
+    demoReachable = false
+    demoErrors.push(`演示服务不可达：${error.message}`)
+  }
+  await writeFile(new URL('../验证截图/UI独立审核/对照-正式与演示.html', import.meta.url), `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>UI 对照：正式实现 vs 已确认 Demo（1440×1000 同视口）</title>
+<style>
+  body { font: 14px/1.6 "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; background: #f6f5f2; color: #1a1814; }
+  h1 { font-size: 20px; } h2 { font-size: 16px; margin-top: 32px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  figure { margin: 0; background: #fff; border: 1px solid #e6e4df; border-radius: 10px; padding: 10px; }
+  figcaption { font-size: 12px; color: #6b665e; margin-bottom: 8px; }
+  img { width: 100%; display: block; border-radius: 6px; }
+  .note { background: #fff7f0; border: 1px solid #f0d5c4; border-radius: 10px; padding: 12px 16px; }
+</style></head><body>
+<h1>UI 对照：正式实现 vs 已确认 Demo（同视口 1440×1000）</h1>
+<p class="note">比较布局与层级，不比较姓名与数值：正式实现使用真实业务数据，Demo 使用虚构样例数据。演示服务未启动时右侧参考图缺失。</p>
+<h2>工作台</h2>
+<div class="pair">
+  <figure><figcaption>已确认 Demo（127.0.0.1:5173）</figcaption><img src="演示-工作台-1440.png" alt="演示工作台"></figure>
+  <figure><figcaption>正式实现（127.0.0.1:5174，真实数据）</figcaption><img src="../UI核对-工作台-1440.png" alt="正式工作台"></figure>
+</div>
+<h2>登录</h2>
+<div class="pair">
+  <figure><figcaption>已确认 Demo</figcaption><img src="演示-登录-1440.png" alt="演示登录"></figure>
+  <figure><figcaption>正式实现</figcaption><img src="../UI核对-登录-1440.png" alt="正式登录"></figure>
+</div>
+<h2>其他核对截图</h2>
+<ul>
+  <li>正式活动详情（页签化）：<a href="../UI核对-活动详情-1440.png">UI核对-活动详情-1440.png</a></li>
+  <li>正式侧栏折叠（图标岛）：<a href="../UI核对-侧栏折叠.png">UI核对-侧栏折叠.png</a></li>
+  <li>正式手机宽度（390）：<a href="../UI核对-工作台-390.png">UI核对-工作台-390.png</a></li>
+</ul>
+</body></html>
+`, 'utf8')
+
   const cardValue = (key) => [...workbench.cards, ...workbench.myCards].find((item) => item.key === key)?.value ?? null
   const checks = {
     kpiMatchesApi: {
@@ -91,6 +209,24 @@ try {
     spotlightTitle,
     kpiValues,
     checks,
+    detail: {
+      status: detail.status,
+      tabLabels: detail.tabLabels,
+      switchedTab: tabSwitched,
+      statusHintShown: detail.statusHintShown,
+      bodyHeightPx: detail.bodyHeight,
+      overflowPx: detailOverflow.scrollWidth - detailOverflow.clientWidth,
+      pageErrors: detailErrors,
+    },
+    shell: {
+      navCollapsedAttr: collapsedAttr,
+      reducedMotionTransitionDuration: reducedTransition,
+    },
+    demoComparison: {
+      demoReachable,
+      demoErrors,
+      html: '验证截图/UI独立审核/对照-正式与演示.html',
+    },
     overflowPx: overflow.scrollWidth - overflow.clientWidth,
     mobileOverflowPx: mobileOverflow.scrollWidth - mobileOverflow.clientWidth,
     pageErrors: errors,

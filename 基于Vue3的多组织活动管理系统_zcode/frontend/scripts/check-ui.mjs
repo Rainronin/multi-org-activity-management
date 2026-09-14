@@ -77,7 +77,9 @@ const MOTION_LITERAL = /(?:transition|animation)(?:-duration)?\s*:[^;{}]*\d(?:\.
 const INLINE_STYLE_BYPASS = /(?:^|\s)style="[^"]*(?:px|#[0-9a-fA-F]{3}|rgb)/g
 // 组件数值 props 同样承载设计数值（R06）：width／height 等属性不允许像素字面量，
 // 应绑定 token（width="var(--ui-dialog-width)" 之类不受限）。SVG 绘图尺寸不在检查范围。
-const COMPONENT_SIZE_PROP = /<(?!svg)(?:[A-Za-z][\w.-]*)[^>]*?\s(?::)?(min-width|max-width|width|height|min-height|max-height)="(\d+(?:\.\d+)?(?:px)?)"/g
+// 表格列宽例外（见下方 scanComponentProps 注释）：只有 ElTableColumn 允许数值列宽。
+const TABLE_COLUMN_TAG = /^<ElTable(Column)?\b/
+const COMPONENT_SIZE_PROP = /<(?!svg)[A-Za-z][\w.-]*[^>]*?\s:?(min-width|max-width|width|height|min-height|max-height)="(\d+(?:\.\d+)?(?:px)?)"/g
 
 function scanCss(text, file, offset = 0) {
   for (const match of text.matchAll(COLOR_LITERAL)) {
@@ -113,6 +115,9 @@ for (const file of businessFiles) {
     addProblem(file, lineOf(text, match.index), `内联 style 疑似绕过 token：${match[0].trim().slice(0, 60)}`)
   }
   for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
+    if (TABLE_COLUMN_TAG.test(match[0])) {
+      continue
+    }
     addProblem(file, lineOf(text, match.index), `组件尺寸 props 字面量 ${match[0].slice(-40)}，应绑定 token`)
   }
   if (file.endsWith('.vue')) {
@@ -148,6 +153,50 @@ function checkElementPlusImports(text, file) {
     }
     seen.add(tag)
     addProblem(file, lineOf(text, templateStart + match.index), `模板使用 <${tag}> 但未从 element-plus 显式导入`)
+  }
+}
+
+// ---------- 3. 规则自检（U06）----------
+// 静态检查本身也会写错：这里留一组能命中反例的小检查，规则被改坏时立即失败，
+// 而不是等到正式页面出现像素字面量或漏检才被发现。
+function collect(text) {
+  const found = []
+  for (const match of text.matchAll(COLOR_LITERAL)) found.push(`颜色字面量 ${match[0]}`)
+  for (const match of text.matchAll(SIZE_LITERAL)) found.push(`固定设计尺寸 ${match[0].trim()}`)
+  for (const match of text.matchAll(FONT_FAMILY_LITERAL)) found.push('font-family 字面量')
+  for (const match of text.matchAll(MOTION_LITERAL)) found.push(`动效时长字面量 ${match[0].trim()}`)
+  for (const match of text.matchAll(/!important/g)) found.push('禁止用 !important')
+  for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
+    if (!TABLE_COLUMN_TAG.test(match[0])) found.push('组件尺寸 props 字面量')
+  }
+  for (const match of text.matchAll(INLINE_STYLE_BYPASS)) found.push('内联 style 疑似绕过 token')
+  return found
+}
+
+const SELF_TEST = [
+  { text: '.a { color: #ff6b2c; }', expect: '颜色字面量' },
+  { text: '.a { color: var(--ui-color-accent); }', expect: null },
+  { text: '.a { padding: 12px; }', expect: '固定设计尺寸' },
+  { text: '.a { gap: var(--ui-space-2); }', expect: null },
+  { text: '.a { transition: all .3s; }', expect: '动效时长字面量' },
+  { text: '.a { transition: all var(--ui-motion-fast); }', expect: null },
+  { text: '.a { color: red !important; }', expect: '禁止用 !important' },
+  { text: '.a { font-family: "Microsoft YaHei", sans-serif; }', expect: 'font-family 字面量' },
+  { text: '<ElButton :width="12">确定</ElButton>', expect: '组件尺寸 props 字面量' },
+  { text: '<ElDialog width="480">', expect: '组件尺寸 props 字面量' },
+  { text: '<ElDialog width="var(--ui-dialog-width)">', expect: null },
+  { text: '<ElTableColumn min-width="100" />', expect: null }, // 表格列宽例外：Element Plus 需要数值
+  { text: '<svg viewBox="0 0 32 32"><path d="M8 8h5" /></svg>', expect: null },
+  { text: '<div style="margin-top: 12px">', expect: '内联 style 疑似绕过 token' },
+]
+
+for (const [index, item] of SELF_TEST.entries()) {
+  const found = collect(item.text)
+  const ok = item.expect === null ? found.length === 0 : found.some((message) => message.includes(item.expect))
+  if (!ok) {
+    problems.push(
+      `check:ui 自检用例 ${index + 1} 未按预期：${item.text}（期望 ${item.expect ?? '不命中'}，实际 ${found.join('、') || '不命中'}）`,
+    )
   }
 }
 

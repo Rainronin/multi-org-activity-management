@@ -7,10 +7,20 @@
   <main class="auth-page">
     <section class="auth-brand">
       <div class="auth-brand-name">
-        <span
+        <svg
           class="auth-mark"
+          viewBox="0 0 32 32"
           aria-hidden="true"
-        ><span /><span /><span /></span>
+        >
+          <path
+            fill="currentColor"
+            d="M8 8h5L8 27H3zm9-6h5l-7 25h-5z"
+          />
+          <path
+            fill="var(--ui-color-on-dark-accent)"
+            d="M23 17h5l-3 10h-5z"
+          />
+        </svg>
         多组织活动管理
       </div>
       <div class="auth-story">
@@ -111,19 +121,9 @@
 }
 
 .auth-mark {
-  display: inline-flex;
-  gap: var(--ui-space-1);
-}
-
-.auth-mark span {
-  width: var(--ui-space-2);
-  height: var(--ui-space-2);
-  border-radius: var(--ui-radius-circle);
-  background: var(--ui-color-on-dark);
-}
-
-.auth-mark span:last-child {
-  background: var(--ui-color-on-dark-accent);
+  width: var(--ui-nav-logo-size);
+  height: var(--ui-nav-logo-size);
+  flex-shrink: 0;
 }
 
 .auth-story {

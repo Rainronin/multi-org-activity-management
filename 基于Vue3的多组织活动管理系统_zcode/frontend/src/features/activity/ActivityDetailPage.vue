@@ -8,6 +8,10 @@ import {
   ElFormItem,
   ElInput,
   ElMessageBox,
+  ElSkeleton,
+  ElSkeletonItem,
+  ElTabPane,
+  ElTabs,
   ElTag,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
@@ -48,6 +52,19 @@ const activity = ref<ActivityDetail | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const actionError = ref('')
+
+/** 详情页签：功能按业务域分组，首屏只保留状态、关键信息与主操作。 */
+const activeTab = ref('overview')
+const statusHints: Record<string, string> = {
+  DRAFT: '完善信息与方案后提交确认',
+  PENDING_APPROVAL: '等待组织负责人确认或驳回',
+  APPROVED: '筹备中：分配任务、准备物资、审核报名',
+  EXECUTING: '执行中：记录进展与问题，结束后进入复盘',
+  REVIEWING: '复盘中：收集反馈、编写并确认总结',
+  ARCHIVED: '已归档：只读留档，如需更正先重新打开',
+  CANCELLED: '已取消：处理遗留事项后可归档',
+}
+const statusHint = computed(() => statusHints[activity.value?.status ?? ''] ?? '')
 
 const proposalDraft = ref('')
 const proposalDirty = ref(false)
@@ -383,10 +400,30 @@ async function confirmDelete() {
 
     <p
       v-if="loading"
-      class="detail-note"
-      aria-live="polite"
+      class="detail-skeleton"
+      role="status"
+      aria-busy="true"
+      aria-label="正在加载活动信息"
     >
-      正在加载活动信息……
+      <ElSkeleton
+        animated
+        :rows="0"
+      >
+        <template #template>
+          <ElSkeletonItem
+            variant="h1"
+            class="detail-skeleton__title"
+          />
+          <div class="detail-skeleton__grid">
+            <ElSkeletonItem
+              v-for="n in 4"
+              :key="n"
+              variant="rect"
+            />
+          </div>
+          <ElSkeletonItem variant="rect" />
+        </template>
+      </ElSkeleton>
     </p>
     <section
       v-else-if="activity"
@@ -399,88 +436,162 @@ async function confirmDelete() {
       >
         {{ actionError }}
       </p>
-      <ActivityP3Sections
-        v-if="activity.status !== 'DRAFT'"
-        :org-detail="activity"
-        :org-role="orgRole"
-        @changed="loadActivity"
-      />
 
-      <RegistrationPanel
-        v-if="activity.status === 'APPROVED'"
-        :org-detail="activity"
-        :org-role="orgRole"
-        @changed="loadActivity"
-      />
-
-      <!-- P5：经费区块（组织负责人或本活动负责人可见，权限仍由后端判定） -->
-      <ExpenseSection
-        v-if="activity.status !== 'DRAFT'"
-        :org-detail="activity"
-        :org-role="orgRole"
-        @changed="loadActivity"
-      />
-
-      <!-- P6：执行、取消、执行记录、反馈、总结与归档 -->
-      <ActivityLifecyclePanel
-        v-if="activity.status !== 'DRAFT' && activity.status !== 'PENDING_APPROVAL'"
-        :org-detail="activity"
-        :org-role="orgRole"
-        @changed="loadActivity"
-      />
-
-      <dl class="detail-grid">
-        <div><dt>活动简介</dt><dd>{{ activity.description || '暂无' }}</dd></div>
-        <div><dt>活动负责人</dt><dd>{{ activity.ownerUsername }}</dd></div>
-        <div><dt>开始时间</dt><dd>{{ formatDateTime(activity.startTime) }}</dd></div>
-        <div><dt>结束时间</dt><dd>{{ formatDateTime(activity.endTime) }}</dd></div>
-        <div><dt>地点</dt><dd>{{ activity.location || '待定' }}</dd></div>
+      <!-- 详情首屏：状态与下一步 + 关键信息，功能按业务域进入页签，不再纵向堆叠 -->
+      <section class="detail-status">
         <div>
-          <dt>预算（元）</dt><dd class="detail-amount">
-            {{ activity.budget }}
-          </dd>
+          <p class="detail-status__label">
+            当前状态
+          </p>
+          <strong>{{ statusLabel }}</strong>
+          <span class="detail-status__hint">{{ statusHint }}</span>
         </div>
-        <div><dt>报名范围</dt><dd>{{ scopeLabel(activity.registrationScope) }}</dd></div>
-        <div><dt>名额</dt><dd>{{ activity.capacity ?? '—' }}</dd></div>
-      </dl>
-
-      <section class="proposal-section">
-        <div class="proposal-section__head">
-          <h2>活动方案</h2>
-          <ElButton
-            v-if="activity.status === 'DRAFT'"
-            size="small"
-            type="primary"
-            :loading="proposalSaving"
-            :disabled="!proposalDirty"
-            @click="saveProposalDraft"
-          >
-            保存方案
-          </ElButton>
-        </div>
-        <ElInput
-          v-if="activity.status === 'DRAFT'"
-          v-model="proposalDraft"
-          type="textarea"
-          :rows="10"
-          @input="onProposalInput"
-        />
-        <p
-          v-else
-          class="proposal-readonly"
-        >
-          {{ activity.proposal || '未填写方案' }}
-        </p>
-
-        <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
-        <AiDraftPanel
-          v-if="activity.status === 'DRAFT'"
-          :org-id="orgId"
-          :activity-id="activityId"
-          type="ACTIVITY_PLAN"
-          @apply="applyProposalDraft"
-        />
+        <dl class="detail-status__facts">
+          <div>
+            <dt>负责人</dt>
+            <dd>{{ activity.ownerUsername }}</dd>
+          </div>
+          <div>
+            <dt>开始</dt>
+            <dd>{{ formatDateTime(activity.startTime) }}</dd>
+          </div>
+          <div>
+            <dt>地点</dt>
+            <dd>{{ activity.location || '待定' }}</dd>
+          </div>
+          <div>
+            <dt>预算（元）</dt>
+            <dd class="detail-amount">
+              {{ activity.budget }}
+            </dd>
+          </div>
+        </dl>
       </section>
+
+      <ElTabs
+        v-model="activeTab"
+        class="detail-tabs"
+      >
+        <ElTabPane
+          label="概览"
+          name="overview"
+        >
+          <dl class="detail-grid">
+            <div><dt>活动简介</dt><dd>{{ activity.description || '暂无' }}</dd></div>
+            <div><dt>活动负责人</dt><dd>{{ activity.ownerUsername }}</dd></div>
+            <div><dt>开始时间</dt><dd>{{ formatDateTime(activity.startTime) }}</dd></div>
+            <div><dt>结束时间</dt><dd>{{ formatDateTime(activity.endTime) }}</dd></div>
+            <div><dt>地点</dt><dd>{{ activity.location || '待定' }}</dd></div>
+            <div>
+              <dt>预算（元）</dt><dd class="detail-amount">
+                {{ activity.budget }}
+              </dd>
+            </div>
+            <div><dt>报名范围</dt><dd>{{ scopeLabel(activity.registrationScope) }}</dd></div>
+            <div><dt>名额</dt><dd>{{ activity.capacity ?? '—' }}</dd></div>
+            <div><dt>报名开关</dt><dd>{{ activity.registrationOpen ? '已开放' : '未开放' }}</dd></div>
+            <div><dt>当前版本</dt><dd>{{ activity.version }}</dd></div>
+          </dl>
+          <p
+            v-if="activity.reviewNote"
+            class="detail-note"
+          >
+            审批说明：{{ activity.reviewNote }}
+          </p>
+        </ElTabPane>
+
+        <ElTabPane
+          label="方案"
+          name="proposal"
+        >
+          <section class="proposal-section">
+            <div class="proposal-section__head">
+              <h2>活动方案</h2>
+              <ElButton
+                v-if="activity.status === 'DRAFT'"
+                size="small"
+                type="primary"
+                :loading="proposalSaving"
+                :disabled="!proposalDirty"
+                @click="saveProposalDraft"
+              >
+                保存方案
+              </ElButton>
+            </div>
+            <ElInput
+              v-if="activity.status === 'DRAFT'"
+              v-model="proposalDraft"
+              type="textarea"
+              :rows="10"
+              @input="onProposalInput"
+            />
+            <p
+              v-else
+              class="proposal-readonly"
+            >
+              {{ activity.proposal || '未填写方案' }}
+            </p>
+
+            <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
+            <AiDraftPanel
+              v-if="activity.status === 'DRAFT'"
+              :org-id="orgId"
+              :activity-id="activityId"
+              type="ACTIVITY_PLAN"
+              @apply="applyProposalDraft"
+            />
+          </section>
+        </ElTabPane>
+
+        <ElTabPane
+          v-if="activity.status !== 'DRAFT'"
+          label="任务与物资"
+          name="tasks"
+        >
+          <ActivityP3Sections
+            :org-detail="activity"
+            :org-role="orgRole"
+            @changed="loadActivity"
+          />
+        </ElTabPane>
+
+        <ElTabPane
+          v-if="activity.status === 'APPROVED'"
+          label="报名"
+          name="registration"
+        >
+          <RegistrationPanel
+            :org-detail="activity"
+            :org-role="orgRole"
+            @changed="loadActivity"
+          />
+        </ElTabPane>
+
+        <ElTabPane
+          v-if="activity.status !== 'DRAFT'"
+          label="经费"
+          name="expense"
+        >
+          <ExpenseSection
+            :org-detail="activity"
+            :org-role="orgRole"
+            @changed="loadActivity"
+          />
+        </ElTabPane>
+
+        <ElTabPane
+          v-if="activity.status !== 'DRAFT' && activity.status !== 'PENDING_APPROVAL'"
+          label="执行与复盘"
+          name="lifecycle"
+        >
+          <!-- P6：执行、取消、执行记录、反馈、总结与归档；P8.2 总结生成在总结区块内 -->
+          <ActivityLifecyclePanel
+            :org-detail="activity"
+            :org-role="orgRole"
+            @changed="loadActivity"
+          />
+        </ElTabPane>
+      </ElTabs>
     </section>
     <p
       v-else
@@ -648,6 +759,81 @@ async function confirmDelete() {
 
 .detail-body {
   margin-top: var(--ui-space-8);
+}
+
+/* 详情首屏：状态与下一步 + 关键事实，功能进入页签后不再纵向堆叠 */
+.detail-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--ui-layout-grid-gap);
+  align-items: center;
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+.detail-status__label {
+  margin: 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  letter-spacing: var(--ui-letter-spacing-eyebrow);
+}
+
+.detail-status strong {
+  display: block;
+  margin: var(--ui-space-1) 0;
+  font-size: var(--ui-font-size-section);
+}
+
+.detail-status__hint {
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-small);
+}
+
+.detail-status__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--ui-layout-card-min-width), 1fr));
+  gap: var(--ui-space-4);
+  margin: 0;
+}
+
+.detail-status__facts dt {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.detail-status__facts dd {
+  margin: var(--ui-space-1) 0 0;
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-small);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.detail-tabs {
+  margin-top: var(--ui-layout-grid-gap);
+}
+
+.detail-skeleton {
+  margin-top: var(--ui-space-8);
+}
+
+.detail-skeleton__title {
+  margin-bottom: var(--ui-space-4);
+}
+
+.detail-skeleton__grid {
+  display: grid;
+  grid-template-columns: var(--ui-layout-kpi-columns);
+  gap: var(--ui-layout-grid-gap);
+  margin-bottom: var(--ui-space-4);
+}
+
+.detail-skeleton__grid :deep(.el-skeleton__item) {
+  height: var(--ui-icon-large);
+  border-radius: var(--ui-radius-card);
 }
 
 .detail-grid {
