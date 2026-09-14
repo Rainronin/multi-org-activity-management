@@ -202,7 +202,7 @@ try {
   assert.equal(errors.length, 0, `页面错误：${errors.join('; ')}`)
   assert.ok(Object.values(checks.kpiMatchesApi).every(Boolean), `KPI 与接口不一致：${JSON.stringify(kpiValues)}`)
 
-  console.log(JSON.stringify({
+  const report = {
     check: '工作台视觉还原核对（Demo 阅读顺序：重点卡＋AI 卡 → KPI → 图表 → 明细／待办）',
     org: { id: org.id, name: org.name },
     structure,
@@ -231,7 +231,11 @@ try {
     mobileOverflowPx: mobileOverflow.scrollWidth - mobileOverflow.clientWidth,
     pageErrors: errors,
     screenshots: ['验证截图/UI核对-工作台-1440.png', '验证截图/UI核对-工作台-390.png'],
-  }, null, 1))
+  }
+  // 证据留档：文本化输出供审核引用（截图目录不入库，报告正文入库）
+  await writeFile(new URL('../验证截图/UI独立审核/ui核对输出.json', import.meta.url),
+    JSON.stringify(report, null, 1), 'utf8')
+  console.log(JSON.stringify(report, null, 1))
 } finally {
   await browser.close()
 }
