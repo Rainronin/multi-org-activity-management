@@ -18,6 +18,8 @@ const session = useSessionStore()
 const directoryStore = useOrganizationsStore()
 
 const collapsed = ref(false)
+/** 导航分组展开状态（Demo 的组织工作区分组标题）。 */
+const navExpanded = ref(true)
 const directoryLoading = ref(true)
 const orgDetail = ref<OrganizationDetail | null>(null)
 const orgState = ref<'loading' | 'ready' | 'missing'>('loading')
@@ -192,56 +194,72 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         class="u-navigation"
         aria-label="主要导航"
       >
-        <RouterLink
-          class="u-item"
-          :class="{ active: route.name === 'org-overview' }"
-          :to="`/org/${orgId}`"
-          aria-label="组织概览"
-          title="组织概览"
+        <!-- Demo 还原：导航为「分组标题 + 紧凑圆角子项」，折叠后同栏变为图标岛 -->
+        <button
+          class="u-group"
+          :aria-expanded="navExpanded"
+          aria-controls="workspace-subnav"
+          @click="navExpanded = !navExpanded"
         >
-          <HomeFilled />
-          <span class="u-label">组织概览</span>
-        </RouterLink>
-        <RouterLink
-          class="u-item"
-          :class="{ active: route.name === 'org-activities' }"
-          :to="`/org/${orgId}/activities`"
-          aria-label="活动管理"
-          title="活动管理"
+          <span class="u-label">组织工作区</span>
+          <ArrowDown :class="{ 'u-turn': !navExpanded }" />
+        </button>
+        <div
+          id="workspace-subnav"
+          class="u-subitems"
+          :hidden="!navExpanded"
         >
-          <FolderOpened />
-          <span class="u-label">活动管理</span>
-        </RouterLink>
-        <RouterLink
-          class="u-item"
-          :class="{ active: route.name === 'org-my-tasks' }"
-          :to="`/org/${orgId}/my-tasks`"
-          aria-label="我的任务"
-          title="我的任务"
-        >
-          <CircleCheck />
-          <span class="u-label">我的任务</span>
-        </RouterLink>
-        <RouterLink
-          class="u-item"
-          :class="{ active: route.name === 'org-members' }"
-          :to="`/org/${orgId}/members`"
-          aria-label="成员管理"
-          title="成员管理"
-        >
-          <User />
-          <span class="u-label">成员管理</span>
-        </RouterLink>
-        <RouterLink
-          class="u-item"
-          :class="{ active: route.name === 'org-settings' }"
-          :to="`/org/${orgId}/settings`"
-          aria-label="组织设置"
-          title="组织设置"
-        >
-          <Setting />
-          <span class="u-label">组织设置</span>
-        </RouterLink>
+          <RouterLink
+            class="u-item"
+            :class="{ active: route.name === 'org-overview' }"
+            :to="`/org/${orgId}`"
+            aria-label="组织概览"
+            title="组织概览"
+          >
+            <HomeFilled />
+            <span class="u-label">组织概览</span>
+          </RouterLink>
+          <RouterLink
+            class="u-item"
+            :class="{ active: route.name === 'org-activities' }"
+            :to="`/org/${orgId}/activities`"
+            aria-label="活动管理"
+            title="活动管理"
+          >
+            <FolderOpened />
+            <span class="u-label">活动管理</span>
+          </RouterLink>
+          <RouterLink
+            class="u-item"
+            :class="{ active: route.name === 'org-my-tasks' }"
+            :to="`/org/${orgId}/my-tasks`"
+            aria-label="我的任务"
+            title="我的任务"
+          >
+            <CircleCheck />
+            <span class="u-label">我的任务</span>
+          </RouterLink>
+          <RouterLink
+            class="u-item"
+            :class="{ active: route.name === 'org-members' }"
+            :to="`/org/${orgId}/members`"
+            aria-label="成员管理"
+            title="成员管理"
+          >
+            <User />
+            <span class="u-label">成员管理</span>
+          </RouterLink>
+          <RouterLink
+            class="u-item"
+            :class="{ active: route.name === 'org-settings' }"
+            :to="`/org/${orgId}/settings`"
+            aria-label="组织设置"
+            title="组织设置"
+          >
+            <Setting />
+            <span class="u-label">组织设置</span>
+          </RouterLink>
+        </div>
       </nav>
 
       <div class="u-account">
@@ -484,6 +502,36 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   gap: var(--ui-space-2);
 }
 
+/* 分组标题：小号字距标题，折叠后随标签一起隐藏 */
+.unified-sidebar .u-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-1) var(--ui-space-3);
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-caption);
+  letter-spacing: var(--ui-letter-spacing-eyebrow);
+  cursor: pointer;
+}
+
+.unified-sidebar .u-group :deep(svg) {
+  width: var(--ui-icon-small);
+  height: var(--ui-icon-small);
+  transition: transform var(--ui-motion-fast) var(--ui-motion-ease);
+}
+
+.unified-sidebar .u-group .u-turn {
+  transform: rotate(180deg);
+}
+
+.unified-sidebar .u-subitems {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+}
+
 .unified-sidebar .u-item {
   width: 100%;
   display: flex;
@@ -491,14 +539,20 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   align-items: center;
   gap: var(--ui-space-2);
   min-height: var(--ui-control-min-touch);
-  padding: var(--ui-nav-item-padding);
-  margin-bottom: var(--ui-space-1);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border-radius: var(--ui-radius-control);
   white-space: nowrap;
   color: var(--ui-color-on-dark-muted);
   text-decoration: none;
   transition:
     background var(--ui-motion-fast) var(--ui-motion-ease),
     color var(--ui-motion-fast) var(--ui-motion-ease);
+}
+
+.unified-sidebar .u-item :deep(svg) {
+  width: var(--ui-icon);
+  height: var(--ui-icon);
+  flex-shrink: 0;
 }
 
 .unified-sidebar .u-item:hover {

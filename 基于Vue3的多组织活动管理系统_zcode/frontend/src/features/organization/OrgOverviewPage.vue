@@ -25,7 +25,7 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
         </p>
         <h1>
           <template v-if="state === 'ready' && orgDetail">
-            {{ orgDetail.name }}
+            {{ orgDetail.name }}<span class="page-heading__dot">。</span>
           </template>
           <template v-else-if="state === 'loading'">
             组织概览
@@ -34,13 +34,21 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
             组织不可访问
           </template>
         </h1>
-        <p
-          v-if="state === 'ready' && orgDetail?.description"
-          class="page-description"
-        >
-          {{ orgDetail.description }}
+        <p class="page-description">
+          <template v-if="state === 'ready' && orgDetail">
+            {{ orgDetail.description || '从筹备到复盘，让想法有进展，让协作有回应。' }}
+          </template>
+          <template v-else>
+            工作台按当前身份展示待办与指标。
+          </template>
         </p>
       </div>
+      <ElTag
+        v-if="state === 'ready' && orgDetail"
+        :type="isOwner ? 'success' : 'info'"
+      >
+        {{ roleLabel(orgDetail.role) }}
+      </ElTag>
     </div>
 
     <p
@@ -51,42 +59,41 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
       正在加载组织信息……
     </p>
 
+    <!-- P7.1／P7.2 工作台：行动入口，按身份展示重点活动、AI 文稿、KPI、图表与待办 -->
+    <WorkbenchSection v-if="state === 'ready' && orgDetail" />
+
     <section
-      v-else-if="state === 'ready' && orgDetail"
-      class="overview-card"
+      v-if="state === 'ready' && orgDetail"
+      class="org-meta"
+      aria-label="组织资料"
     >
-      <dl class="overview-card__list">
-        <div>
-          <dt>组织简介</dt>
-          <dd>{{ orgDetail.description || '暂无简介' }}</dd>
-        </div>
+      <dl class="org-meta__list">
         <div>
           <dt>成员数</dt>
           <dd>{{ orgDetail.memberCount }}</dd>
         </div>
         <div>
           <dt>我的角色</dt>
-          <dd>
-            <ElTag :type="isOwner ? 'success' : 'info'">
-              {{ roleLabel(orgDetail.role) }}
-            </ElTag>
-          </dd>
+          <dd>{{ roleLabel(orgDetail.role) }}</dd>
         </div>
         <div>
           <dt>创建时间</dt>
           <dd>{{ orgDetail.createdAt.slice(0, 10) }}</dd>
         </div>
+        <div>
+          <dt>组织简介</dt>
+          <dd class="org-meta__description">
+            {{ orgDetail.description || '暂无简介' }}
+          </dd>
+        </div>
       </dl>
-      <p class="overview-card__note">
-        成员邀请与成员管理已开放；工作台按当前身份展示待办与指标。
+      <p class="org-meta__note">
+        成员邀请与成员管理在「成员管理」，模型配置在「组织设置」；工作台指标均来自真实业务记录。
       </p>
     </section>
 
-    <!-- P7.1／P7.2 工作台：按身份展示卡片与待办，明细跳转后重新鉴权 -->
-    <WorkbenchSection v-if="state === 'ready' && orgDetail" />
-
     <section
-      v-else
+      v-else-if="state !== 'loading'"
       class="overview-card overview-card--missing"
     >
       <p
@@ -111,9 +118,13 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
 <style scoped>
 .page-heading {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--ui-space-6);
+}
+
+.page-heading__dot {
+  color: var(--ui-color-accent);
 }
 
 .page-eyebrow {
@@ -141,46 +152,51 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
   color: var(--ui-color-text-secondary);
 }
 
-.overview-card {
-  margin-top: var(--ui-space-8);
-  padding: var(--ui-layout-card-padding);
+/* 组织资料缩为工作台之后的紧凑信息带，不占首屏主位置 */
+.org-meta {
+  margin-top: var(--ui-layout-grid-gap);
+  padding: var(--ui-space-4) var(--ui-layout-card-padding);
   border: var(--ui-border-width) solid var(--ui-color-border);
   border-radius: var(--ui-radius-card);
-  background: var(--ui-color-surface);
-  box-shadow: var(--ui-shadow-glass);
+  background: var(--ui-color-surface-muted);
 }
 
-.overview-card__list {
+.org-meta__list {
   display: grid;
-  grid-template-columns: var(--ui-layout-form-columns);
-  gap: var(--ui-space-6);
+  grid-template-columns: var(--ui-layout-kpi-columns);
+  gap: var(--ui-space-4);
   margin: 0;
 }
 
-.overview-card__list dt {
-  margin-bottom: var(--ui-space-2);
+.org-meta__list dt {
+  margin-bottom: var(--ui-space-1);
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-caption);
 }
 
-.overview-card__list dd {
+.org-meta__list dd {
   margin: 0;
   color: var(--ui-color-text);
+  font-size: var(--ui-font-size-small);
   overflow-wrap: anywhere;
 }
 
-.overview-card__note {
-  margin-top: var(--ui-space-6);
-  padding-top: var(--ui-space-4);
-  border-top: var(--ui-border-width) solid var(--ui-color-border);
+.org-meta__note {
+  margin: var(--ui-space-3) 0 0;
   color: var(--ui-color-text-muted);
-  font-size: var(--ui-font-size-small);
+  font-size: var(--ui-font-size-caption);
 }
 
 .overview-card--missing {
   display: grid;
   justify-items: start;
   gap: var(--ui-space-3);
+  margin-top: var(--ui-space-8);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
 }
 
 .overview-card__back {

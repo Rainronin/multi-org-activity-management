@@ -1,22 +1,156 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElButton, ElTag } from 'element-plus'
+import {
+  ElButton,
+  ElEmpty,
+  ElSkeleton,
+  ElSkeletonItem,
+  ElTag,
+} from 'element-plus'
+import {
+  ArrowRight,
+  Calendar,
+  Check,
+  CircleCheck,
+  Document,
+  Location,
+  TrendCharts,
+  Wallet,
+} from '@element-plus/icons-vue'
 import { ApiError } from '../../shared/http/error'
 import { useSessionStore } from '../../stores/session'
-import { fetchWorkbench, todoKindLabel, workbenchRoleLabel, type Workbench } from './workbench'
+import { fetchActivities } from '../activity/api'
+import type { ActivityItem } from '../activity/types'
+import { fetchAiConfig, type AiConfig } from '../ai/ai'
+import { fetchWorkbench, todoKindLabel, workbenchRoleLabel, type Workbench, type WorkbenchCard } from './workbench'
 
-// P7.1／P7.2 工作台：按身份展示管理卡片、待办与本人卡片；数字带来源说明，点击进入授权明细。
+/**
+ * P7.1／P7.2 工作台，按确认 Demo 的阅读顺序还原：
+ * 深色重点活动卡＋暖橙 AI 文稿卡 → 精简 KPI → 图表 → 明细与待办。
+ *
+ * 数据全部来自真实接口：工作台聚合（cards／todos／myCards）、组织活动列表与组织模型配置；
+ * 没有趋势接口就不画趋势，经费环图只表示"已确认支出 / 预算"这一真实口径。
+ */
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 
 const orgId = computed(() => String(route.params.orgId ?? ''))
 const workbench = ref<Workbench | null>(null)
+const activities = ref<ActivityItem[]>([])
+const aiConfig = ref<AiConfig | null>(null)
+const aiMode = ref<'总结' | '方案'>('总结')
 const loading = ref(false)
 const errorText = ref('')
 
 let requestSeq = 0
+
+const stages = ['草稿', '待确认', '筹备中', '执行中', '复盘中', '已归档']
+const stageOf: Record<string, string> = {
+  DRAFT: '草稿',
+  PENDING_APPROVAL: '待确认',
+  APPROVED: '筹备中',
+  EXECUTING: '执行中',
+  REVIEWING: '复盘中',
+  ARCHIVED: '已归档',
+}
+
+/** 重点活动：优先执行中，其次最早的筹备中活动（真实活动列表，按状态与开始时间取一条）。 */
+const focusActivity = computed<ActivityItem | null>(() => {
+  const executing = activities.value.filter((item) => item.status === 'EXECUTING')
+  const preparing = activities.value.filter((item) => item.status === 'APPROVED')
+  const pool = executing.length > 0 ? executing : preparing
+  return [...pool].sort((a, b) => (a.startTime ?? '').localeCompare(b.startTime ?? ''))[0] ?? null
+})
+
+const focusStage = computed(() => (focusActivity.value ? stageOf[focusActivity.value.status] ?? '' : ''))
+const focusDate = computed(() => {
+  const value = focusActivity.value?.startTime
+  return value ? value.slice(0, 10) : ''
+})
+
+/** AI 文稿候选：总结取复盘中的活动，方案取草稿活动（与业务入口一致）。 */
+const aiCandidate = computed<ActivityItem | null>(() => {
+  const status = aiMode.value === '总结' ? 'REVIEWING' : 'DRAFT'
+  return activities.value.find((item) => item.status === status) ?? null
+})
+const aiAvailable = computed(() => aiConfig.value?.available === true)
+
+function card(key: string): WorkbenchCard | undefined {
+  const all = [...(workbench.value?.cards ?? []), ...(workbench.value?.myCards ?? [])]
+  return all.find((item) => item.key === key)
+}
+
+/** KPI 带只保留四个行动指标：进行中活动、待处理任务、有效报名、已确认支出。 */
+const kpis = computed(() => {
+  const definitions = [
+    { key: 'activities-in-progress', fallback: 'activities-mine', label: '进行中活动', unit: '个', icon: TrendCharts },
+    { key: 'tasks-open', fallback: 'my-tasks-open', label: '待处理任务', unit: '个', icon: CircleCheck },
+    { key: 'registrations-effective', fallback: 'my-registrations', label: '有效报名', unit: '人', icon: Check },
+    { key: 'expense-approved', fallback: 'my-registrations', label: '已确认支出', unit: '元', icon: Wallet },
+  ]
+  return definitions
+    .map((definition) => {
+      const source = card(definition.key) ?? card(definition.fallback)
+      if (!source) {
+        return null
+      }
+      return {
+        key: definition.key,
+        label: definition.label,
+        unit: definition.unit,
+        icon: definition.icon,
+        value: source.value,
+        hint: source.hint,
+        path: source.detailPath,
+      }
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+})
+
+/** 环图与进度条只使用工作台已给出的真实口径。 */
+const budgetChart = computed(() => {
+  const approved = Number(card('expense-approved')?.value ?? '0')
+  const balance = Number(card('expense-balance')?.value ?? '0')
+  const budget = approved + balance
+  if (!Number.isFinite(approved) || !Number.isFinite(balance) || budget <= 0) {
+    return null
+  }
+  const ratio = Math.min(1, Math.max(0, approved / budget))
+  return {
+    approved: approved.toFixed(2),
+    balance: balance.toFixed(2),
+    budget: budget.toFixed(2),
+    percent: `${(ratio * 100).toFixed(1)}%`,
+    dash: `${(ratio * 100).toFixed(1)} ${(100 - ratio * 100).toFixed(1)}`,
+  }
+})
+
+function percentOf(key: string): number | null {
+  const value = card(key)?.value ?? ''
+  if (!value.endsWith('%')) {
+    return null
+  }
+  const parsed = Number(value.slice(0, -1))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const rates = computed(() => [
+  { key: 'tasks-completion', label: '任务完成率', value: percentOf('tasks-completion'), hint: card('tasks-completion')?.hint ?? '' },
+  { key: 'registrations-capacity', label: '名额使用率', value: percentOf('registrations-capacity'), hint: card('registrations-capacity')?.hint ?? '' },
+])
+
+const kpiKeys = computed(() => new Set(kpis.value.map((item) => item.key)))
+/** 明细只列未进入 KPI 带的指标，避免同一数字重复出现。 */
+const details = computed(() => {
+  const all = [...(workbench.value?.cards ?? []), ...(workbench.value?.myCards ?? [])]
+  const kept = all.filter((item) => !kpiKeys.value.has(item.key)
+    && item.key !== 'expense-approved' && item.key !== 'expense-balance'
+    && item.key !== 'tasks-completion' && item.key !== 'registrations-capacity')
+  return kept
+})
+const todos = computed(() => workbench.value?.todos ?? [])
 
 async function load(): Promise<void> {
   if (!orgId.value) {
@@ -27,16 +161,23 @@ async function load(): Promise<void> {
   loading.value = true
   errorText.value = ''
   try {
-    const data = await fetchWorkbench(orgId.value)
+    const [workbenchData, activityPage, config] = await Promise.all([
+      fetchWorkbench(orgId.value),
+      fetchActivities(orgId.value, { pageSize: 50 }),
+      fetchAiConfig(orgId.value).catch(() => null),
+    ])
     if (seq !== requestSeq || gen !== session.generation) {
       return
     }
-    workbench.value = data
+    workbench.value = workbenchData
+    activities.value = activityPage.items
+    aiConfig.value = config
   } catch (error) {
     if (seq !== requestSeq || gen !== session.generation) {
       return
     }
     workbench.value = null
+    activities.value = []
     if (session.observeUnauthorized(error, gen)) {
       return
     }
@@ -61,94 +202,391 @@ function open(path: string) {
   }
 }
 
+function openActivity(activity: ActivityItem | null) {
+  if (activity) {
+    void router.push(`/org/${orgId.value}/activities/${activity.id}`)
+  }
+}
+
 defineExpose({ reload: load })
 </script>
 
 <template>
-  <section class="workbench">
-    <div class="workbench__head">
-      <h2>工作台</h2>
-      <ElTag
-        v-if="workbench"
-        size="small"
-      >
-        {{ workbenchRoleLabel[workbench.role] }}
-      </ElTag>
-    </div>
-
+  <section
+    class="workbench"
+    aria-label="组织工作台"
+  >
     <p
-      v-if="loading"
-      class="workbench__note"
-      aria-live="polite"
-    >
-      正在加载工作台……
-    </p>
-    <p
-      v-else-if="errorText"
+      v-if="errorText"
       class="workbench__error"
       role="alert"
     >
       {{ errorText }}
+      <ElButton
+        text
+        @click="load"
+      >
+        重试
+      </ElButton>
     </p>
 
-    <template v-else-if="workbench">
-      <dl
-        v-if="workbench.cards.length > 0 || workbench.myCards.length > 0"
-        class="workbench__cards"
+    <!-- 加载骨架与真实结构同构：重点卡 / AI 卡 / KPI 带 / 图表 -->
+    <section
+      v-else-if="loading"
+      class="workbench__skeleton"
+      role="status"
+      aria-busy="true"
+      aria-label="正在加载组织工作台"
+    >
+      <ElSkeleton
+        animated
+        :rows="0"
       >
-        <div
-          v-for="card in [...workbench.cards, ...workbench.myCards]"
-          :key="card.key"
-          class="workbench__card"
-        >
-          <dt>{{ card.label }}</dt>
-          <dd class="workbench__value">
-            {{ card.value }}
-          </dd>
-          <p class="workbench__hint">
-            {{ card.hint }}
-          </p>
-          <ElButton
-            v-if="card.detailPath"
-            size="small"
-            link
-            @click="open(card.detailPath)"
-          >
-            {{ card.detailLabel || '查看明细' }}
-          </ElButton>
-        </div>
-      </dl>
+        <template #template>
+          <div class="skeleton-focus">
+            <ElSkeletonItem variant="rect" />
+            <ElSkeletonItem variant="rect" />
+          </div>
+          <div class="skeleton-kpis">
+            <ElSkeletonItem
+              v-for="n in 4"
+              :key="n"
+              variant="rect"
+            />
+          </div>
+        </template>
+      </ElSkeleton>
+    </section>
 
-      <div class="workbench__todos">
-        <h3>待办</h3>
-        <ul v-if="workbench.todos.length > 0">
-          <li
-            v-for="(todo, index) in workbench.todos"
-            :key="`${todo.kind}-${index}`"
-          >
-            <ElTag
-              size="small"
-              type="warning"
-            >
-              {{ todoKindLabel[todo.kind] ?? todo.kind }}
-            </ElTag>
-            <span class="workbench__todo-title">{{ todo.title }}</span>
-            <span class="workbench__note">{{ todo.detail }}</span>
-            <ElButton
-              size="small"
-              link
-              @click="open(todo.path)"
-            >
-              处理
-            </ElButton>
-          </li>
-        </ul>
-        <p
-          v-else
-          class="workbench__note"
+    <template v-else-if="workbench">
+      <!-- 1. 深色重点活动卡 + 暖橙 AI 文稿卡 -->
+      <div class="focus-board">
+        <article
+          v-if="focusActivity"
+          class="spotlight"
+          data-focus-activity
         >
-          暂无待处理事项。
-        </p>
+          <div class="spotlight__top">
+            <span class="spotlight__eyebrow">
+              <i aria-hidden="true" />重点活动
+              <span class="spotlight__state">{{ focusStage }}</span>
+            </span>
+            <span class="spotlight__aside">下一场共同期待</span>
+          </div>
+          <div class="spotlight__title">
+            <div>
+              <p class="spotlight__slogan">
+                一起，让好事发生
+              </p>
+              <h2>{{ focusActivity.name }}</h2>
+              <span class="spotlight__desc">{{ focusActivity.description || '暂无活动说明' }}</span>
+            </div>
+            <div
+              v-if="focusDate"
+              class="spotlight__date"
+            >
+              {{ focusDate.slice(8) }}<small>{{ focusDate.slice(5, 7) }} 月</small>
+            </div>
+          </div>
+          <ol
+            class="stage-rail"
+            aria-label="重点活动阶段"
+          >
+            <li
+              v-for="(stage, index) in stages"
+              :key="stage"
+              :class="{
+                reached: index < stages.indexOf(focusStage),
+                current: stage === focusStage,
+              }"
+            >
+              <span>
+                <Check v-if="index < stages.indexOf(focusStage)" />
+                <template v-else>
+                  {{ index + 1 }}
+                </template>
+              </span>{{ stage }}
+            </li>
+          </ol>
+          <div class="spotlight__footer">
+            <div class="spotlight__meta">
+              <Calendar />
+              <span>{{ focusDate || '时间待定' }}<small>{{ focusActivity.location || '地点待定' }}</small></span>
+            </div>
+            <div class="spotlight__meta">
+              <Location />
+              <span>名额 {{ focusActivity.capacity ?? '未设置' }}<small>负责人 {{ focusActivity.ownerUsername }}</small></span>
+            </div>
+            <ElButton
+              data-focus-open
+              @click="openActivity(focusActivity)"
+            >
+              查看活动<ArrowRight />
+            </ElButton>
+          </div>
+        </article>
+        <article
+          v-else
+          class="spotlight spotlight--empty"
+          data-focus-activity
+        >
+          <ElEmpty description="暂无筹备或执行中的活动" />
+          <ElButton @click="open(`/org/${orgId}/activities`)">
+            前往活动管理
+          </ElButton>
+        </article>
+
+        <aside
+          class="assistant-card"
+          data-ai-card
+        >
+          <header class="assistant-card__head">
+            <span class="assistant-card__mark"><Document /></span>
+            <div>
+              <h2>AI 文稿助手</h2>
+              <p>把活动记录，整理成下一步。</p>
+            </div>
+            <span class="assistant-card__label">AI</span>
+          </header>
+          <div
+            class="assistant-card__modes"
+            role="group"
+            aria-label="AI 文稿类型"
+          >
+            <button
+              v-for="item in (['总结', '方案'] as const)"
+              :key="item"
+              type="button"
+              :class="{ selected: aiMode === item }"
+              :aria-pressed="aiMode === item"
+              @click="aiMode = item"
+            >
+              活动{{ item }}
+            </button>
+          </div>
+          <div class="assistant-card__paper">
+            <span>{{ aiMode === '总结' ? '复盘，从已有记录开始' : '让想法，变成可讨论的方案' }}</span>
+            <h3>{{ aiCandidate?.name ?? (aiMode === '总结' ? '暂无复盘中的活动' : '先创建一份活动草稿') }}</h3>
+            <p>
+              {{ aiMode === '总结'
+                ? '汇总任务、报名与经费，补充真实反馈，形成可编辑的总结草稿。'
+                : '围绕活动目标整理流程、分工与注意事项，待确认的信息清楚标出。' }}
+            </p>
+          </div>
+          <div class="assistant-card__bottom">
+            <ElButton
+              :disabled="!aiCandidate"
+              data-ai-open
+              @click="openActivity(aiCandidate)"
+            >
+              打开{{ aiMode === '总结' ? '复盘' : '方案' }}编辑<ArrowRight />
+            </ElButton>
+            <small>{{ aiConfig?.availabilityHint ?? '正在读取模型可用状态……' }}</small>
+          </div>
+          <ElTag
+            v-if="aiAvailable && aiConfig?.model"
+            class="assistant-card__model"
+            size="small"
+          >
+            {{ aiConfig.model }}
+          </ElTag>
+        </aside>
+      </div>
+
+      <!-- 2. 精简 KPI 带 -->
+      <div
+        v-if="kpis.length > 0"
+        class="kpi-grid"
+        data-kpi-band
+      >
+        <button
+          v-for="(kpi, index) in kpis"
+          :key="kpi.key"
+          type="button"
+          class="kpi-card"
+          :style="{ '--kpi-index': index }"
+          :data-kpi="kpi.key"
+          @click="open(kpi.path)"
+        >
+          <span class="kpi-card__top">
+            <span class="kpi-card__icon"><component :is="kpi.icon" /></span>
+            <ArrowRight class="kpi-card__arrow" />
+          </span>
+          <span class="kpi-card__label">{{ kpi.label }}</span>
+          <span class="kpi-card__value">
+            {{ kpi.value }}<small>{{ kpi.unit }}</small>
+          </span>
+          <span class="kpi-card__note">{{ kpi.hint }}</span>
+        </button>
+      </div>
+
+      <!-- 3. 图表：只画真实口径 -->
+      <div class="content-grid">
+        <section
+          class="panel panel--chart"
+          data-chart-panel
+        >
+          <div class="panel__head">
+            <h2><TrendCharts />经费结构</h2>
+            <span class="panel__tag">已确认支出占预算</span>
+          </div>
+          <div
+            v-if="budgetChart"
+            class="budget-chart"
+          >
+            <svg
+              class="budget-chart__ring"
+              viewBox="0 0 42 42"
+              role="img"
+              :aria-label="`已确认支出 ${budgetChart.approved} 元，占预算 ${budgetChart.percent}`"
+            >
+              <circle
+                class="budget-chart__track"
+                cx="21"
+                cy="21"
+                r="15.9155"
+              />
+              <circle
+                class="budget-chart__value"
+                cx="21"
+                cy="21"
+                r="15.9155"
+                :stroke-dasharray="budgetChart.dash"
+              />
+            </svg>
+            <dl class="budget-chart__legend">
+              <div>
+                <dt>已确认支出</dt>
+                <dd>{{ budgetChart.approved }} 元</dd>
+              </div>
+              <div>
+                <dt>预算余额</dt>
+                <dd>{{ budgetChart.balance }} 元</dd>
+              </div>
+              <div>
+                <dt>预算合计</dt>
+                <dd>{{ budgetChart.budget }} 元</dd>
+              </div>
+            </dl>
+          </div>
+          <p
+            v-else
+            class="panel__empty"
+            data-chart-empty
+          >
+            暂无已立项活动的预算与支出记录，暂不展示经费图表。
+          </p>
+          <div
+            v-if="rates.some((rate) => rate.value !== null)"
+            class="rate-bars"
+          >
+            <div
+              v-for="rate in rates"
+              :key="rate.key"
+              class="rate-bar"
+            >
+              <div class="rate-bar__head">
+                <span>{{ rate.label }}</span>
+                <strong>{{ rate.value === null ? '—' : `${rate.value}%` }}</strong>
+              </div>
+              <div
+                class="rate-bar__track"
+                role="img"
+                :aria-label="`${rate.label} ${rate.value === null ? '不适用' : `${rate.value}%`}`"
+              >
+                <i :style="{ width: `${rate.value ?? 0}%` }" />
+              </div>
+              <p class="rate-bar__note">
+                {{ rate.hint }}
+              </p>
+            </div>
+          </div>
+          <p class="panel__note">
+            图表只使用真实统计：经费口径同经费区块，完成率与使用率分母为零时显示“—”，不画趋势曲线。
+          </p>
+        </section>
+
+        <section
+          class="panel"
+          data-detail-panel
+        >
+          <div class="panel__head">
+            <h2>指标明细</h2>
+            <span class="panel__tag">{{ workbenchRoleLabel[workbench.role] }}</span>
+          </div>
+          <ul
+            v-if="details.length > 0"
+            class="detail-list"
+          >
+            <li
+              v-for="item in details"
+              :key="item.key"
+              class="detail-list__item"
+            >
+              <div class="detail-list__main">
+                <span class="detail-list__label">{{ item.label }}</span>
+                <span class="detail-list__value">{{ item.value }}</span>
+              </div>
+              <p class="detail-list__hint">
+                {{ item.hint }}
+              </p>
+              <ElButton
+                v-if="item.detailPath"
+                size="small"
+                link
+                @click="open(item.detailPath)"
+              >
+                {{ item.detailLabel || '查看明细' }}
+              </ElButton>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="panel__empty"
+          >
+            当前身份没有额外的管理指标。
+          </p>
+        </section>
+
+        <section
+          class="panel"
+          data-todo-panel
+        >
+          <div class="panel__head">
+            <h2>待办</h2>
+            <span class="panel__tag">{{ todos.length }} 项</span>
+          </div>
+          <ul
+            v-if="todos.length > 0"
+            class="todo-list"
+          >
+            <li
+              v-for="todo in todos"
+              :key="`${todo.kind}-${todo.title}`"
+              class="todo-list__item"
+            >
+              <div>
+                <ElTag size="small">
+                  {{ todoKindLabel[todo.kind] ?? todo.kind }}
+                </ElTag>
+                <strong>{{ todo.title }}</strong>
+                <p>{{ todo.detail }}</p>
+              </div>
+              <ElButton
+                size="small"
+                @click="open(todo.path)"
+              >
+                处理
+              </ElButton>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="panel__empty"
+          >
+            暂无待处理事项。
+          </p>
+        </section>
       </div>
     </template>
   </section>
@@ -156,84 +594,631 @@ defineExpose({ reload: load })
 
 <style scoped>
 .workbench {
-  padding: var(--ui-layout-card-padding);
-  border: var(--ui-border-width) solid var(--ui-color-border);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-color-surface);
-}
-
-.workbench__head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ui-space-4);
-}
-
-.workbench__head h2 {
-  font-size: var(--ui-font-size-section);
-}
-
-.workbench__note {
-  color: var(--ui-color-text-muted);
-  font-size: var(--ui-font-size-small);
+  flex-direction: column;
+  gap: var(--ui-layout-grid-gap);
+  margin-top: var(--ui-space-6);
 }
 
 .workbench__error {
+  margin: 0;
   color: var(--ui-color-danger);
   font-size: var(--ui-font-size-small);
 }
 
-.workbench__cards {
-  display: grid;
-  gap: var(--ui-layout-grid-gap);
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--ui-layout-card-min-width)), 1fr));
-  margin-top: var(--ui-space-4);
-}
-
-.workbench__card dt {
-  color: var(--ui-color-text-muted);
-  font-size: var(--ui-font-size-caption);
-}
-
-.workbench__value {
-  margin-top: var(--ui-space-1);
-  font-size: var(--ui-font-size-kpi);
-  font-variant-numeric: tabular-nums;
-}
-
-.workbench__hint {
-  margin-top: var(--ui-space-1);
-  color: var(--ui-color-text-muted);
-  font-size: var(--ui-font-size-caption);
-}
-
-.workbench__todos {
-  margin-top: var(--ui-space-6);
-}
-
-.workbench__todos h3 {
-  font-size: var(--ui-font-size-emphasis);
-  margin-bottom: var(--ui-space-2);
-}
-
-.workbench__todos ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.workbench__skeleton {
   display: flex;
   flex-direction: column;
+  gap: var(--ui-layout-grid-gap);
+}
+
+.skeleton-focus {
+  display: grid;
+  grid-template-columns: var(--ui-layout-focus-columns);
+  gap: var(--ui-layout-grid-gap);
+}
+
+.skeleton-focus :deep(.el-skeleton__item) {
+  height: var(--ui-layout-card-min-width-wide);
+  border-radius: var(--ui-radius-card);
+}
+
+.skeleton-kpis {
+  display: grid;
+  grid-template-columns: var(--ui-layout-kpi-columns);
+  gap: var(--ui-layout-grid-gap);
+}
+
+.skeleton-kpis :deep(.el-skeleton__item) {
+  height: var(--ui-icon-large);
+  border-radius: var(--ui-radius-card);
+}
+
+/* ---------- 重点活动 + AI 双卡 ---------- */
+
+.focus-board {
+  display: grid;
+  grid-template-columns: var(--ui-layout-focus-columns);
+  gap: var(--ui-layout-grid-gap);
+  align-items: stretch;
+}
+
+.spotlight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
+  padding: var(--ui-layout-card-padding);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-surface-spotlight);
+  color: var(--ui-color-on-dark);
+  box-shadow: var(--ui-shadow-spotlight);
+  transition: transform var(--ui-motion-base) var(--ui-motion-ease);
+}
+
+.spotlight--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.spotlight__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-caption);
+  letter-spacing: var(--ui-letter-spacing-eyebrow);
+}
+
+.spotlight__eyebrow {
+  display: inline-flex;
+  align-items: center;
   gap: var(--ui-space-2);
 }
 
-.workbench__todos li {
+.spotlight__eyebrow i {
+  width: var(--ui-icon-small);
+  height: var(--ui-icon-small);
+  border-radius: var(--ui-radius-circle);
+  background: var(--ui-color-accent);
+}
+
+.spotlight__state {
+  padding: 0 var(--ui-space-2);
+  border: var(--ui-border-width) solid var(--ui-color-border-dark);
+  border-radius: var(--ui-radius-pill);
+  letter-spacing: normal;
+}
+
+.spotlight__title {
   display: flex;
-  align-items: center;
-  gap: var(--ui-space-2);
-  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+}
+
+.spotlight__slogan {
+  margin: 0;
+  color: var(--ui-color-on-dark-accent);
   font-size: var(--ui-font-size-small);
 }
 
-.workbench__todo-title {
+.spotlight__title h2 {
+  margin: var(--ui-space-2) 0;
+  font-size: var(--ui-font-size-section);
+  letter-spacing: var(--ui-letter-spacing-title);
+}
+
+.spotlight__desc {
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-small);
+  line-height: var(--ui-line-height-body);
+}
+
+.spotlight__date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-page-title);
+  line-height: var(--ui-line-height-tight);
+}
+
+.spotlight__date small {
+  font-size: var(--ui-font-size-caption);
+  color: var(--ui-color-on-dark-muted);
+}
+
+.stage-rail {
+  display: flex;
+  gap: var(--ui-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage-rail li {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ui-space-2);
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.stage-rail li > span {
+  display: grid;
+  place-items: center;
+  width: var(--ui-icon-large);
+  height: var(--ui-icon-large);
+  border: var(--ui-border-width) solid var(--ui-color-border-dark);
+  border-radius: var(--ui-radius-circle);
+  font-family: var(--ui-font-family-data);
+}
+
+.stage-rail li.current {
+  color: var(--ui-color-accent);
+}
+
+.stage-rail li.current > span {
+  border-color: var(--ui-color-accent);
+  background: var(--ui-color-accent);
+  color: var(--ui-color-on-dark);
+}
+
+.spotlight__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-4);
+  margin-top: auto;
+}
+
+.spotlight__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-small);
+}
+
+.spotlight__meta span {
+  display: flex;
+  flex-direction: column;
+}
+
+.spotlight__meta small {
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.assistant-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-ai-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-surface-ai);
+  box-shadow: var(--ui-shadow-glass);
+  transition: transform var(--ui-motion-base) var(--ui-motion-ease);
+}
+
+.assistant-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+
+.assistant-card__mark {
+  display: grid;
+  place-items: center;
+  width: var(--ui-icon-large);
+  height: var(--ui-icon-large);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-ai-end);
+  color: var(--ui-color-ai-text);
+}
+
+.assistant-card__head h2 {
+  margin: 0;
+  font-size: var(--ui-font-size-card-title);
+  color: var(--ui-color-ai-text);
+}
+
+.assistant-card__head p {
+  margin: 0;
+  color: var(--ui-color-ai-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.assistant-card__label {
+  margin-left: auto;
+  padding: 0 var(--ui-space-2);
+  border: var(--ui-border-width) solid var(--ui-color-ai-border);
+  border-radius: var(--ui-radius-pill);
+  color: var(--ui-color-ai-text);
+  font-size: var(--ui-font-size-caption);
+}
+
+.assistant-card__modes {
+  display: flex;
+  gap: var(--ui-space-2);
+}
+
+.assistant-card__modes button {
+  padding: var(--ui-space-1) var(--ui-space-3);
+  border: var(--ui-border-width) solid var(--ui-color-ai-border);
+  border-radius: var(--ui-radius-pill);
+  background: transparent;
+  color: var(--ui-color-ai-text);
+  font-size: var(--ui-font-size-small);
+  cursor: pointer;
+}
+
+.assistant-card__modes button.selected {
+  background: var(--ui-color-ai-start);
+  color: var(--ui-color-ai-text);
   font-weight: var(--ui-font-weight-medium);
+}
+
+.assistant-card__paper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+  padding: var(--ui-space-3);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-surface);
+}
+
+.assistant-card__paper span {
+  color: var(--ui-color-ai-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.assistant-card__paper h3 {
+  margin: 0;
+  font-size: var(--ui-font-size-emphasis);
+  color: var(--ui-color-text);
+}
+
+.assistant-card__paper p {
+  margin: 0;
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-small);
+  line-height: var(--ui-line-height-body);
+}
+
+.assistant-card__bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin-top: auto;
+}
+
+.assistant-card__bottom small {
+  color: var(--ui-color-ai-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.assistant-card__model {
+  align-self: flex-start;
+}
+
+/* ---------- KPI 带 ---------- */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: var(--ui-layout-kpi-columns);
+  gap: var(--ui-layout-grid-gap);
+}
+
+.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--ui-motion-base) var(--ui-motion-ease),
+    box-shadow var(--ui-motion-base) var(--ui-motion-ease);
+}
+
+.kpi-card:hover {
+  border-color: var(--ui-color-accent);
+  box-shadow: var(--ui-shadow-hover);
+}
+
+.kpi-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kpi-card__icon {
+  display: grid;
+  place-items: center;
+  width: var(--ui-icon-large);
+  height: var(--ui-icon-large);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-surface-muted);
+  color: var(--ui-color-text-secondary);
+}
+
+.kpi-card__arrow {
+  width: var(--ui-icon-small);
+  height: var(--ui-icon-small);
+  color: var(--ui-color-text-muted);
+  transition: transform var(--ui-motion-base) var(--ui-motion-ease);
+}
+
+.kpi-card:hover .kpi-card__arrow {
+  transform: translateX(var(--ui-space-1));
+  color: var(--ui-color-accent);
+}
+
+.kpi-card__label {
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-small);
+}
+
+.kpi-card__value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ui-space-2);
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-kpi);
+  font-weight: var(--ui-font-weight-medium);
+  letter-spacing: var(--ui-letter-spacing-title);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-card__value small {
+  color: var(--ui-color-text-muted);
+  font-family: var(--ui-font-family-body);
+  font-size: var(--ui-font-size-caption);
+}
+
+.kpi-card__note {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  line-height: var(--ui-line-height-body);
+}
+
+/* ---------- 图表与明细 ---------- */
+
+.content-grid {
+  display: grid;
+  grid-template-columns: var(--ui-layout-analysis-columns);
+  gap: var(--ui-layout-grid-gap);
+  align-items: start;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+.panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+}
+
+.panel__head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  margin: 0;
+  font-size: var(--ui-font-size-card-title);
+  white-space: nowrap;
+}
+
+.panel__tag {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.panel__note,
+.panel__empty {
+  margin: 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  line-height: var(--ui-line-height-body);
+}
+
+.budget-chart {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-6);
+}
+
+.budget-chart__ring {
+  width: var(--ui-chart-height);
+  height: var(--ui-chart-height);
+  transform: rotate(-90deg);
+}
+
+.budget-chart__track {
+  fill: none;
+  stroke: var(--ui-color-chart-track);
+  stroke-width: var(--ui-chart-stroke);
+}
+
+.budget-chart__value {
+  fill: none;
+  stroke: var(--ui-color-chart-primary);
+  stroke-width: var(--ui-chart-stroke);
+  stroke-linecap: round;
+}
+
+.budget-chart__legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  margin: 0;
+}
+
+.budget-chart__legend dt {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.budget-chart__legend dd {
+  margin: 0;
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-emphasis);
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+}
+
+.rate-bar__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: var(--ui-font-size-small);
+  color: var(--ui-color-text-secondary);
+}
+
+.rate-bar__head strong {
+  font-family: var(--ui-font-family-data);
+  color: var(--ui-color-text);
+}
+
+.rate-bar__track {
+  height: var(--ui-icon-small);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-color-chart-track);
+  overflow: hidden;
+}
+
+.rate-bar__track i {
+  display: block;
+  height: 100%;
+  background: var(--ui-color-chart-secondary);
+}
+
+.rate-bar__note {
+  margin: var(--ui-space-1) 0 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.detail-list,
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detail-list__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+  padding-bottom: var(--ui-space-3);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.detail-list__item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.detail-list__main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+}
+
+.detail-list__label {
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-small);
+}
+
+.detail-list__value {
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-emphasis);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-list__hint {
+  margin: 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  line-height: var(--ui-line-height-body);
+}
+
+.todo-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  padding-bottom: var(--ui-space-3);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.todo-list__item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.todo-list__item strong {
+  display: block;
+  margin-top: var(--ui-space-1);
+}
+
+.todo-list__item p {
+  margin: var(--ui-space-1) 0 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+/* 微交互：精确指针悬停上浮，减少动效偏好下取消（不依赖动画库） */
+@media (hover: hover) and (pointer: fine) {
+  .spotlight:hover,
+  .assistant-card:hover,
+  .kpi-card:hover {
+    transform: translateY(calc(var(--ui-motion-lift) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spotlight,
+  .assistant-card,
+  .kpi-card,
+  .kpi-card__arrow {
+    transition: none;
+  }
+
+  .spotlight:hover,
+  .assistant-card:hover,
+  .kpi-card:hover {
+    transform: none;
+  }
 }
 </style>
