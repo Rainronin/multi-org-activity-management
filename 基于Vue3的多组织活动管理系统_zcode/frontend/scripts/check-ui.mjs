@@ -161,18 +161,22 @@ function checkElementPlusImports(text, file) {
 // 而不是等到正式页面出现像素字面量或漏检才被发现。
 function collect(text) {
   const found = []
-  for (const match of text.matchAll(COLOR_LITERAL)) found.push(`颜色字面量 ${match[0]}`)
-  for (const match of text.matchAll(SIZE_LITERAL)) found.push(`固定设计尺寸 ${match[0].trim()}`)
-  for (const match of text.matchAll(FONT_FAMILY_LITERAL)) found.push('font-family 字面量')
-  for (const match of text.matchAll(MOTION_LITERAL)) found.push(`动效时长字面量 ${match[0].trim()}`)
-  for (const match of text.matchAll(/!important/g)) found.push('禁止用 !important')
+  const pick = (pattern, label) => {
+    for (const match of text.matchAll(pattern)) {
+      found.push(label(match))
+    }
+  }
+  pick(COLOR_LITERAL, (match) => `颜色字面量 ${match[0]}`)
+  pick(SIZE_LITERAL, (match) => `固定设计尺寸 ${match[0].trim()}`)
+  pick(FONT_FAMILY_LITERAL, () => 'font-family 字面量')
+  pick(MOTION_LITERAL, (match) => `动效时长字面量 ${match[0].trim()}`)
+  pick(/!important/g, () => '禁止用 !important')
   for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
     if (!TABLE_COLUMN_TAG.test(match[0])) found.push('组件尺寸 props 字面量')
   }
-  for (const match of text.matchAll(INLINE_STYLE_BYPASS)) found.push('内联 style 疑似绕过 token')
+  pick(INLINE_STYLE_BYPASS, () => '内联 style 疑似绕过 token')
   return found
 }
-
 const SELF_TEST = [
   { text: '.a { color: #ff6b2c; }', expect: '颜色字面量' },
   { text: '.a { color: var(--ui-color-accent); }', expect: null },

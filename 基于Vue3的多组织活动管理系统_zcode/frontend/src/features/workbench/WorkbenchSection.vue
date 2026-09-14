@@ -41,6 +41,8 @@ const workbench = ref<Workbench | null>(null)
 const activities = ref<ActivityItem[]>([])
 const aiConfig = ref<AiConfig | null>(null)
 const aiMode = ref<'总结' | '方案'>('总结')
+/** R05：口径说明默认收起，明细保持紧凑；需要时一键展开。 */
+const showHints = ref(false)
 const loading = ref(false)
 const errorText = ref('')
 
@@ -202,9 +204,11 @@ function open(path: string) {
   }
 }
 
-function openActivity(activity: ActivityItem | null) {
+/** R02：跳转可携带目标页签，详情页会按当前状态与权限校验后选中（无效则回到概览）。 */
+function openActivity(activity: ActivityItem | null, tab?: 'proposal' | 'lifecycle') {
   if (activity) {
-    void router.push(`/org/${orgId.value}/activities/${activity.id}`)
+    const query = tab ? `?tab=${tab}` : ''
+    void router.push(`/org/${orgId.value}/activities/${activity.id}${query}`)
   }
 }
 
@@ -377,7 +381,7 @@ defineExpose({ reload: load })
             <ElButton
               :disabled="!aiCandidate"
               data-ai-open
-              @click="openActivity(aiCandidate)"
+              @click="openActivity(aiCandidate, aiMode === '总结' ? 'lifecycle' : 'proposal')"
             >
               打开{{ aiMode === '总结' ? '复盘' : '方案' }}编辑<ArrowRight />
             </ElButton>
@@ -453,6 +457,11 @@ defineExpose({ reload: load })
                 r="15.9155"
                 :stroke-dasharray="budgetChart.dash"
               />
+              <text
+                class="budget-chart__label"
+                x="21"
+                y="22"
+              >{{ budgetChart.percent }}</text>
             </svg>
             <dl class="budget-chart__legend">
               <div>
@@ -508,48 +517,6 @@ defineExpose({ reload: load })
 
         <section
           class="panel"
-          data-detail-panel
-        >
-          <div class="panel__head">
-            <h2>指标明细</h2>
-            <span class="panel__tag">{{ workbenchRoleLabel[workbench.role] }}</span>
-          </div>
-          <ul
-            v-if="details.length > 0"
-            class="detail-list"
-          >
-            <li
-              v-for="item in details"
-              :key="item.key"
-              class="detail-list__item"
-            >
-              <div class="detail-list__main">
-                <span class="detail-list__label">{{ item.label }}</span>
-                <span class="detail-list__value">{{ item.value }}</span>
-              </div>
-              <p class="detail-list__hint">
-                {{ item.hint }}
-              </p>
-              <ElButton
-                v-if="item.detailPath"
-                size="small"
-                link
-                @click="open(item.detailPath)"
-              >
-                {{ item.detailLabel || '查看明细' }}
-              </ElButton>
-            </li>
-          </ul>
-          <p
-            v-else
-            class="panel__empty"
-          >
-            当前身份没有额外的管理指标。
-          </p>
-        </section>
-
-        <section
-          class="panel"
           data-todo-panel
         >
           <div class="panel__head">
@@ -585,6 +552,58 @@ defineExpose({ reload: load })
             class="panel__empty"
           >
             暂无待处理事项。
+          </p>
+        </section>
+        <section
+          class="panel panel--wide"
+          data-detail-panel
+        >
+          <div class="panel__head">
+            <h2>指标明细</h2>
+            <span class="panel__tag">{{ workbenchRoleLabel[workbench.role] }}</span>
+            <ElButton
+              size="small"
+              link
+              data-detail-hints-toggle
+              @click="showHints = !showHints"
+            >
+              {{ showHints ? '收起口径说明' : '显示口径说明' }}
+            </ElButton>
+          </div>
+          <ul
+            v-if="details.length > 0"
+            class="detail-list"
+          >
+            <li
+              v-for="item in details"
+              :key="item.key"
+              class="detail-list__item"
+            >
+              <div class="detail-list__main">
+                <span class="detail-list__label">{{ item.label }}</span>
+                <span class="detail-list__value">{{ item.value }}</span>
+              </div>
+              <p
+                v-if="showHints"
+                class="detail-list__hint"
+              >
+                {{ item.hint }}
+              </p>
+              <ElButton
+                v-if="item.detailPath"
+                size="small"
+                link
+                @click="open(item.detailPath)"
+              >
+                {{ item.detailLabel || '查看明细' }}
+              </ElButton>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="panel__empty"
+          >
+            当前身份没有额外的管理指标。
           </p>
         </section>
       </div>
@@ -1066,6 +1085,22 @@ defineExpose({ reload: load })
   stroke: var(--ui-color-chart-primary);
   stroke-width: var(--ui-chart-stroke);
   stroke-linecap: round;
+}
+
+/* 环图中心显示真实占比（不只放在 aria-label 里） */
+.budget-chart__label {
+  fill: var(--ui-color-text);
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-small);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  transform: rotate(90deg);
+  transform-origin: center;
+}
+
+/* 图表与待办同排，明细整行放在下方，避免左侧出现大块空白 */
+.panel--wide {
+  grid-column: 1 / -1;
 }
 
 .budget-chart__legend {

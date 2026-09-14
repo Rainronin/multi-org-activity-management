@@ -651,4 +651,34 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? 'ç»
   max-width: var(--ui-layout-content-max);
   margin: 0 auto;
 }
+
+.unified-sidebar.sidebar--narrow .u-organization,
+.unified-sidebar.sidebar--narrow .u-meta,
+.unified-sidebar.sidebar--narrow .u-group,
+.unified-sidebar.sidebar--narrow .u-brand-name {
+  display: none;
+}
+
+.unified-sidebar.sidebar--narrow .u-navigation {
+  display: block;
+}
+
+.unified-sidebar.sidebar--narrow .u-subitems {
+  flex-direction: row;
+  gap: var(--ui-space-2);
+  overflow-x: auto;
+}
+
+.unified-sidebar.sidebar--narrow .u-item {
+  width: auto;
+  flex: 0 0 auto;
+  min-height: var(--ui-control-height-small);
+  padding: var(--ui-space-1) var(--ui-space-3);
+}
+
+.unified-sidebar.sidebar--narrow .u-account {
+  margin-top: var(--ui-space-3);
+  padding-top: var(--ui-space-2);
+}
+
 </style>

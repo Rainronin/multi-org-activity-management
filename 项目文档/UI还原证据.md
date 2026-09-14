@@ -39,7 +39,7 @@
 
 ## 四、真机核对输出（原文）
 
-``json
+```json
 {
  "check": "工作台视觉还原核对（Demo 阅读顺序：重点卡＋AI 卡 → KPI → 图表 → 明细／待办）",
  "org": {
@@ -103,12 +103,14 @@
   "验证截图/UI核对-工作台-390.png"
  ]
 }
-``
+```
 
 ## 五、复现命令
 
-``powershell
-# 启动：后端（测试库）、正式前端、Demo 参考
+须在各自终端从项目根目录进入对应目录；后端 local profile 本身不能证明连接测试库，启动前按 README 核实 activity_test 目标。以下前端检查应逐项查看退出码，最后一个成功不代表全部成功。
+
+```powershell
+# 启动：后端（须先核实测试库目标）、正式前端、Demo 参考
 cd .\基于Vue3的多组织活动管理系统_zcode\backend; .\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local"
 cd .\基于Vue3的多组织活动管理系统_zcode\frontend; npm run dev
 cd .\UI演示; npm run dev
@@ -117,11 +119,26 @@ cd .\UI演示; npm run dev
 node .\生成脚本\audit_ui_workbench.mjs
 # 静态门禁与构建
 cd .\基于Vue3的多组织活动管理系统_zcode\frontend; npm run typecheck; npm run lint; npm run check:ui; npx vitest run; npm run build
-``
+```
 
 ## 六、未完成与待审核方判定
+
+2026-09-14 独立复核已完成，当前结论见[审核报告](开发进度审核报告.md) R01—R05：部分通过，lint 失败，原登录截图无效。下列内容保留为本次送审范围说明，不替代复核结果。
 
 1. **U05 剩余页面**：成员管理、组织设置（AI 模型）、公开参与页的骨架屏、卡片质感与悬停未按工作台口径统一（当前为文字"正在加载……"与朴素列表）。
 2. **视觉基线结论**：按审核报告 U06，需同视口、同角色、可比数据状态的并排审查后给出；本轮只提供材料与实测数据，不自行判定"视觉合格"。
 3. **撤回的交付验收**：功能开发清单中该项保持未勾选状态，本轮未回填。
 4. **真实厂商模型调用证据**：与本轮 UI 无关，仍待用户提供密钥后单独补齐。
+
+## 七、R01—R05 处理进展（2026-09-14）
+
+| 编号 | 处理结果 | 证据 |
+| --- | --- | --- |
+| R01 lint | **已修**：`frontend/scripts/check-ui.mjs` 的规则自检改为 `pick(pattern, label)` 形式，去掉三处未使用绑定（原第 166／168／172 行）；`npm run lint` 通过 | `npm run lint`、`npm run check:ui` 均通过 |
+| R02 AI 定向入口 | **已修**：AI 卡按钮按模式跳转并携带目标页签（总结→`?tab=lifecycle`、方案→`?tab=proposal`），详情页按当前状态与权限校验后选中，不合法时回概览 | 真机：总结入口 `/org/4922/activities/4015?tab=lifecycle` → 选中「执行与复盘」；方案入口 `…/4016?tab=proposal` → 选中「方案」 |
+| R03 登录证据 | **已修**：改用独立匿名 context 访问 `/login`，断言最终路径包含 `/login` 且存在密码输入框后截图 | 核对输出 `shell.loginEvidence`：`url=/login`、`formVisible=true`、页面错误 0 |
+| R04 手机导航 | **未解决**：实测 320／390 宽时导航高 612px、主体首屏顶距 868px（`mobileFirstScreenOk=false`）。两次尝试（窄屏强制折叠、复用同一导航压成横向条）分别无效与引入横向溢出，已回退，未留下回归 | 核对输出 `narrowWidths`、`mobileFirstScreenOk`；需下轮按 tokens.css 断点重做并补 320／768／1024 与短屏验收 |
+| R05 工作台密度 | **已修**：图表与待办同排、明细整行并在下方，口径说明默认收起（一键展开），环图中心显示真实占比 | `WorkbenchSection.vue` 结构调整 + `data-detail-hints-toggle`；截图见 `验证截图/UI核对-工作台-1440.png`（本轮末次运行生成） |
+| U05 其余页面 | **未完成**：成员／组织设置／公开参与页的骨架与微交互仍待统一 | 见第六节第 1 条 |
+
+本轮复查命令与输出：`node .\生成脚本\audit_ui_workbench.mjs`（含 R02 定向入口、R03 匿名登录证据、320／390／768／1024 溢出与首屏顶距实测），前端 typecheck／lint／check:ui／38 项单测通过；后端未改动。

@@ -122,12 +122,80 @@ try {
   const reducedTransition = await reducedPage.locator('.spotlight').first()
     .evaluate((element) => getComputedStyle(element).transitionDuration)
 
-  const loginPage = await ctx.newPage()
-  await loginPage.setViewportSize({ width: 1440, height: 1000 })
-  await loginPage.goto('/login', { waitUntil: 'networkidle' })
-  await loginPage.waitForTimeout(500)
+  // R03：用独立匿名 context，避免已登录守卫把 /login 跳到账号页（上一版证据就拍错了页面）
+  const anonymous = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const loginPage = await anonymous.newPage()
+  const loginErrors = []
+  loginPage.on('pageerror', (e) => loginErrors.push(e.message))
+  await loginPage.goto(`${base}/login`, { waitUntil: 'networkidle' })
+  await loginPage.waitForSelector('.auth-panel form, form', { timeout: 20000 })
+  await loginPage.waitForTimeout(400)
+  const loginUrl = loginPage.url()
+  const loginFormVisible = (await loginPage.locator('input[type="password"]').count()) > 0
+  assert.ok(loginUrl.includes('/login'), `登录页证据无效：最终路径 ${loginUrl}`)
+  assert.ok(loginFormVisible, '登录页缺少密码输入框')
   const loginShot = fileURLToPath(new URL('../验证截图/UI核对-登录-1440.png', import.meta.url))
   await loginPage.screenshot({ path: loginShot })
+
+  // R02：AI 卡定向入口（总结→执行与复盘、方案→方案页签）
+  const aiPage = await ctx.newPage()
+  const aiErrors = []
+  aiPage.on('pageerror', (e) => aiErrors.push(e.message))
+  await aiPage.setViewportSize({ width: 1440, height: 1000 })
+  await aiPage.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
+  await aiPage.waitForSelector('[data-ai-card]', { timeout: 20000 })
+  const aiTargets = {}
+  for (const mode of ['总结', '方案']) {
+    await aiPage.locator('[data-ai-card] .assistant-card__modes button', { hasText: mode }).first().click()
+    await aiPage.waitForTimeout(300)
+    const enabled = await aiPage.locator('[data-ai-open]').first().isEnabled()
+    if (!enabled) {
+      aiTargets[mode] = { skipped: '当前组织没有该模式的候选活动' }
+      continue
+    }
+    await aiPage.locator('[data-ai-open]').first().click()
+    await aiPage.waitForSelector('.detail-tabs', { timeout: 20000 })
+    await aiPage.waitForTimeout(500)
+    aiTargets[mode] = {
+      url: aiPage.url().replace(base, ''),
+      activeTab: (await aiPage.locator('.el-tabs__item.is-active').first().innerText()).trim(),
+    }
+    await aiPage.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
+    await aiPage.waitForSelector('[data-ai-card]', { timeout: 20000 })
+  }
+  assert.ok(
+    Object.values(aiTargets).some((item) => item.activeTab === '执行与复盘' || item.activeTab === '方案'),
+    `AI 定向入口未定位到编辑区：${JSON.stringify(aiTargets)}`,
+  )
+
+  // R04：手机首屏可用性（导航不得占据大半屏）与 320／768／1024 溢出
+  const narrowChecks = []
+  for (const width of [320, 390, 768, 1024]) {
+    const shotPage = await ctx.newPage()
+    await shotPage.setViewportSize({ width, height: 720 })
+    await shotPage.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
+    await shotPage.waitForSelector('[data-focus-activity]', { timeout: 20000 })
+    await shotPage.waitForTimeout(400)
+    const measured = await shotPage.evaluate(() => {
+      const focus = document.querySelector('[data-focus-activity]')
+      const nav = document.querySelector('.unified-sidebar')
+      return {
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        focusTop: focus ? Math.round(focus.getBoundingClientRect().top) : null,
+        navWidth: nav ? Math.round(nav.getBoundingClientRect().width) : null,
+        navHeight: nav ? Math.round(nav.getBoundingClientRect().height) : null,
+      }
+    })
+    narrowChecks.push({ width, ...measured, overflowPx: measured.scrollWidth - measured.clientWidth })
+    if (width <= 390) {
+      await shotPage.screenshot({
+        path: fileURLToPath(new URL(`../验证截图/UI核对-工作台-${width}.png`, import.meta.url)),
+      })
+    }
+    await shotPage.close()
+  }
+  const mobileFirstScreen = narrowChecks.find((item) => item.width === 390)
 
   // ---------- 同视口演示对照（U06）----------
   await mkdir(new URL('../验证截图/UI独立审核/', import.meta.url), { recursive: true })
@@ -221,7 +289,12 @@ try {
     shell: {
       navCollapsedAttr: collapsedAttr,
       reducedMotionTransitionDuration: reducedTransition,
+      loginEvidence: { url: loginUrl, formVisible: loginFormVisible, pageErrors: loginErrors },
     },
+    aiTargetedEntry: aiTargets,
+    narrowWidths: narrowChecks,
+    mobileFirstScreenOk: Boolean(mobileFirstScreen && mobileFirstScreen.focusTop !== null
+      && mobileFirstScreen.focusTop < mobileFirstScreen.width),
     demoComparison: {
       demoReachable,
       demoErrors,

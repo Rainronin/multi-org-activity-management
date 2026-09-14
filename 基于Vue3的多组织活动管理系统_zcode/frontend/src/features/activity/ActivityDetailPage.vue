@@ -66,6 +66,22 @@ const statusHints: Record<string, string> = {
 }
 const statusHint = computed(() => statusHints[activity.value?.status ?? ''] ?? '')
 
+/** 当前状态与权限下可见的页签（与模板 v-if 一致），用于校验 ?tab= 目标。 */
+const allowedTabs = computed(() => {
+  const status = activity.value?.status ?? 'DRAFT'
+  const tabs = ['overview', 'proposal']
+  if (status !== 'DRAFT') {
+    tabs.push('tasks', 'expense')
+  }
+  if (status === 'APPROVED') {
+    tabs.push('registration')
+  }
+  if (status !== 'DRAFT' && status !== 'PENDING_APPROVAL') {
+    tabs.push('lifecycle')
+  }
+  return tabs
+})
+
 const proposalDraft = ref('')
 const proposalDirty = ref(false)
 const proposalSaving = ref(false)
@@ -116,6 +132,9 @@ async function loadActivity(): Promise<void> {
     activity.value = detail
     proposalDraft.value = detail.proposal ?? ''
     proposalDirty.value = false
+    // R02：工作台 AI 卡等入口可指定页签；状态或权限不允许时回到概览，不静默停在无关页签
+    const requestedTab = String(route.query.tab ?? '')
+    activeTab.value = allowedTabs.value.includes(requestedTab) ? requestedTab : 'overview'
   } catch (error) {
     if (seq !== requestSeq || targetId !== activityId.value || gen !== session.generation) {
       return
