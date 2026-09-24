@@ -3,6 +3,7 @@ package com.example.activity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -119,6 +120,39 @@ class ActivityLifecycleTest extends FlowTestSupport {
                 .content("{\"version\":" + versionOf(activityId) + "}"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.summaryConfirmedAt").isNotEmpty());
+    }
+
+    @Test
+    void concurrentFirstFeedbackReturnsConflictInsteadOfServerError() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-09-05T14:00:00+08:00");
+        startExecution(owner, orgId, activityId, 200);
+        finishExecution(owner, orgId, activityId, 200);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var results = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            for (int i = 0; i < 8; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return mockMvc.perform(post(path(orgId, activityId) + "/feedback")
+                            .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"rating\":5,\"comment\":\"并发首次提交\"}"))
+                        .andReturn();
+                }));
+            }
+            start.countDown();
+            for (var result : results) {
+                var response = result.get(20, java.util.concurrent.TimeUnit.SECONDS).getResponse();
+                assertThat(response.getStatus()).isIn(200, 409);
+                if (response.getStatus() == 409) {
+                    assertThat(response.getContentAsString()).contains("FEEDBACK_CONFLICT");
+                }
+            }
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM feedback WHERE activity_id = ?",
+            Integer.class, activityId)).isEqualTo(1);
     }
 
     @Test
@@ -625,5 +659,107 @@ class ActivityLifecycleTest extends FlowTestSupport {
                 .delete(path(orgId, activityId) + "/attachments/" + keptId)
                 .with(csrf()).session(owner.session()))
             .andExpect(status().isConflict());
+    }
+
+    @Test
+    void executionAndArchiveRejectOrdinaryActivityPatch() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-09-10T14:00:00+08:00");
+        startExecution(owner, orgId, activityId, 200);
+        assertActivityPatchRejected(owner, orgId, activityId);
+        finishExecution(owner, orgId, activityId, 200);
+        assertActivityPatchRejected(owner, orgId, activityId);
+        saveAndConfirmSummary(owner, orgId, activityId);
+        archive(owner, orgId, activityId, 200);
+        assertActivityPatchRejected(owner, orgId, activityId);
+    }
+
+    private void assertActivityPatchRejected(TestSession actor, Long orgId, Long activityId) throws Exception {
+        long version = versionOf(activityId);
+        String name = jdbcTemplate.queryForObject("SELECT name FROM activity WHERE id = ?", String.class, activityId);
+        mockMvc.perform(patch(path(orgId, activityId)).with(csrf()).session(actor.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"name\":\"不应保存\"}")))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        assertThat(versionOf(activityId)).isEqualTo(version);
+        assertThat(jdbcTemplate.queryForObject("SELECT name FROM activity WHERE id = ?", String.class, activityId))
+            .isEqualTo(name);
+    }
+
+    @Test
+    void archivedMaterialsRejectUpdateAndTransition() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-09-11T14:00:00+08:00");
+        MvcResult created = mockMvc.perform(post(path(orgId, activityId) + "/materials")
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"物料\",\"quantity\":3,\"unit\":\"份\"}"))
+            .andExpect(status().isCreated()).andReturn();
+        String materialId = readField(created, "$.materialId");
+        String materialPath = path(orgId, activityId) + "/materials/" + materialId;
+        mockMvc.perform(post(materialPath + "/transition").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"toStatus\":\"READY\"}"))
+            .andExpect(status().isOk());
+        startExecution(owner, orgId, activityId, 200);
+        // 执行期仍允许维护物资，避免把修复扩大成过度禁止。
+        Long version = jdbcTemplate.queryForObject("SELECT version FROM material WHERE id = ?", Long.class, materialId);
+        mockMvc.perform(post(materialPath + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"物料\",\"quantity\":4,\"unit\":\"份\",\"version\":" + version + "}"))
+            .andExpect(status().isOk());
+        finishExecution(owner, orgId, activityId, 200);
+        saveAndConfirmSummary(owner, orgId, activityId);
+        archive(owner, orgId, activityId, 200);
+        Long archivedVersion = jdbcTemplate.queryForObject("SELECT version FROM material WHERE id = ?", Long.class, materialId);
+        mockMvc.perform(post(materialPath + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"不应保存\",\"quantity\":99,\"unit\":\"份\",\"version\":" + archivedVersion + "}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        mockMvc.perform(post(materialPath + "/transition").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"toStatus\":\"PENDING\"}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        assertThat(jdbcTemplate.queryForObject("SELECT quantity FROM material WHERE id = ?", Integer.class, materialId)).isEqualTo(4);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM material WHERE id = ?", String.class, materialId)).isEqualTo("READY");
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM material WHERE id = ?", Long.class, materialId)).isEqualTo(archivedVersion);
+    }
+
+    @Test
+    void voucherDownloadRequiresManagerButOrdinaryDocumentsRemainReadable() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession manager = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, manager, orgId);
+        inviteAndAccept(owner, member, orgId);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, manager.username()),
+            "2027-09-12T14:00:00+08:00", "100.00");
+        MvcResult expense = mockMvc.perform(post(path(orgId, activityId) + "/expenses")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"purpose\":\"物料\",\"amount\":10.00,\"incurredOn\":\"2027-09-12\",\"category\":\"MATERIAL\"}"))
+            .andExpect(status().isCreated()).andReturn();
+        String receiptPath = path(orgId, activityId) + "/expenses/" + readField(expense, "$.expenseId") + "/attachments";
+        MvcResult receipt = mockMvc.perform(multipart(receiptPath)
+                .file(new MockMultipartFile("file", "receipt.png", "image/png", PNG))
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated()).andReturn();
+        String download = path(orgId, activityId) + "/attachments/" + readField(receipt, "$.attachmentId") + "/download";
+        mockMvc.perform(get(receiptPath).session(member.session())).andExpect(status().isNotFound());
+        mockMvc.perform(get(download).session(member.session())).andExpect(status().isNotFound());
+        for (TestSession allowed : java.util.List.of(owner, manager)) {
+            mockMvc.perform(get(receiptPath).session(allowed.session())).andExpect(status().isOk());
+            MvcResult bytes = mockMvc.perform(get(download).session(allowed.session())).andExpect(status().isOk()).andReturn();
+            assertThat(bytes.getResponse().getContentAsByteArray()).isEqualTo(PNG);
+        }
+        MvcResult document = mockMvc.perform(multipart(path(orgId, activityId) + "/attachments")
+                .file(new MockMultipartFile("file", "arrangement.png", "image/png", PNG))
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated()).andReturn();
+        mockMvc.perform(get(path(orgId, activityId) + "/attachments/" + readField(document, "$.attachmentId") + "/download")
+                .session(member.session())).andExpect(status().isOk());
     }
 }

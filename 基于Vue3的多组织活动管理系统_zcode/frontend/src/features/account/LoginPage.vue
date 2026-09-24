@@ -64,9 +64,9 @@ async function submit() {
     <p class="auth-eyebrow">
       欢迎回来
     </p>
-    <h2 class="auth-heading">
+    <h1 class="auth-heading">
       继续，把事情做好。
-    </h2>
+    </h1>
     <p class="auth-intro">
       登录你的工作空间，与组织保持同步。
     </p>

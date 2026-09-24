@@ -61,6 +61,24 @@ class ErrorContractTest extends ActivityTestBase {
     }
 
     @Test
+    void malformedPathAndQueryParametersReturn400() throws Exception {
+        for (String value : new String[] {"invalid", "9223372036854775808"}) {
+            mockMvc.perform(get("/api/public/activities/" + value))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("activityId"))
+                .andExpect(jsonPath("$.requestId").isNotEmpty());
+            mockMvc.perform(get("/api/public/activities").param("page", value))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("page"));
+        }
+        // 认证仍先于参数处理，非法参数不能绕过登录边界。
+        mockMvc.perform(get("/api/organizations/invalid"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void healthIsPublic() throws Exception {
         mockMvc.perform(get("/api/health"))
             .andExpect(status().isOk())

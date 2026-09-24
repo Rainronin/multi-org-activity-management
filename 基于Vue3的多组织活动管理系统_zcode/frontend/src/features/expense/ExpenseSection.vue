@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { readUiLength } from '../../shared/utils/readUiToken'
+import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElMessage, ElMessageBox, ElOption,
-  ElPagination, ElSelect, ElTable, ElTableColumn, ElTag,
+  ElPagination, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
@@ -37,6 +39,10 @@ const PAGE_SIZE = 20
 const items = ref<ExpenseItem[]>([])
 const summary = ref<ExpenseSummary | null>(null)
 const loading = ref(false)
+/** 是否已完成一次成功读取；未完成时的空表格只能显示“正在加载”，不能显示“暂无”。 */
+const loaded = ref(false)
+/** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
+const skeleton = useLoadingSkeleton()
 const errorText = ref('')
 const actionError = ref('')
 const acting = ref('')
@@ -92,6 +98,12 @@ async function loadAll(): Promise<void> {
   const seq = ++requestSeq
   const gen = session.capture()
   loading.value = true
+  // 已有内容时是后台刷新（含翻页与筛选），不重放骨架
+  if (items.value.length > 0) {
+    skeleton.hide()
+  } else {
+    skeleton.begin()
+  }
   errorText.value = ''
   try {
     const memberId = await resolveMyMemberId(orgId.value, session.account?.username ?? '')
@@ -103,6 +115,7 @@ async function loadAll(): Promise<void> {
       items.value = []
       summary.value = null
       total.value = 0
+      loaded.value = true
       return
     }
     const [pageResult, summaryResult] = await Promise.all([
@@ -115,6 +128,7 @@ async function loadAll(): Promise<void> {
     items.value = pageResult.items
     total.value = pageResult.total
     summary.value = summaryResult
+    loaded.value = true
     if (pageResult.items.length === 0 && pageResult.total > 0 && page.value > 1) {
       page.value = Math.max(1, Math.ceil(pageResult.total / PAGE_SIZE))
       await loadAll()
@@ -125,6 +139,8 @@ async function loadAll(): Promise<void> {
     }
     items.value = []
     summary.value = null
+    // 失败不冒充空态：表格继续显示“正在加载…”而不是“暂无”
+    loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
@@ -134,12 +150,17 @@ async function loadAll(): Promise<void> {
   } finally {
     if (seq === requestSeq) {
       loading.value = false
+      skeleton.end()
     }
   }
 }
 
 watch([orgId, activityId], () => {
   page.value = 1
+  items.value = []
+  summary.value = null
+  loaded.value = false
+  skeleton.hide()
   void loadAll()
 })
 watch(statusFilter, () => {
@@ -438,6 +459,12 @@ defineExpose({ reload: loadAll })
       role="alert"
     >
       {{ errorText }}
+      <ElButton
+        size="small"
+        @click="loadAll"
+      >
+        重新加载
+      </ElButton>
     </p>
     <p
       v-if="actionError"
@@ -469,19 +496,30 @@ defineExpose({ reload: loadAll })
       金额只按已确认明细扣减，余额可以为负；已确认支出不代表付款完成。
     </p>
 
+    <ElSkeleton
+      v-if="skeleton.loading.value && items.length === 0"
+      :rows="4"
+      animated
+      data-expense-skeleton
+      aria-busy="true"
+      aria-label="正在加载经费明细"
+    />
     <ElTable
-      v-loading="loading"
+      v-else
       :data="items"
       class="expense-table"
     >
+      <template #empty>
+        <span>{{ loaded ? '暂无支出记录。' : '正在加载经费明细…' }}</span>
+      </template>
       <ElTableColumn
         prop="purpose"
         label="用途"
-        min-width="150"
+        :min-width="readUiLength('--ui-table-col-150')"
       />
       <ElTableColumn
         label="金额（元）"
-        min-width="110"
+        :min-width="readUiLength('--ui-table-col-110')"
       >
         <template #default="{ row }">
           {{ (row as ExpenseItem).amount }}
@@ -489,7 +527,7 @@ defineExpose({ reload: loadAll })
       </ElTableColumn>
       <ElTableColumn
         label="分类"
-        min-width="100"
+        :min-width="readUiLength('--ui-table-col-100')"
       >
         <template #default="{ row }">
           {{ expenseCategoryLabel[(row as ExpenseItem).category] ?? (row as ExpenseItem).category }}
@@ -498,11 +536,11 @@ defineExpose({ reload: loadAll })
       <ElTableColumn
         prop="incurredOn"
         label="发生日期"
-        min-width="120"
+        :min-width="readUiLength('--ui-table-col-120')"
       />
       <ElTableColumn
         label="凭证"
-        min-width="80"
+        :min-width="readUiLength('--ui-table-col-80')"
       >
         <template #default="{ row }">
           {{ (row as ExpenseItem).voucherCount }}
@@ -510,7 +548,7 @@ defineExpose({ reload: loadAll })
       </ElTableColumn>
       <ElTableColumn
         label="状态"
-        min-width="100"
+        :min-width="readUiLength('--ui-table-col-100')"
       >
         <template #default="{ row }">
           <ElTag
@@ -523,7 +561,7 @@ defineExpose({ reload: loadAll })
       </ElTableColumn>
       <ElTableColumn
         label="说明"
-        min-width="160"
+        :min-width="readUiLength('--ui-table-col-160')"
       >
         <template #default="{ row }">
           <span class="expense-note">
@@ -537,7 +575,7 @@ defineExpose({ reload: loadAll })
       </ElTableColumn>
       <ElTableColumn
         label="操作"
-        min-width="260"
+        :min-width="readUiLength('--ui-table-col-260')"
       >
         <template #default="{ row }">
           <template v-if="(row as ExpenseItem).status === 'DRAFT' || (row as ExpenseItem).status === 'REJECTED'">
@@ -611,9 +649,6 @@ defineExpose({ reload: loadAll })
           >—</span>
         </template>
       </ElTableColumn>
-      <template #empty>
-        <span class="expense-note">暂无支出记录。</span>
-      </template>
     </ElTable>
 
     <ElPagination

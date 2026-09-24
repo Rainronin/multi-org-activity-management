@@ -3,6 +3,8 @@ package com.example.activity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -48,6 +50,64 @@ class TaskOwnershipTest extends FlowTestSupport {
             .with(csrf()).session(actor.session())
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"toStatus\":\"%s\"}".formatted(toStatus));
+    }
+
+    @Test
+    void approvalAssignmentAndExecutionPersistAcrossRoles() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession organizer = registerAndLogin();
+        TestSession executor = registerAndLogin();
+        TestSession participant = registerAndLogin();
+        Long orgId = createOrg(owner);
+        for (TestSession member : new TestSession[] {organizer, executor, participant}) {
+            inviteAndAccept(owner, member, orgId);
+        }
+        String base = "/api/organizations/" + orgId;
+        Long organizerId = memberIdOf(orgId, organizer.username());
+        Long activityId = Long.parseLong(readField(mockMvc.perform(post(base + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(activityBody("团建链路复核", organizerId, "2027-10-05T14:00:00+08:00")))
+            .andExpect(status().isCreated()).andReturn(), "$.id"));
+        String activityPath = base + "/activities/" + activityId;
+        // 活动负责人提交方案，由组织负责人确认，执行者不能代审批。
+        mockMvc.perform(put(activityPath + "/proposal").with(csrf()).session(organizer.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"content\":\"团建场地与物料安排\"}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(post(activityPath + "/submit").with(csrf()).session(organizer.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING_APPROVAL"));
+        mockMvc.perform(post(activityPath + "/approve").with(csrf()).session(executor.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(post(activityPath + "/approve").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("APPROVED"));
+        String taskId = createTask(organizer, orgId, activityId, memberIdOf(orgId, executor.username()));
+        // 各角色会话读取持久记录；普通参与者没有被自动分配搭建任务。
+        mockMvc.perform(get(base + "/my-tasks").session(executor.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].taskId").value(taskId));
+        mockMvc.perform(get(base + "/my-tasks").session(participant.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(0));
+        mockMvc.perform(advance(orgId, activityId, taskId, participant, "COMPLETED"))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(post(activityPath + "/start-execution").with(csrf()).session(organizer.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"));
+        mockMvc.perform(advance(orgId, activityId, taskId, executor, "IN_PROGRESS"))
+            .andExpect(status().isOk());
+        mockMvc.perform(advance(orgId, activityId, taskId, executor, "COMPLETED"))
+            .andExpect(status().isOk());
+        assertTaskCompletedAt(Long.parseLong(taskId), true);
+        mockMvc.perform(get(activityPath + "/tasks").session(organizer.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].status").value("COMPLETED"));
+        mockMvc.perform(post(activityPath + "/finish-execution").with(csrf()).session(organizer.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("REVIEWING"));
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM activity WHERE id = ?",
+            String.class, activityId)).isEqualTo("REVIEWING");
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM task WHERE id = ?",
+            String.class, Long.parseLong(taskId))).isEqualTo("COMPLETED");
     }
 
     @Test

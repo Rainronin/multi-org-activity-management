@@ -1,4 +1,3 @@
-/* micro-lift */
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
@@ -18,6 +17,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 12
 const loading = ref(false)
+const loadedOnce = ref(false)
 const errorText = ref('')
 
 async function load(targetPage = page.value): Promise<void> {
@@ -36,6 +36,7 @@ async function load(targetPage = page.value): Promise<void> {
       : '公开活动加载失败，请稍后重试。'
   } finally {
     loading.value = false
+    loadedOnce.value = true
   }
 }
 
@@ -69,7 +70,7 @@ function startApply(item: PublicActivityItem): void {
     </header>
 
     <p
-      v-if="errorText"
+      v-if="errorText && items.length === 0"
       class="public-error"
       role="alert"
     >
@@ -78,28 +79,29 @@ function startApply(item: PublicActivityItem): void {
         text
         @click="load(page)"
       >
-        重试
+        重新加载
       </ElButton>
     </p>
 
     <ElSkeleton
-      v-if="loading"
+      v-else-if="loading"
       :rows="6"
       animated
+      data-public-skeleton
+      aria-busy="true"
+      aria-label="正在加载公开活动"
     />
 
-    <template v-else>
-      <p
-        v-if="items.length === 0"
-        class="public-empty"
-      >
-        暂无公开活动。公开活动需要由组织负责人确认发布并选择公开报名范围。
-      </p>
+    <p
+      v-else-if="loadedOnce && items.length === 0"
+      class="public-empty"
+      data-public-empty
+    >
+      暂无公开活动。公开活动需要由组织负责人确认发布并选择公开报名范围。
+    </p>
 
-      <ul
-        v-else
-        class="public-cards"
-      >
+    <template v-else-if="items.length > 0">
+      <ul class="public-cards">
         <li
           v-for="item in items"
           :key="item.id"

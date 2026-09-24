@@ -83,9 +83,9 @@ function finishRecovery() {
     <p class="auth-eyebrow">
       找回账号
     </p>
-    <h2 class="auth-heading">
+    <h1 class="auth-heading">
       用恢复码重新取得控制权。
-    </h2>
+    </h1>
     <p class="auth-intro">
       恢复成功后旧密码与旧恢复码立即失效，系统会发放新的恢复码。
     </p>

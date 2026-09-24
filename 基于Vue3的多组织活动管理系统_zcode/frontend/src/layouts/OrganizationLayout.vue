@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ArrowRight, CircleCheck, FolderOpened, HomeFilled, Setting, User } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, CircleCheck, FolderOpened, HomeFilled, Menu, Setting, User } from '@element-plus/icons-vue'
 import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
 import { ApiError } from '../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../stores/session'
@@ -18,6 +18,14 @@ const session = useSessionStore()
 const directoryStore = useOrganizationsStore()
 
 const collapsed = ref(false)
+const mobileNavOpen = ref(false)
+const mobileNavButton = ref<HTMLButtonElement>()
+function closeMobileNav(): void {
+  if (!mobileNavOpen.value) return
+  mobileNavOpen.value = false
+  mobileNavButton.value?.focus()
+}
+watch(() => route.fullPath, closeMobileNav)
 /** 导航分组展开状态（Demo 的组织工作区分组标题）。 */
 const navExpanded = ref(true)
 const directoryLoading = ref(true)
@@ -135,11 +143,31 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   <div
     class="workspace"
     :data-nav-collapsed="collapsed"
+    :data-group-collapsed="!navExpanded"
+    :data-mobile-nav-open="mobileNavOpen"
   >
     <aside
       class="unified-sidebar"
       aria-label="组织侧栏"
+      @keydown.esc="closeMobileNav"
     >
+      <div class="u-mobile-header">
+        <div class="u-mobile-context">
+          <strong>{{ orgDetail?.name ?? '组织工作区' }}</strong>
+          <span>{{ pageTitle }}</span>
+        </div>
+        <button
+          ref="mobileNavButton"
+          class="u-mobile-toggle"
+          :aria-label="mobileNavOpen ? '收起导航' : '展开导航'"
+          :aria-expanded="mobileNavOpen"
+          aria-controls="organization-menu primary-navigation account-menu"
+          @click="mobileNavOpen = !mobileNavOpen"
+        >
+          <Menu aria-hidden="true" />
+          {{ mobileNavOpen ? '收起' : '菜单' }}
+        </button>
+      </div>
       <div class="u-brand-row">
         <RouterLink
           class="u-brand"
@@ -176,7 +204,10 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         <span class="u-label">收起侧栏</span>
       </button>
 
-      <div class="u-organization">
+      <div
+        id="organization-menu"
+        class="u-organization"
+      >
         <span class="u-label u-eyebrow">当前组织</span>
         <OrganizationSwitcher
           :organizations="directoryStore.items"
@@ -207,7 +238,6 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         <div
           id="workspace-subnav"
           class="u-subitems"
-          :hidden="!navExpanded"
         >
           <RouterLink
             class="u-item"
@@ -221,7 +251,7 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
           </RouterLink>
           <RouterLink
             class="u-item"
-            :class="{ active: route.name === 'org-activities' }"
+            :class="{ active: route.name === 'org-activities' || route.name === 'org-activity-detail' }"
             :to="`/org/${orgId}/activities`"
             aria-label="活动管理"
             title="活动管理"
@@ -262,7 +292,10 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         </div>
       </nav>
 
-      <div class="u-account">
+      <div
+        id="account-menu"
+        class="u-account"
+      >
         <ElDropdown
           trigger="click"
           @command="onAccountCommand"
@@ -353,7 +386,7 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   padding: var(--ui-space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--ui-space-4);
+  gap: var(--ui-nav-gap);
   overflow-y: auto;
   overflow-x: hidden;
   color: var(--ui-color-on-dark);
@@ -457,6 +490,45 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   margin: 0;
 }
 
+.u-organization {
+  display: var(--ui-nav-content-display);
+}
+
+.u-mobile-header {
+  display: var(--ui-nav-mobile-header-display);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+}
+
+.u-mobile-context {
+  display: grid;
+  min-width: 0;
+  gap: var(--ui-space-1);
+}
+
+.u-mobile-context strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--ui-font-size-body);
+}
+
+.u-mobile-context span {
+  color: var(--ui-color-on-dark-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.u-mobile-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-control-min-touch);
+  padding: var(--ui-space-2);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
 .u-organization :deep(.el-select__wrapper) {
   min-height: var(--ui-control-min-touch);
   padding: var(--ui-space-2);
@@ -541,8 +613,8 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   display: flex;
   flex-direction: var(--ui-nav-item-direction);
   align-items: center;
-  justify-content: var(--ui-nav-item-justify, flex-start);
-  gap: var(--ui-space-2);
+  justify-content: var(--ui-nav-item-justify);
+  gap: var(--ui-nav-item-gap);
   min-height: var(--ui-control-min-touch);
   padding: var(--ui-nav-item-padding);
   border-radius: var(--ui-radius-control);
@@ -572,6 +644,7 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
 }
 
 .u-account {
+  display: var(--ui-nav-content-display);
   margin-top: auto;
   padding-top: var(--ui-space-4);
   border-top: var(--ui-border-width) solid var(--ui-color-border-dark);
@@ -608,26 +681,50 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
 }
 
 .topbar {
+  position: sticky;
+  top: var(--ui-layout-outer-gap);
+  z-index: var(--ui-z-sticky);
   min-height: var(--ui-layout-topbar-height);
-  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
-  display: flex;
+  margin: var(--ui-layout-outer-gap) var(--ui-layout-page-padding) 0;
+  border: var(--ui-border-width) solid var(--ui-color-glass-edge);
+  border-radius: var(--ui-radius-island);
+  box-shadow: var(--ui-shadow-glass);
+  display: var(--ui-layout-topbar-display);
   align-items: center;
   justify-content: space-between;
   gap: var(--ui-space-3);
-  padding: 0 var(--ui-layout-page-padding);
+  padding: var(--ui-space-2) var(--ui-space-5);
   font-size: var(--ui-font-size-body);
   color: var(--ui-color-text-secondary);
   background: var(--ui-color-surface);
 }
 
+.topbar > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@supports (backdrop-filter: blur(0)) {
+  .topbar {
+    background: var(--ui-surface-navigation-glass);
+    backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
+  }
+}
+
 .topbar strong {
+  padding: var(--ui-space-1) var(--ui-space-3);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-glass);
   color: var(--ui-color-text);
   font-weight: var(--ui-font-weight-medium);
 }
 
 .breadcrumb-separator {
   color: var(--ui-color-text-muted);
-  margin: 0 var(--ui-space-4);
 }
 
 .org-missing {
@@ -655,35 +752,6 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   padding: var(--ui-layout-page-padding) var(--ui-layout-page-padding) 0;
   max-width: var(--ui-layout-content-max);
   margin: 0 auto;
-}
-
-.unified-sidebar.sidebar--narrow .u-organization,
-.unified-sidebar.sidebar--narrow .u-meta,
-.unified-sidebar.sidebar--narrow .u-group,
-.unified-sidebar.sidebar--narrow .u-brand-name {
-  display: none;
-}
-
-.unified-sidebar.sidebar--narrow .u-navigation {
-  display: block;
-}
-
-.unified-sidebar.sidebar--narrow .u-subitems {
-  flex-direction: row;
-  gap: var(--ui-space-2);
-  overflow-x: auto;
-}
-
-.unified-sidebar.sidebar--narrow .u-item {
-  width: auto;
-  flex: 0 0 auto;
-  min-height: var(--ui-control-height-small);
-  padding: var(--ui-space-1) var(--ui-space-3);
-}
-
-.unified-sidebar.sidebar--narrow .u-account {
-  margin-top: var(--ui-space-3);
-  padding-top: var(--ui-space-2);
 }
 
 </style>

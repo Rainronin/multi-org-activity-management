@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class AuthRateLimiter {
 
-    /** 窗口 5 分钟；登录/恢复按账号+IP，注册与重签按账号或 IP 维度共用同一实现。 */
+    /** 窗口 5 分钟；登录按账号+IP，恢复与注册按来源 IP，重签按账号共用同一实现。 */
     private static final long WINDOW_MILLIS = 5 * 60 * 1000L;
 
     private final Map<String, Window> windows = new ConcurrentHashMap<>();

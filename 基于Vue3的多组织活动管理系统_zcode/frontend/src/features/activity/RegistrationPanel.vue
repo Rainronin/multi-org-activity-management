@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { readUiLength } from '../../shared/utils/readUiToken'
+import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElPagination, ElSelect,
-  ElSwitch, ElTable, ElTableColumn, ElTag,
+  ElSkeleton, ElSwitch, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import type { FormInstance, FormRules } from 'element-plus'
@@ -39,6 +41,10 @@ const mine = ref<RegistrationItem | null>(null)
 const roster = ref<RegistrationItem[]>([])
 const myMemberId = ref<string | null>(null)
 const loading = ref(false)
+/** 是否已完成一次成功读取；未完成时的空名册只能显示“正在加载”，不能显示“暂无”。 */
+const loaded = ref(false)
+/** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
+const skeleton = useLoadingSkeleton()
 const errorText = ref('')
 const acting = ref('')
 
@@ -101,6 +107,12 @@ async function loadAll(): Promise<void> {
   const seq = ++requestSeq
   const gen = session.capture()
   loading.value = true
+  // 已有名册时是后台刷新，不重放骨架
+  if (roster.value.length > 0) {
+    skeleton.hide()
+  } else {
+    skeleton.begin()
+  }
   errorText.value = ''
   try {
     const [mineItems, memberId] = await Promise.all([
@@ -132,11 +144,14 @@ async function loadAll(): Promise<void> {
       roster.value = []
       rosterTotal.value = 0
     }
+    loaded.value = true
   } catch (error) {
     if (seq !== requestSeq || gen !== session.generation) {
       return
     }
     roster.value = []
+    // 失败不冒充空态：名册继续显示“正在加载…”而不是“暂无”
+    loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
@@ -146,11 +161,17 @@ async function loadAll(): Promise<void> {
   } finally {
     if (seq === requestSeq) {
       loading.value = false
+      skeleton.end()
     }
   }
 }
 
-watch([orgId, activityId], loadAll)
+watch([orgId, activityId], () => {
+  roster.value = []
+  loaded.value = false
+  skeleton.hide()
+  return loadAll()
+})
 watch(rosterFilter, () => {
   rosterPage.value = 1
   if (canManage.value) {
@@ -417,23 +438,34 @@ defineExpose({ reload: loadAll })
           />
         </ElSelect>
       </div>
+      <ElSkeleton
+        v-if="skeleton.loading.value && roster.length === 0"
+        :rows="4"
+        animated
+        data-registration-skeleton
+        aria-busy="true"
+        aria-label="正在加载报名名单"
+      />
       <ElTable
-        v-loading="loading"
+        v-else
         :data="roster"
       >
+        <template #empty>
+          <span>{{ loaded ? '暂无报名记录。' : '正在加载报名名单…' }}</span>
+        </template>
         <ElTableColumn
           prop="displayName"
           label="展示姓名"
-          min-width="120"
+          :min-width="readUiLength('--ui-table-col-120')"
         />
         <ElTableColumn
           prop="accountUsername"
           label="账号"
-          min-width="140"
+          :min-width="readUiLength('--ui-table-col-140')"
         />
         <ElTableColumn
           label="状态"
-          min-width="100"
+          :min-width="readUiLength('--ui-table-col-100')"
         >
           <template #default="{ row }">
             <ElTag
@@ -446,7 +478,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="备注"
-          min-width="140"
+          :min-width="readUiLength('--ui-table-col-140')"
         >
           <template #default="{ row }">
             {{ row.note || '—' }}
@@ -454,7 +486,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="200"
+          :min-width="readUiLength('--ui-table-col-200')"
         >
           <template #default="{ row }">
             <template v-if="row.status === 'PENDING'">
@@ -486,9 +518,6 @@ defineExpose({ reload: loadAll })
             </ElButton>
           </template>
         </ElTableColumn>
-        <template #empty>
-          <span class="reg-note">暂无报名记录。</span>
-        </template>
       </ElTable>
       <ElPagination
         v-if="rosterTotal > ROSTER_PAGE_SIZE"

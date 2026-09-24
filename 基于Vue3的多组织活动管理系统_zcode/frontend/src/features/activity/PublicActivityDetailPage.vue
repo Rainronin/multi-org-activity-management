@@ -237,9 +237,33 @@ function cancelMine() {
       v-if="loading"
       :rows="6"
       animated
+      data-public-detail-skeleton
+      aria-busy="true"
+      aria-label="正在加载公开活动"
     />
 
-    <template v-else-if="item">
+    <!-- 失败与“活动不存在”是同一种终态：给出原因与返回公开列表的入口，不留空白页 -->
+    <div
+      v-else-if="!item"
+      class="public-empty"
+      data-public-detail-missing
+      role="alert"
+    >
+      <p>{{ errorText || '活动不存在或未公开。' }}</p>
+      <div class="public-detail__missing-actions">
+        <ElButton @click="load">
+          重新加载
+        </ElButton>
+        <RouterLink
+          class="public-link"
+          to="/public/activities"
+        >
+          返回公开活动
+        </RouterLink>
+      </div>
+    </div>
+
+    <template v-else>
       <nav class="public-breadcrumb">
         <RouterLink to="/public/activities">
           公开活动
@@ -407,20 +431,6 @@ function cancelMine() {
       </p>
     </template>
 
-    <p
-      v-else
-      class="public-error"
-      role="alert"
-    >
-      {{ errorText }}
-      <ElButton
-        text
-        @click="load"
-      >
-        重试
-      </ElButton>
-    </p>
-
     <ElDialog
       v-model="applyVisible"
       :title="mine ? '更新报名信息' : '报名'"
@@ -485,8 +495,41 @@ function cancelMine() {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: var(--ui-space-6);
+  flex-wrap: wrap;
+}
+
+/* 终态占位：说明原因并给出重试与返回入口，与公开列表同口径。 */
+.public-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: var(--ui-space-4);
-  margin-bottom: var(--ui-space-8);
+  padding: var(--ui-space-8);
+  border: var(--ui-border-width) dashed var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-small);
+  text-align: center;
+}
+
+.public-detail__missing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-4);
+}
+
+.public-link {
+  color: var(--ui-color-selected-text);
+  font-size: var(--ui-font-size-small);
+  text-decoration: none;
+}
+
+.public-link:hover {
+  text-decoration: underline;
 }
 
 .public-eyebrow {

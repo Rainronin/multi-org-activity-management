@@ -41,7 +41,7 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
             }
         } else if (new AntPathRequestMatcher("/api/auth/recover", HttpMethod.POST.name()).matches(request)) {
             AuthRateLimiter.Decision decision =
-                rateLimiter.tryAcquire("recover:" + request.getParameter("username") + ":" + clientIp(request), RECOVER_MAX_ATTEMPTS);
+                rateLimiter.tryAcquire("recover:" + clientIp(request), RECOVER_MAX_ATTEMPTS);
             if (!decision.allowed()) {
                 reject(response, request, decision);
                 return;

@@ -1,4 +1,4 @@
-﻿// 工作台视觉还原核对：登录演示账号，同视口截图并断言新结构存在、数值与接口一致、无横向溢出。
+// 工作台视觉还原核对：登录演示账号，同视口截图并断言新结构存在、数值与接口一致、无横向溢出。
 // 只读页面 + 一次登录，不写业务数据。
 import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -114,6 +114,43 @@ try {
   await collapseButton.click()
   await page.waitForTimeout(300)
 
+  // ---------- 工作台骨架必须与加载后的构图同构（几何核对） ----------
+  // 只数骨架元素个数是不够的：漏掉整块区域时仍会通过，但会塌成一条灰条（用户实测发现）。
+  const skeletonPage = await ctx.newPage()
+  const loadedHeight = await page.evaluate(() => Math.round(document.querySelector('.workbench').getBoundingClientRect().height))
+  let releaseSkeleton
+  const skeletonHeld = new Promise((resolve) => { releaseSkeleton = resolve })
+  await skeletonPage.route('**/workbench?*', async (route) => { await skeletonHeld; await route.continue() })
+  await skeletonPage.setViewportSize({ width: 1440, height: 1000 })
+  await skeletonPage.goto(`/org/${org.id}`, { waitUntil: 'domcontentloaded' })
+  await skeletonPage.waitForSelector('.workbench__skeleton', { timeout: 20000 })
+  const skeletonShape = await skeletonPage.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector)
+      return element ? Math.round(element.getBoundingClientRect().height) : 0
+    }
+    return {
+      height: Math.round(document.querySelector('.workbench__skeleton').getBoundingClientRect().height),
+      focus: box('.skeleton-focus'),
+      kpis: box('.skeleton-kpis'),
+      panels: box('.skeleton-panels'),
+      blocks: [...document.querySelectorAll('[data-skeleton-block]')].map((e) => e.dataset.skeletonBlock),
+    }
+  })
+  assert.ok(skeletonShape.focus > 0 && skeletonShape.kpis > 0 && skeletonShape.panels > 0,
+    `骨架必须包含重点区、KPI 带与分析／明细区三块，实际 ${JSON.stringify(skeletonShape)}`)
+  assert.deepEqual(skeletonShape.blocks, ['todos', 'chart', 'assistant', 'details'],
+    `骨架应按新顺序覆盖待办、图表、AI 与明细，实际 ${skeletonShape.blocks.join('/')}`)
+  assert.ok(Math.abs(skeletonShape.height - loadedHeight) <= 60,
+    `骨架高度应与加载后接近（骨架 ${skeletonShape.height}，加载后 ${loadedHeight}），否则加载完成会明显跳动`)
+  const skeletonShapeResult = skeletonShape
+  await skeletonPage.screenshot({
+    path: fileURLToPath(new URL('../验证截图/UI核对-工作台骨架.png', import.meta.url)), fullPage: true,
+  })
+  releaseSkeleton()
+  await skeletonPage.unrouteAll({ behavior: 'ignoreErrors' })
+  await skeletonPage.close()
+
   const reducedPage = await ctx.newPage()
   await reducedPage.emulateMedia({ reducedMotion: 'reduce' })
   await reducedPage.setViewportSize({ width: 1440, height: 1000 })
@@ -177,13 +214,13 @@ try {
     await shotPage.waitForSelector('[data-focus-activity]', { timeout: 20000 })
     await shotPage.waitForTimeout(400)
     const measured = await shotPage.evaluate(() => {
-      const focus = document.querySelector('[data-focus-activity]')
+      const focus = document.querySelector('[data-todo-panel]')
       const nav = document.querySelector('.unified-sidebar')
       return {
         clientWidth: document.documentElement.clientWidth,
         clientHeight: document.documentElement.clientHeight,
         scrollWidth: document.documentElement.scrollWidth,
-        focusTop: focus ? Math.round(focus.getBoundingClientRect().top) : null,
+        todoTop: focus ? Math.round(focus.getBoundingClientRect().top) : null,
         navWidth: nav ? Math.round(nav.getBoundingClientRect().width) : null,
         navHeight: nav ? Math.round(nav.getBoundingClientRect().height) : null,
       }
@@ -197,10 +234,10 @@ try {
     await shotPage.close()
   }
   const mobileFirstScreen = narrowChecks.find((item) => item.width === 390)
-  const narrowFirstScreenOk = narrowChecks.every((item) => item.focusTop !== null
-    && item.focusTop <= item.clientHeight * 0.75)
+  const narrowFirstScreenOk = narrowChecks.every((item) => item.todoTop !== null
+    && item.todoTop <= item.clientHeight * 0.75)
   assert.ok(narrowFirstScreenOk,
-    `窄屏首屏可用性未通过：${JSON.stringify(narrowChecks.map((i) => ({ width: i.width, focusTop: i.focusTop, clientHeight: i.clientHeight })))}`)
+    `窄屏首屏待办可见性未通过：${JSON.stringify(narrowChecks.map((i) => ({ width: i.width, todoTop: i.todoTop, clientHeight: i.clientHeight })))}`)
 
   // ---------- 同视口演示对照（U06）----------
   await mkdir(new URL('../验证截图/UI独立审核/', import.meta.url), { recursive: true })
@@ -297,6 +334,7 @@ try {
       loginEvidence: { url: loginUrl, formVisible: loginFormVisible, pageErrors: loginErrors },
     },
     aiTargetedEntry: aiTargets,
+    skeleton: { ...skeletonShapeResult, loadedHeight },
     narrowWidths: narrowChecks,
     mobileFirstScreenOk: narrowFirstScreenOk,
     mobileFirstScreen,
@@ -308,7 +346,7 @@ try {
     overflowPx: overflow.scrollWidth - overflow.clientWidth,
     mobileOverflowPx: mobileOverflow.scrollWidth - mobileOverflow.clientWidth,
     pageErrors: errors,
-    screenshots: ['验证截图/UI核对-工作台-1440.png', '验证截图/UI核对-工作台-390.png'],
+    screenshots: ['验证截图/UI核对-工作台-1440.png', '验证截图/UI核对-工作台-390.png', '验证截图/UI核对-工作台骨架.png'],
   }
   // 证据留档：文本化输出供审核引用（截图目录不入库，报告正文入库）
   await writeFile(new URL('../验证截图/UI独立审核/ui核对输出.json', import.meta.url),

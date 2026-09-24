@@ -160,7 +160,11 @@ public class AiGenerationService {
             record.setEndpointHost(modelClient.validateEndpoint(config.getEndpoint()));
             record.setConfigVersion(config.getVersion());
             record.setConnectionRevision(config.getConnectionRevision());
-            generationMapper.insert(record);
+            try {
+                generationMapper.insert(record);
+            } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+                throw conflict("REQUEST_IN_PROGRESS", "相同请求已被受理", "请使用原请求键重试，以获取已有生成结果。");
+            }
             return new Snapshot(record, input, config, false);
         });
 

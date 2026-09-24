@@ -76,6 +76,27 @@ class AccountFlowTest extends ActivityTestBase {
     }
 
     @Test
+    void recoveryLimitCannotBeBypassedByQueryUsername() throws Exception {
+        String body = "{\"username\":\"missing_account\",\"recoveryCode\":\"invalid\",\"newPassword\":\"Passw0rd123\"}";
+        for (int i = 0; i < 12; i++) {
+            var result = mockMvc.perform(post("/api/auth/recover").with(csrf())
+                    .queryParam("username", "decoy" + i)
+                    .header("X-Forwarded-For", "198.51.100." + i)
+                    .with(request -> { request.setRemoteAddr("192.0.2.71"); return request; })
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().is(i < 10 ? 401 : 429));
+            if (i >= 10) {
+                result.andExpect(jsonPath("$.code").value("RATE_LIMITED"))
+                    .andExpect(header().exists("Retry-After"));
+            }
+        }
+        mockMvc.perform(post("/api/auth/recover").with(csrf())
+                .with(request -> { request.setRemoteAddr("192.0.2.72"); return request; })
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void registerLoginMeLogoutChain() throws Exception {
         String username = uniqueUsername();
         MvcResult registered = register(username);

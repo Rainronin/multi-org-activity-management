@@ -42,14 +42,11 @@ public class MaterialService {
         String assigneeMemberId, String assigneeUsername, String status, String note, Long version) {
     }
 
-    private record Context(OrganizationMember actor, Activity activity) {
-    }
-
     /**
      * S08 锁协议：物资写入前按「组织 → 活动 → 子记录」取锁，
      * 权限、调整期与筹备期判断都在锁内基于当前活动完成（F04）。
      */
-    private Context requireManageContext(Long accountId, Long orgId, Long activityId) {
+    private void requireManageContext(Long accountId, Long orgId, Long activityId) {
         organizationMapper.lockOrganizationShared(orgId);
         activityMapper.lockActivityShared(activityId);
         OrganizationMember actor = memberMapper.findActive(orgId, accountId);
@@ -68,14 +65,14 @@ public class MaterialService {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
                 "活动安排调整中，期间物资只读；重新确认后再维护。");
         }
-        return new Context(actor, activity);
+        requirePreparationWritable(activity);
     }
 
-    /** F02：新增物资只在已确认筹备期允许；初始草稿与待确认同样拒绝。锁内以当前活动判断。 */
+    /** 物资的新增、编辑与状态流转共用锁内状态检查，归档与取消后只读。 */
     private void requirePreparationWritable(Activity activity) {
         if (!activity.isPreparationWritable()) {
-            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动尚未进入筹备",
-                "物资只能在活动确认后的筹备阶段新增。");
+            throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "当前活动物资只读",
+                "仅筹备、执行和复盘阶段可维护物资。");
         }
     }
 
@@ -105,9 +102,7 @@ public class MaterialService {
 
     @Transactional
     public MaterialItem create(Long accountId, Long orgId, Long activityId, Material draft) {
-        Context ctx = requireManageContext(accountId, orgId, activityId);
-        // F02：新增筹备数据仅在已确认筹备期允许（与权限检查同处锁内）
-        requirePreparationWritable(ctx.activity());
+        requireManageContext(accountId, orgId, activityId);
         validateAssignee(orgId, draft.getAssigneeMemberId());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);

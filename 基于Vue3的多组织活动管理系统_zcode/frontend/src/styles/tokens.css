@@ -1,4 +1,22 @@
 :root {
+  /* 表格现用最小列宽；统一值源，后续按实际列语义收敛。 */
+  --ui-table-col-40: 40px;
+  --ui-table-col-80: 80px;
+  --ui-table-col-90: 90px;
+  --ui-table-col-100: 100px;
+  --ui-table-col-110: 110px;
+  --ui-table-col-120: 120px;
+  --ui-table-col-130: 130px;
+  --ui-table-col-140: 140px;
+  --ui-table-col-150: 150px;
+  --ui-table-col-160: 160px;
+  --ui-table-col-170: 170px;
+  --ui-table-col-180: 180px;
+  --ui-table-col-200: 200px;
+  --ui-table-col-220: 220px;
+  --ui-table-col-240: 240px;
+  --ui-table-col-260: 260px;
+
   /* 颜色：明亮橙负责强调，较深橙承载白色按钮文字。 */
   --ui-color-canvas: #f3f3ef;
   --ui-color-surface: #ffffff;
@@ -80,6 +98,7 @@
   --ui-color-glass-on-dark: #ffffff18;
   --ui-color-glass-edge-dark: #ffffff43;
   --ui-surface-glass: linear-gradient(135deg, var(--ui-color-glass-start), var(--ui-color-glass-end));
+  --ui-surface-navigation-glass: linear-gradient(115deg, #ffffffbd, #fff5ed8c);
   --ui-surface-spotlight: linear-gradient(125deg, var(--ui-color-spotlight-start), var(--ui-color-spotlight-end));
   --ui-surface-ai: linear-gradient(130deg, var(--ui-color-ai-start), var(--ui-color-ai-end));
   --ui-surface-glass-on-dark: linear-gradient(125deg, var(--ui-color-glass-on-dark), transparent);
@@ -163,6 +182,7 @@
   --ui-table-header-height: 40px;
   --ui-table-row-height: 64px;
   --ui-table-detail-row-height: 80px;
+  --ui-table-cell-padding: var(--ui-space-3);
   --ui-form-field-gap: var(--ui-space-6);
   --ui-form-max-width: 640px;
   /* 列表筛选等小控件的固定宽度（固定尺寸只用于边界与最小可操作面积） */
@@ -180,7 +200,14 @@
   --ui-layout-card-padding: var(--ui-space-6);
   --ui-layout-grid-gap: var(--ui-space-5);
   --ui-layout-topbar-height: 64px;
-  --ui-layout-focus-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+  --ui-layout-topbar-display: flex;
+  --ui-workbench-focus-min-height: 348px;
+  --ui-workbench-kpi-min-height: 120px;
+  /* 工作台分析区（图表约 650／待办约 434 @1440）：骨架与真实面板共用同一比例。 */
+  --ui-workbench-panel-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  --ui-detail-status-columns: minmax(0, 1fr) minmax(0, 2fr);
+  --ui-detail-fact-min-width: 160px;
+  --ui-layout-focus-columns: minmax(280px, 1fr) minmax(0, 1.7fr);
   --ui-layout-analysis-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   --ui-layout-kpi-columns: repeat(4, minmax(0, 1fr));
   --ui-layout-form-columns: repeat(2, minmax(0, 1fr));
@@ -189,6 +216,22 @@
   --ui-layout-card-min-width-wide: 320px;
   --ui-layout-login-columns: 1.04fr 1fr;
   --ui-layout-nav-position: fixed;
+  /* 认证页自己的间距、装饰与字号：通用页边距不等于等效的登录构图（UI 规范 5.4）。 */
+  --ui-auth-padding: 45px 65px 28px;
+  --ui-auth-padding-compact: var(--ui-space-10);
+  --ui-auth-padding-phone: var(--ui-space-6);
+  --ui-auth-story-padding: 70px 0 40px;
+  --ui-auth-story-padding-phone: var(--ui-space-8) 0 var(--ui-space-5);
+  --ui-auth-form-padding: 70px 0;
+  --ui-auth-form-padding-phone: var(--ui-space-8) 0;
+  --ui-auth-decor-size: 440px;
+  --ui-auth-decor-ring: 70px;
+  --ui-auth-decor-offset: -240px;
+  --ui-auth-decor-blur: 24px;
+  --ui-auth-note-padding: var(--ui-space-6);
+  --ui-auth-flow-width: 420px;
+  --ui-font-size-auth-slogan: 4.5rem;
+  --ui-font-size-auth-title: 1.8125rem;
 
   /* 层级：Element Plus 浮层从 overlay-base 开始，由库管理增量。 */
   --ui-z-content: 0;
@@ -215,6 +258,12 @@
 
 /* 单栏导航的状态与响应式变量仍在唯一值源中维护。 */
 :root {
+  --ui-nav-gap: var(--ui-space-4);
+  --ui-nav-content-display: block;
+  --ui-nav-mobile-header-display: none;
+  --ui-nav-item-gap: var(--ui-space-2);
+  --ui-nav-brand-display: flex;
+  --ui-nav-item-justify: flex-start;
   --ui-nav-label-display: block;
   --ui-nav-group-display: flex;
   --ui-nav-display: block;
@@ -263,31 +312,48 @@
     --ui-layout-page-padding: var(--ui-space-4);
     --ui-layout-card-padding: var(--ui-space-5);
     --ui-layout-grid-gap: var(--ui-space-3);
+    --ui-layout-topbar-display: none;
     --ui-layout-login-columns: minmax(0, 1fr);
     --ui-font-size-page-title: 1.5rem;
     --ui-font-size-card-title: 1.25rem;
     --ui-font-size-brand: 2.5rem;
     --ui-font-size-input: 1rem;
     --ui-control-height: var(--ui-control-min-touch);
+    /* 手机认证页：压缩装饰、允许滚动，不隐藏字段。 */
+    --ui-auth-padding: var(--ui-auth-padding-phone);
+    --ui-auth-story-padding: var(--ui-auth-story-padding-phone);
+    --ui-auth-form-padding: var(--ui-auth-form-padding-phone);
+    --ui-font-size-auth-slogan: 2.6875rem;
+    --ui-font-size-auth-title: 1.5625rem;
   }
 }
 @media (width <= 700px) {
   .workspace, .workspace[data-nav-collapsed="true"], .workspace[data-group-collapsed="true"][data-nav-collapsed="false"] {
     --ui-layout-nav-width: auto;
     --ui-layout-main-offset: 0px;
-    --ui-nav-label-display: none;
+    --ui-nav-label-display: block;
     --ui-nav-group-display: none;
     --ui-nav-meta-display: none;
     --ui-nav-brand-display: none;
     --ui-nav-toggle-display: none;
-    --ui-nav-display: grid;
+    --ui-nav-display: none;
+    --ui-nav-content-display: none;
+    --ui-nav-mobile-header-display: flex;
     --ui-nav-items-display: contents;
-    --ui-nav-columns: repeat(6, minmax(0, 1fr));
+    --ui-nav-columns: repeat(3, minmax(0, 1fr));
     --ui-nav-item-direction: column;
     --ui-nav-item-justify: center;
-    --ui-nav-item-padding: var(--ui-space-2);
+    --ui-nav-gap: var(--ui-space-1);
+    --ui-nav-item-gap: var(--ui-space-1);
+    --ui-nav-item-padding: var(--ui-space-1);
     --ui-nav-height: auto;
+    --ui-detail-status-columns: minmax(0, 1fr);
+    --ui-detail-fact-min-width: 120px;
     --ui-nav-margin: var(--ui-layout-outer-gap);
+  }
+  .workspace[data-mobile-nav-open="true"] {
+    --ui-nav-display: grid;
+    --ui-nav-content-display: block;
   }
 }
 @media (pointer: coarse) {

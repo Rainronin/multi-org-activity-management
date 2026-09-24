@@ -97,3 +97,24 @@ html:root {
   --el-skeleton-color: var(--ui-color-skeleton);
   --el-skeleton-to-color: var(--ui-color-skeleton-highlight);
 }
+
+/* ---------- 控件尺寸：把集中 token 真正作用到组件上 ----------
+   Element Plus 的输入／选择高度走 --el-component-size（上方映射已生效），
+   但发行版 CSS 的基础 .el-button 没有 height 声明，只声明了 --el-button-size，
+   未显式 size 的按钮因此回落到内容高度（约 32px），与 --ui-control-height 不一致（审核 N02）。
+   这里按组件语义补齐高度：默认按钮用 control-height，显式 small 保持紧凑，
+   触控设备统一抬到 --ui-control-min-touch。页面不逐个硬编码高度。 */
+.el-button:not(.el-button--small):not(.el-button--large) {
+  height: var(--ui-control-height);
+}
+
+.el-button--small {
+  height: var(--ui-control-height-small);
+}
+
+@media (pointer: coarse) {
+  .el-button {
+    height: var(--ui-control-min-touch);
+    min-height: var(--ui-control-min-touch);
+  }
+}

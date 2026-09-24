@@ -82,9 +82,9 @@ function finishRegistration() {
     <p class="auth-eyebrow">
       创建账号
     </p>
-    <h2 class="auth-heading">
+    <h1 class="auth-heading">
       开始，一起做活动。
-    </h2>
+    </h1>
     <p class="auth-intro">
       注册后你将获得一个工作区账号，可创建或加入组织。
     </p>

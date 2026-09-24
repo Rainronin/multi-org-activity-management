@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
   ElButton,
   ElDialog,
@@ -13,6 +13,8 @@ import {
   ElTabPane,
   ElTabs,
   ElTag,
+  type FormInstance,
+  type FormRules,
 } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
@@ -38,6 +40,7 @@ const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' }
 
 /** 本人在当前组织的角色（由组织布局下发），用于决定 P3 区块按钮展示；权限仍由后端判定。 */
 const orgRole = computed(() => props.orgDetail?.role ?? null)
+const isOrgOwner = computed(() => orgRole.value === 'OWNER')
 
 // 活动详情（P2.1 余项 + P2.2）：概览字段、方案编辑与状态流转操作。
 // 读取随路由与代次守卫；危险操作二次确认并固定目标。
@@ -54,7 +57,10 @@ const loadError = ref('')
 const actionError = ref('')
 
 /** 详情页签：功能按业务域分组，首屏只保留状态、关键信息与主操作。 */
-const activeTab = ref('overview')
+const activeTab = computed({
+  get: () => allowedTabs.value.includes(String(route.query.tab)) ? String(route.query.tab) : 'overview',
+  set: (tab: string) => { void router.push({ query: { ...route.query, tab } }) },
+})
 const statusHints: Record<string, string> = {
   DRAFT: '完善信息与方案后提交确认',
   PENDING_APPROVAL: '等待组织负责人确认或驳回',
@@ -88,6 +94,13 @@ const proposalSaving = ref(false)
 
 const editVisible = ref(false)
 const editSubmitting = ref(false)
+const editFormRef = ref<FormInstance>()
+const editRules: FormRules = {
+  name: [{ required: true, whitespace: true, message: '请输入活动主题', trigger: 'blur' }, { max: 128, message: '活动主题不能超过 128 字', trigger: 'blur' }],
+  description: [{ max: 2000, message: '活动简介不能超过 2000 字', trigger: 'blur' }],
+  budget: [{ pattern: /^\d+(?:\.\d{1,2})?$/, message: '请输入非负金额，最多两位小数', trigger: 'blur' }],
+}
+
 const editForm = reactive({
   name: '',
   description: '',
@@ -104,7 +117,7 @@ const rejectSubmitting = ref(false)
 const acting = ref(false)
 
 const statusLabel = computed(() => {
-  const map = { DRAFT: '草稿', PENDING_APPROVAL: '待确认', APPROVED: '已确认' } as const
+  const map = { DRAFT: '草稿', PENDING_APPROVAL: '待确认', APPROVED: '筹备中', EXECUTING: '执行中', REVIEWING: '复盘中', ARCHIVED: '已归档', CANCELLED: '已取消' } as const
   return activity.value ? map[activity.value.status as keyof typeof map] ?? activity.value.status : ''
 })
 
@@ -130,11 +143,12 @@ async function loadActivity(): Promise<void> {
       return
     }
     activity.value = detail
-    proposalDraft.value = detail.proposal ?? ''
-    proposalDirty.value = false
+    if (!proposalDirty.value) proposalDraft.value = detail.proposal ?? ''
     // R02：工作台 AI 卡等入口可指定页签；状态或权限不允许时回到概览，不静默停在无关页签
     const requestedTab = String(route.query.tab ?? '')
-    activeTab.value = allowedTabs.value.includes(requestedTab) ? requestedTab : 'overview'
+    if (requestedTab && !allowedTabs.value.includes(requestedTab)) {
+      await router.replace({ query: { ...route.query, tab: 'overview' } })
+    }
   } catch (error) {
     if (seq !== requestSeq || targetId !== activityId.value || gen !== session.generation) {
       return
@@ -153,7 +167,28 @@ async function loadActivity(): Promise<void> {
   }
 }
 
-watch([orgId, activityId], loadActivity)
+watch([orgId, activityId], () => {
+  activity.value = null
+  proposalDirty.value = false
+  void loadActivity()
+})
+// 页签间保留已挂载编辑器；离开活动时才会丢失编辑内容。
+async function confirmLeave(): Promise<boolean> {
+  if (!proposalDirty.value && !editVisible.value) return true
+  try {
+    await ElMessageBox.confirm('有尚未保存的编辑内容，确定离开当前活动？', '未保存的修改', {
+      confirmButtonText: '离开', cancelButtonText: '继续编辑', type: 'warning',
+    })
+    return true
+  } catch { return false }
+}
+onBeforeRouteLeave(confirmLeave)
+onBeforeRouteUpdate((to, from) => to.path === from.path ? true : confirmLeave())
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (proposalDirty.value || editVisible.value) { event.preventDefault(); event.returnValue = '' }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 onMounted(loadActivity)
 
 async function guard(fn: () => Promise<void>): Promise<void> {
@@ -290,6 +325,7 @@ function toIso(local: string): string {
 }
 
 async function submitEdit() {
+  if (!(await editFormRef.value?.validate().catch(() => false))) return
   editSubmitting.value = true
   await guard(async () => {
     await updateActivity(orgId.value, activityId.value, currentVersion(), {
@@ -378,20 +414,20 @@ async function confirmDelete() {
           提交确认
         </ElButton>
         <ElButton
-          v-if="activity?.status === 'PENDING_APPROVAL'"
+          v-if="activity?.status === 'PENDING_APPROVAL' && (isOrgOwner || String(activity.submittedBy) === session.account?.id)"
           @click="withdrawSubmission"
         >
           撤回提交
         </ElButton>
         <ElButton
-          v-if="activity?.status === 'PENDING_APPROVAL'"
+          v-if="activity?.status === 'PENDING_APPROVAL' && isOrgOwner"
           type="primary"
           @click="approve"
         >
           通过
         </ElButton>
         <ElButton
-          v-if="activity?.status === 'PENDING_APPROVAL'"
+          v-if="activity?.status === 'PENDING_APPROVAL' && isOrgOwner"
           type="warning"
           plain
           @click="openReject"
@@ -399,7 +435,7 @@ async function confirmDelete() {
           驳回
         </ElButton>
         <ElButton
-          v-if="activity?.status === 'APPROVED'"
+          v-if="activity?.status === 'APPROVED' && isOrgOwner"
           type="warning"
           plain
           @click="withdrawConfirmed"
@@ -407,7 +443,7 @@ async function confirmDelete() {
           撤回确认
         </ElButton>
         <ElButton
-          v-if="activity?.status === 'DRAFT'"
+          v-if="activity?.status === 'DRAFT' && isOrgOwner"
           type="danger"
           plain
           @click="confirmDelete"
@@ -417,8 +453,8 @@ async function confirmDelete() {
       </div>
     </div>
 
-    <p
-      v-if="loading"
+    <section
+      v-if="loading && !activity"
       class="detail-skeleton"
       role="status"
       aria-busy="true"
@@ -443,7 +479,7 @@ async function confirmDelete() {
           <ElSkeletonItem variant="rect" />
         </template>
       </ElSkeleton>
-    </p>
+    </section>
     <section
       v-else-if="activity"
       class="detail-body"
@@ -457,6 +493,13 @@ async function confirmDelete() {
       </p>
 
       <!-- 详情首屏：状态与下一步 + 关键信息，功能按业务域进入页签，不再纵向堆叠 -->
+      <p
+        v-if="loading"
+        class="detail-note"
+        role="status"
+      >
+        正在更新活动信息…
+      </p>
       <section class="detail-status">
         <div>
           <p class="detail-status__label">
@@ -464,6 +507,27 @@ async function confirmDelete() {
           </p>
           <strong>{{ statusLabel }}</strong>
           <span class="detail-status__hint">{{ statusHint }}</span>
+          <div
+            class="detail-shortcuts"
+            aria-label="活动快捷入口"
+          >
+            <ElButton
+              v-if="allowedTabs.includes('tasks')"
+              size="small"
+              type="primary"
+              plain
+              @click="activeTab = 'tasks'"
+            >
+              查看任务与物资
+            </ElButton>
+            <ElButton
+              v-if="allowedTabs.includes('lifecycle')"
+              size="small"
+              @click="activeTab = 'lifecycle'"
+            >
+              执行与复盘
+            </ElButton>
+          </div>
         </div>
         <dl class="detail-status__facts">
           <div>
@@ -492,34 +556,24 @@ async function confirmDelete() {
         class="detail-tabs"
       >
         <ElTabPane
+          lazy
           label="概览"
           name="overview"
         >
+          <section class="detail-intro">
+            <h2>活动安排</h2>
+            <p>{{ activity.description || '暂无活动简介' }}</p>
+          </section>
           <dl class="detail-grid">
-            <div><dt>活动简介</dt><dd>{{ activity.description || '暂无' }}</dd></div>
-            <div><dt>活动负责人</dt><dd>{{ activity.ownerUsername }}</dd></div>
-            <div><dt>开始时间</dt><dd>{{ formatDateTime(activity.startTime) }}</dd></div>
             <div><dt>结束时间</dt><dd>{{ formatDateTime(activity.endTime) }}</dd></div>
-            <div><dt>地点</dt><dd>{{ activity.location || '待定' }}</dd></div>
-            <div>
-              <dt>预算（元）</dt><dd class="detail-amount">
-                {{ activity.budget }}
-              </dd>
-            </div>
             <div><dt>报名范围</dt><dd>{{ scopeLabel(activity.registrationScope) }}</dd></div>
             <div><dt>名额</dt><dd>{{ activity.capacity ?? '—' }}</dd></div>
             <div><dt>报名开关</dt><dd>{{ activity.registrationOpen ? '已开放' : '未开放' }}</dd></div>
-            <div><dt>当前版本</dt><dd>{{ activity.version }}</dd></div>
           </dl>
-          <p
-            v-if="activity.reviewNote"
-            class="detail-note"
-          >
-            审批说明：{{ activity.reviewNote }}
-          </p>
         </ElTabPane>
 
         <ElTabPane
+          lazy
           label="方案"
           name="proposal"
         >
@@ -564,6 +618,7 @@ async function confirmDelete() {
 
         <ElTabPane
           v-if="activity.status !== 'DRAFT'"
+          lazy
           label="任务与物资"
           name="tasks"
         >
@@ -576,6 +631,7 @@ async function confirmDelete() {
 
         <ElTabPane
           v-if="activity.status === 'APPROVED'"
+          lazy
           label="报名"
           name="registration"
         >
@@ -588,6 +644,7 @@ async function confirmDelete() {
 
         <ElTabPane
           v-if="activity.status !== 'DRAFT'"
+          lazy
           label="经费"
           name="expense"
         >
@@ -600,6 +657,7 @@ async function confirmDelete() {
 
         <ElTabPane
           v-if="activity.status !== 'DRAFT' && activity.status !== 'PENDING_APPROVAL'"
+          lazy
           label="执行与复盘"
           name="lifecycle"
         >
@@ -626,16 +684,22 @@ async function confirmDelete() {
       width="min(100%, var(--ui-drawer-width))"
     >
       <ElForm
+        ref="editFormRef"
         :model="editForm"
+        :rules="editRules"
         label-position="top"
       >
         <ElFormItem
           label="活动主题"
+          prop="name"
           required
         >
           <ElInput v-model="editForm.name" />
         </ElFormItem>
-        <ElFormItem label="活动简介">
+        <ElFormItem
+          label="活动简介"
+          prop="description"
+        >
           <ElInput
             v-model="editForm.description"
             type="textarea"
@@ -657,7 +721,10 @@ async function confirmDelete() {
         <ElFormItem label="地点">
           <ElInput v-model="editForm.location" />
         </ElFormItem>
-        <ElFormItem label="预算（元）">
+        <ElFormItem
+          label="预算（元）"
+          prop="budget"
+        >
           <ElInput v-model="editForm.budget" />
         </ElFormItem>
       </ElForm>
@@ -713,6 +780,7 @@ async function confirmDelete() {
 </template>
 
 <style scoped>
+
 .activity-detail {
   min-width: 0;
 }
@@ -777,21 +845,38 @@ async function confirmDelete() {
 }
 
 .detail-body {
-  margin-top: var(--ui-space-8);
+  margin-top: var(--ui-space-5);
+}
+
+.detail-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-4);
+}
+
+.detail-shortcuts .el-button + .el-button {
+  margin-left: 0;
+}
+
+.detail-intro {
+  margin-bottom: var(--ui-space-6);
+}
+
+.detail-intro h2 {
+  margin: 0 0 var(--ui-space-2);
+  font-size: var(--ui-font-size-emphasis);
+}
+
+.detail-intro p {
+  margin: 0;
+  color: var(--ui-color-text-secondary);
+  line-height: var(--ui-line-height-prose);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* 详情首屏：状态与下一步 + 关键事实，功能进入页签后不再纵向堆叠 */
-.detail-status {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  gap: var(--ui-layout-grid-gap);
-  align-items: center;
-  padding: var(--ui-layout-card-padding);
-  border: var(--ui-border-width) solid var(--ui-color-border);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-color-surface);
-  box-shadow: var(--ui-shadow-glass);
-}
 
 .detail-status__label {
   margin: 0;
@@ -813,7 +898,7 @@ async function confirmDelete() {
 
 .detail-status__facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(var(--ui-layout-card-min-width), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--ui-detail-fact-min-width), 1fr));
   gap: var(--ui-space-4);
   margin: 0;
 }
@@ -821,18 +906,6 @@ async function confirmDelete() {
 .detail-status__facts dt {
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-caption);
-}
-
-.detail-status__facts dd {
-  margin: var(--ui-space-1) 0 0;
-  font-family: var(--ui-font-family-data);
-  font-size: var(--ui-font-size-small);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
-.detail-tabs {
-  margin-top: var(--ui-layout-grid-gap);
 }
 
 .detail-skeleton {
@@ -848,11 +921,6 @@ async function confirmDelete() {
   grid-template-columns: var(--ui-layout-kpi-columns);
   gap: var(--ui-layout-grid-gap);
   margin-bottom: var(--ui-space-4);
-}
-
-.detail-skeleton__grid :deep(.el-skeleton__item) {
-  height: var(--ui-icon-large);
-  border-radius: var(--ui-radius-card);
 }
 
 .detail-grid {
@@ -878,7 +946,7 @@ async function confirmDelete() {
 }
 
 .proposal-section {
-  margin-top: var(--ui-space-10);
+  margin-top: 0;
 }
 
 .proposal-section__head {
@@ -899,4 +967,54 @@ async function confirmDelete() {
   line-height: var(--ui-line-height-prose);
   color: var(--ui-color-text);
 }
+
+.detail-tabs {
+  margin-top: var(--ui-layout-grid-gap);
+  background: var(--ui-color-surface);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  padding: var(--ui-layout-card-padding);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+.detail-tabs :deep(.el-tabs__header) {
+  margin-bottom: var(--ui-space-6);
+}
+
+.detail-tabs :deep(.el-tabs__item) {
+  font-size: var(--ui-font-size-body);
+  min-height: var(--ui-control-min-touch);
+}
+
+.detail-status {
+  display: grid;
+  grid-template-columns: var(--ui-detail-status-columns);
+  gap: var(--ui-layout-grid-gap);
+  align-items: center;
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
+  border-top: var(--ui-space-1) solid var(--ui-color-accent);
+}
+
+.detail-status__facts dd {
+  margin: var(--ui-space-1) 0 0;
+  font-size: var(--ui-font-size-small);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  font-family: var(--ui-font-family-body);
+}
+
+.detail-grid > div {
+  padding-bottom: var(--ui-space-4);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.detail-skeleton__grid :deep(.el-skeleton__item) {
+  border-radius: var(--ui-radius-card);
+  height: var(--ui-workbench-kpi-min-height);
+}
+
 </style>

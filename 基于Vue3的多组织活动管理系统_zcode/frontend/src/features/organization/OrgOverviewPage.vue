@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { ElButton, ElTag } from 'element-plus'
 import { roleLabel, type OrganizationDetail } from './types'
 import WorkbenchSection from '../workbench/WorkbenchSection.vue'
@@ -13,7 +14,7 @@ const emit = defineEmits<{
   retry: []
 }>()
 
-const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
+const isOwner = computed(() => props.orgDetail?.role === 'OWNER')
 </script>
 
 <template>
@@ -21,7 +22,7 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
     <div class="page-heading">
       <div>
         <p class="page-eyebrow">
-          组织协作 / 概览
+          工作台
         </p>
         <h1>
           <template v-if="state === 'ready' && orgDetail">
@@ -36,7 +37,7 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
         </h1>
         <p class="page-description">
           <template v-if="state === 'ready' && orgDetail">
-            {{ orgDetail.description || '从筹备到复盘，让想法有进展，让协作有回应。' }}
+            {{ orgDetail.description || '查看待办，跟进活动与分工。' }}
           </template>
           <template v-else>
             工作台按当前身份展示待办与指标。
@@ -59,7 +60,7 @@ const isOwner = (props.orgDetail?.role ?? null) === 'OWNER'
       正在加载组织信息……
     </p>
 
-    <!-- P7.1／P7.2 工作台：行动入口，按身份展示重点活动、AI 文稿、KPI、图表与待办 -->
+    <!-- 工作台先显示待办与重点活动，统计和文稿辅助随后展示。 -->
     <WorkbenchSection v-if="state === 'ready' && orgDetail" />
 
     <section

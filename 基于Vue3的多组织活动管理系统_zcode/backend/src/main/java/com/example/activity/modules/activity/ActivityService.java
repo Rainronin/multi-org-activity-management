@@ -246,10 +246,13 @@ public class ActivityService {
         }
         // F05：编辑必须携带期望版本；缺失版本不再静默覆盖（开发规范：编辑请求携带 version）
         requireVersion(patch.getVersion());
-        // 状态机（P2.2/P2.3）：待确认期不改字段；已确认活动仅组织负责人可改简介，关键内容须先撤回到草稿。
-        if ("PENDING_APPROVAL".equals(activity.getStatus())) {
-            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作", "活动待确认中，请先撤回再修改。");
+        // 普通字段修改仅限草稿与筹备期；执行后的更正走执行记录，归档后必须先重开。
+        if (!Activity.STATUS_DRAFT.equals(activity.getStatus())
+            && !Activity.STATUS_APPROVED.equals(activity.getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "当前状态不允许此操作",
+                "当前活动不允许直接修改基本信息；请按活动状态处理变更或重新打开。");
         }
+        // 状态机（P2.2/P2.3）：待确认期不改字段；已确认活动仅组织负责人可改简介，关键内容须先撤回到草稿。
         if ("APPROVED".equals(activity.getStatus())) {
             boolean onlyDescription = patch.getName() == null && patch.getOwnerMemberId() == null
                 && patch.getStartTime() == null && patch.getEndTime() == null

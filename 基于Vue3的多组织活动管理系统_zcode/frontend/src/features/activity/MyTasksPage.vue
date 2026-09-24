@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { readUiLength } from '../../shared/utils/readUiToken'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElButton, ElRadioButton, ElRadioGroup, ElSkeleton, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElButton, ElRadioButton, ElRadioGroup, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import ListPage from '../../shared/components/ListPage.vue'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { advanceTask, fetchMyTasks, type TaskItem } from './p3'
@@ -15,11 +17,13 @@ const orgId = computed(() => String(route.params.orgId ?? ''))
 
 /** P3.3：从本人任务回到所属活动详情（任务只带 activityId，按活动 id 跳转）。 */
 function openActivity(task: TaskItem) {
-  void router.push(`/org/${orgId.value}/activities/${task.activityId}`)
+  void router.push(`/org/${orgId.value}/activities/${task.activityId}?tab=tasks`)
 }
 
 const tasks = ref<TaskItem[]>([])
 const loading = ref(false)
+const refreshing = ref(false)
+const loadedOnce = ref(false)
 const errorText = ref('')
 const actionError = ref('')
 const actingId = ref('')
@@ -31,6 +35,9 @@ const statusLabel: Record<string, string> = {
   CANCELLED: '已取消',
 }
 
+const priorityLabel: Record<string, string> = { HIGH: '高', MEDIUM: '中', LOW: '低' }
+
+// R03 模式：请求序号 + 会话代次双守卫。
 let requestSeq = 0
 
 async function loadTasks(): Promise<void> {
@@ -39,7 +46,12 @@ async function loadTasks(): Promise<void> {
   }
   const seq = ++requestSeq
   const gen = session.capture()
-  loading.value = true
+  // 已有数据时保留内容，只提示正在更新；空态与骨架互斥（UI 规范第 10 节）。
+  if (tasks.value.length > 0) {
+    refreshing.value = true
+  } else {
+    loading.value = true
+  }
   errorText.value = ''
   try {
     const items = await fetchMyTasks(orgId.value)
@@ -61,11 +73,20 @@ async function loadTasks(): Promise<void> {
   } finally {
     if (seq === requestSeq) {
       loading.value = false
+      refreshing.value = false
+      loadedOnce.value = true
     }
   }
 }
 
-watch(orgId, loadTasks)
+watch(orgId, () => {
+  tasks.value = []
+  loadedOnce.value = false
+  errorText.value = ''
+  actionError.value = ''
+  statusFilter.value = ''
+  void loadTasks()
+})
 onMounted(loadTasks)
 
 /** P3.3：本人任务按状态筛选（服务端返回全部本人任务，前端筛选不改变权限口径）。 */
@@ -119,32 +140,51 @@ function priorityTag(priority: string): 'danger' | 'info' | 'warning' {
   return priority === 'HIGH' ? 'danger' : priority === 'LOW' ? 'info' : 'warning'
 }
 
-function priorityLabel(priority: string): string {
-  return priority === 'HIGH' ? '高' : priority === 'LOW' ? '低' : '中'
+function formatDue(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 }
+
+const emptyText = computed(() => (statusFilter.value
+  ? '当前筛选下没有任务，可切回“全部”查看。'
+  : '暂无分配给你的未完成任务；活动负责人分派后会出现在这里。'))
 </script>
 
 <template>
-  <div class="my-tasks">
-    <div class="page-heading">
-      <div>
-        <p class="page-eyebrow">
-          个人协作 / 我的任务
-        </p>
-        <h1>我的任务</h1>
-        <p class="page-description">
-          当前组织内分配给你的未完成任务；完成后由组织负责人汇总查看。
-        </p>
-      </div>
-    </div>
+  <ListPage
+    title="我的任务"
+    panel-title="任务明细"
+    eyebrow="个人协作 / 我的任务"
+    description="当前组织内分配给你的未完成任务；完成后由组织负责人汇总查看。"
+    context="本人被分派 · 未完成"
+    :error="errorText"
+    :loading="loading"
+    :refreshing="refreshing"
+    :loaded="loadedOnce"
+    :row-count="visibleTasks.length"
+    :total="visibleTasks.length"
+    :empty-text="emptyText"
+    :skeleton-columns="5"
+    retry-text="重新加载"
+    @retry="loadTasks"
+  >
+    <template #filters>
+      <ElRadioGroup
+        v-model="statusFilter"
+        class="my-tasks__filter"
+        aria-label="按任务状态筛选"
+      >
+        <ElRadioButton value="">
+          全部
+        </ElRadioButton>
+        <ElRadioButton value="PENDING">
+          待处理
+        </ElRadioButton>
+        <ElRadioButton value="IN_PROGRESS">
+          进行中
+        </ElRadioButton>
+      </ElRadioGroup>
+    </template>
 
-    <p
-      v-if="errorText"
-      class="my-tasks__error"
-      role="alert"
-    >
-      {{ errorText }}
-    </p>
     <p
       v-if="actionError"
       class="my-tasks__error"
@@ -153,135 +193,99 @@ function priorityLabel(priority: string): string {
       {{ actionError }}
     </p>
 
-    <div
-      v-loading="loading"
-      class="my-tasks__table"
+    <ElTable
+      class="list-table"
+      :data="visibleTasks"
     >
-      <ElRadioGroup
-        v-model="statusFilter"
-        class="my-tasks__filter"
+      <ElTableColumn
+        label="任务"
+        :min-width="readUiLength('--ui-table-col-200')"
       >
-        <ElRadioButton label="">
-          全部
-        </ElRadioButton>
-        <ElRadioButton label="PENDING">
-          待处理
-        </ElRadioButton>
-        <ElRadioButton label="IN_PROGRESS">
-          进行中
-        </ElRadioButton>
-      </ElRadioGroup>
-      <ElTable :data="visibleTasks">
-        <ElTableColumn
-          prop="title"
-          label="任务"
-          min-width="180"
-        />
-        <ElTableColumn
-          label="优先级"
-          min-width="90"
-        >
-          <template #default="{ row }">
-            <ElTag
-              :type="priorityTag(row.priority)"
-              size="small"
-            >
-              {{ priorityLabel(row.priority) }}
-            </ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn
-          label="截止时间"
-          min-width="150"
-        >
-          <template #default="{ row }">
-            <span :class="{ 'my-tasks__overdue': row.overdue }">
-              {{ row.dueAt ? formatDue(row.dueAt) : '—' }}{{ row.overdue ? '（已逾期）' : '' }}
-            </span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn
-          label="状态"
-          min-width="100"
-        >
-          <template #default="{ row }">
-            <ElTag
-              :type="row.status === 'IN_PROGRESS' ? 'warning' : 'info'"
-              size="small"
-            >
-              {{ statusLabel[row.status] ?? row.status }}
-            </ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn
-          label="操作"
-          min-width="120"
-        >
-          <template #default="{ row }">
-            <ElButton
-              v-if="nextStatus(row as TaskItem)"
-              size="small"
-              type="primary"
-              plain
-              :loading="actingId === row.taskId"
-              @click="advance(row as TaskItem)"
-            >
-              {{ nextStatus(row as TaskItem) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
-            </ElButton>
-            <ElButton
-              size="small"
-              @click="openActivity(row as TaskItem)"
-            >
-              查看活动
-            </ElButton>
-          </template>
-        </ElTableColumn>
-        <template #empty>
-          <ElSkeleton
-            v-if="loading"
-            :rows="4"
-            animated
-            data-table-skeleton
-          />
-          <span class="my-tasks__note">暂无分配给你的未完成任务。</span>
+        <template #default="{ row }">
+          <span>{{ row.title }}</span>
+          <p
+            v-if="row.description"
+            class="my-tasks__description"
+          >
+            {{ row.description }}
+          </p>
         </template>
-      </ElTable>
-    </div>
-  </div>
+      </ElTableColumn>
+      <ElTableColumn
+        label="优先级"
+        :min-width="readUiLength('--ui-table-col-90')"
+      >
+        <template #default="{ row }">
+          <ElTag
+            size="small"
+            :type="priorityTag(row.priority)"
+          >
+            {{ priorityLabel[row.priority] ?? row.priority }}
+          </ElTag>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn
+        label="截止时间"
+        :min-width="readUiLength('--ui-table-col-150')"
+      >
+        <template #default="{ row }">
+          <span
+            class="list-table__figure"
+            :class="{ 'my-tasks__overdue': row.overdue }"
+          >
+            {{ row.dueAt ? formatDue(row.dueAt) : '—' }}{{ row.overdue ? '（已逾期）' : '' }}
+          </span>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn
+        label="状态"
+        :min-width="readUiLength('--ui-table-col-100')"
+      >
+        <template #default="{ row }">
+          <ElTag
+            size="small"
+            :type="row.status === 'IN_PROGRESS' ? 'warning' : 'info'"
+          >
+            {{ statusLabel[row.status] ?? row.status }}
+          </ElTag>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn
+        label="操作"
+        :min-width="readUiLength('--ui-table-col-160')"
+      >
+        <template #default="{ row }">
+          <ElButton
+            v-if="nextStatus(row as TaskItem)"
+            size="small"
+            type="primary"
+            plain
+            :loading="actingId === row.taskId"
+            @click="advance(row as TaskItem)"
+          >
+            {{ nextStatus(row as TaskItem) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
+          </ElButton>
+          <ElButton
+            size="small"
+            @click="openActivity(row as TaskItem)"
+          >
+            查看活动
+          </ElButton>
+        </template>
+      </ElTableColumn>
+    </ElTable>
+  </ListPage>
 </template>
 
-<script lang="ts">
-function formatDue(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
-}
-</script>
-
 <style scoped>
-.my-tasks {
-  min-width: 0;
-}
-
-.page-eyebrow {
-  margin-bottom: var(--ui-space-3);
-  color: var(--ui-color-selected-text);
-  font-size: var(--ui-font-size-caption);
-  letter-spacing: var(--ui-letter-spacing-eyebrow);
-}
-
-.page-heading h1 {
-  font-size: var(--ui-font-size-page-title);
-  font-weight: var(--ui-font-weight-bold);
-  letter-spacing: var(--ui-letter-spacing-title);
-}
-
-.page-description {
-  margin-top: var(--ui-space-3);
-  color: var(--ui-color-text-secondary);
-  line-height: var(--ui-line-height-body);
+/* 页头、面板与表格排版统一由 base.css 的公共类提供。 */
+.my-tasks__filter {
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .my-tasks__error {
-  margin-top: var(--ui-space-4);
+  margin: 0 0 var(--ui-space-4);
   padding: var(--ui-space-3) var(--ui-space-4);
   border: var(--ui-border-width) solid var(--ui-color-danger);
   border-radius: var(--ui-radius-control);
@@ -290,21 +294,14 @@ function formatDue(value: string): string {
   font-size: var(--ui-font-size-small);
 }
 
-.my-tasks__table {
-  margin-top: var(--ui-space-8);
-  width: 100%;
-}
-
-.my-tasks__filter {
-  margin-bottom: var(--ui-space-4);
-}
-
 .my-tasks__overdue {
   color: var(--ui-color-danger);
 }
-
-.my-tasks__note {
-  color: var(--ui-color-text-muted);
+.my-tasks__description {
+  margin-top: var(--ui-space-2);
+  color: var(--ui-color-text-secondary);
   font-size: var(--ui-font-size-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

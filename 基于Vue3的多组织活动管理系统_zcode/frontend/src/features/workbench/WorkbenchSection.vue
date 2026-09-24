@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -27,7 +27,7 @@ import { fetchWorkbench, todoKindLabel, workbenchRoleLabel, type Workbench, type
 
 /**
  * P7.1／P7.2 工作台，按确认 Demo 的阅读顺序还原：
- * 深色重点活动卡＋暖橙 AI 文稿卡 → 精简 KPI → 图表 → 明细与待办。
+ * 待办＋重点活动 → 精简 KPI → 经费与 AI 文稿 → 指标明细。
  *
  * 数据全部来自真实接口：工作台聚合（cards／todos／myCards）、组织活动列表与组织模型配置；
  * 没有趋势接口就不画趋势，经费环图只表示"已确认支出 / 预算"这一真实口径。
@@ -77,6 +77,7 @@ const aiCandidate = computed<ActivityItem | null>(() => {
   const status = aiMode.value === '总结' ? 'REVIEWING' : 'DRAFT'
   return activities.value.find((item) => item.status === status) ?? null
 })
+const isManager = computed(() => workbench.value?.role !== 'MEMBER')
 const aiAvailable = computed(() => aiConfig.value?.available === true)
 
 function card(key: string): WorkbenchCard | undefined {
@@ -90,7 +91,7 @@ const kpis = computed(() => {
     { key: 'activities-in-progress', fallback: 'activities-mine', label: '进行中活动', unit: '个', icon: TrendCharts },
     { key: 'tasks-open', fallback: 'my-tasks-open', label: '待处理任务', unit: '个', icon: CircleCheck },
     { key: 'registrations-effective', fallback: 'my-registrations', label: '有效报名', unit: '人', icon: Check },
-    { key: 'expense-approved', fallback: 'my-registrations', label: '已确认支出', unit: '元', icon: Wallet },
+    { key: 'expense-approved', fallback: 'expense-approved', label: '已确认支出', unit: '元', icon: Wallet },
   ]
   return definitions
     .map((definition) => {
@@ -99,9 +100,9 @@ const kpis = computed(() => {
         return null
       }
       return {
-        key: definition.key,
-        label: definition.label,
-        unit: definition.unit,
+        key: source.key,
+        label: source.label,
+        unit: source.key === 'my-registrations' ? '项' : definition.unit,
         icon: definition.icon,
         value: source.value,
         hint: source.hint,
@@ -119,12 +120,13 @@ const budgetChart = computed(() => {
   if (!Number.isFinite(approved) || !Number.isFinite(balance) || budget <= 0) {
     return null
   }
-  const ratio = Math.min(1, Math.max(0, approved / budget))
+  const actualRatio = approved / budget
+  const ratio = Math.min(1, Math.max(0, actualRatio))
   return {
     approved: approved.toFixed(2),
     balance: balance.toFixed(2),
     budget: budget.toFixed(2),
-    percent: `${(ratio * 100).toFixed(1)}%`,
+    percent: `${(actualRatio * 100).toFixed(1)}%`,
     dash: `${(ratio * 100).toFixed(1)} ${(100 - ratio * 100).toFixed(1)}`,
   }
 })
@@ -194,6 +196,9 @@ async function load(): Promise<void> {
 }
 
 watch(orgId, () => {
+  workbench.value = null
+  activities.value = []
+  aiConfig.value = null
   void load()
 })
 onMounted(load)
@@ -234,9 +239,9 @@ defineExpose({ reload: load })
       </ElButton>
     </p>
 
-    <!-- 加载骨架与真实结构同构：重点卡 / AI 卡 / KPI 带 / 图表 -->
+    <!-- 骨架保持与待办、重点活动、KPI、辅助区相同的排列。 -->
     <section
-      v-else-if="loading"
+      v-else-if="loading && !workbench"
       class="workbench__skeleton"
       role="status"
       aria-busy="true"
@@ -248,7 +253,10 @@ defineExpose({ reload: load })
       >
         <template #template>
           <div class="skeleton-focus">
-            <ElSkeletonItem variant="rect" />
+            <ElSkeletonItem
+              variant="rect"
+              data-skeleton-block="todos"
+            />
             <ElSkeletonItem variant="rect" />
           </div>
           <div class="skeleton-kpis">
@@ -258,13 +266,116 @@ defineExpose({ reload: load })
               variant="rect"
             />
           </div>
+          <div class="skeleton-panels">
+            <div
+              class="skeleton-panel skeleton-panel--chart"
+              data-skeleton-block="chart"
+            >
+              <div class="skeleton-panel__head">
+                <ElSkeletonItem variant="text" />
+                <ElSkeletonItem variant="text" />
+              </div>
+              <div class="skeleton-panel__chart">
+                <ElSkeletonItem variant="circle" />
+                <div class="skeleton-panel__legend">
+                  <ElSkeletonItem
+                    v-for="n in 3"
+                    :key="n"
+                    variant="text"
+                  />
+                </div>
+              </div>
+              <!-- 真实图表面板下方还有两条比率进度条，缺了就会少一大截高度 -->
+              <div class="skeleton-panel__rates">
+                <ElSkeletonItem
+                  v-for="n in 2"
+                  :key="n"
+                  variant="rect"
+                />
+              </div>
+            </div>
+            <div
+              class="skeleton-panel"
+              data-skeleton-block="assistant"
+            >
+              <div class="skeleton-panel__head">
+                <ElSkeletonItem variant="text" />
+                <ElSkeletonItem variant="text" />
+              </div>
+              <ElSkeletonItem variant="rect" />
+            </div>
+            <div
+              class="skeleton-panel skeleton-panel--wide"
+              data-skeleton-block="details"
+            >
+              <div class="skeleton-panel__head">
+                <ElSkeletonItem variant="text" />
+                <ElSkeletonItem variant="text" />
+              </div>
+              <!-- 指标明细按真实条目数占位（当前 8 条） -->
+              <ElSkeletonItem
+                v-for="n in 8"
+                :key="n"
+                variant="rect"
+              />
+            </div>
+          </div>
         </template>
       </ElSkeleton>
     </section>
 
     <template v-else-if="workbench">
-      <!-- 1. 深色重点活动卡 + 暖橙 AI 文稿卡 -->
-      <div class="focus-board">
+      <p
+        v-if="loading"
+        class="panel__note"
+        role="status"
+      >
+        正在更新工作台…
+      </p>
+      <!-- 先处理待办，再查看重点活动；AI 入口下移到辅助区。 -->
+      <div
+        class="focus-board"
+        :class="{ 'focus-board--member': !isManager }"
+      >
+        <section
+          class="panel panel--todos"
+          data-todo-panel
+        >
+          <div class="panel__head">
+            <h2><CircleCheck />待我处理</h2>
+            <span class="panel__tag">当前显示 {{ todos.length }} 项</span>
+          </div>
+          <ul
+            v-if="todos.length > 0"
+            class="todo-list"
+          >
+            <li
+              v-for="todo in todos"
+              :key="`${todo.kind}-${todo.title}`"
+              class="todo-list__item"
+            >
+              <div>
+                <ElTag size="small">
+                  {{ todoKindLabel[todo.kind] ?? todo.kind }}
+                </ElTag>
+                <strong>{{ todo.title }}</strong>
+                <p>{{ todo.detail }}</p>
+              </div>
+              <ElButton
+                size="small"
+                @click="open(todo.path)"
+              >
+                处理
+              </ElButton>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="panel__empty"
+          >
+            暂无待处理事项。
+          </p>
+        </section>
         <article
           v-if="focusActivity"
           class="spotlight"
@@ -275,12 +386,12 @@ defineExpose({ reload: load })
               <i aria-hidden="true" />重点活动
               <span class="spotlight__state">{{ focusStage }}</span>
             </span>
-            <span class="spotlight__aside">下一场共同期待</span>
+            <span class="spotlight__aside">活动进展</span>
           </div>
           <div class="spotlight__title">
             <div>
               <p class="spotlight__slogan">
-                一起，让好事发生
+                当前重点
               </p>
               <h2>{{ focusActivity.name }}</h2>
               <span class="spotlight__desc">{{ focusActivity.description || '暂无活动说明' }}</span>
@@ -339,62 +450,6 @@ defineExpose({ reload: load })
             前往活动管理
           </ElButton>
         </article>
-
-        <aside
-          class="assistant-card"
-          data-ai-card
-        >
-          <header class="assistant-card__head">
-            <span class="assistant-card__mark"><Document /></span>
-            <div>
-              <h2>AI 文稿助手</h2>
-              <p>把活动记录，整理成下一步。</p>
-            </div>
-            <span class="assistant-card__label">AI</span>
-          </header>
-          <div
-            class="assistant-card__modes"
-            role="group"
-            aria-label="AI 文稿类型"
-          >
-            <button
-              v-for="item in (['总结', '方案'] as const)"
-              :key="item"
-              type="button"
-              :class="{ selected: aiMode === item }"
-              :aria-pressed="aiMode === item"
-              @click="aiMode = item"
-            >
-              活动{{ item }}
-            </button>
-          </div>
-          <div class="assistant-card__paper">
-            <span>{{ aiMode === '总结' ? '复盘，从已有记录开始' : '让想法，变成可讨论的方案' }}</span>
-            <h3>{{ aiCandidate?.name ?? (aiMode === '总结' ? '暂无复盘中的活动' : '先创建一份活动草稿') }}</h3>
-            <p>
-              {{ aiMode === '总结'
-                ? '汇总任务、报名与经费，补充真实反馈，形成可编辑的总结草稿。'
-                : '围绕活动目标整理流程、分工与注意事项，待确认的信息清楚标出。' }}
-            </p>
-          </div>
-          <div class="assistant-card__bottom">
-            <ElButton
-              :disabled="!aiCandidate"
-              data-ai-open
-              @click="openActivity(aiCandidate, aiMode === '总结' ? 'lifecycle' : 'proposal')"
-            >
-              打开{{ aiMode === '总结' ? '复盘' : '方案' }}编辑<ArrowRight />
-            </ElButton>
-            <small>{{ aiConfig?.availabilityHint ?? '正在读取模型可用状态……' }}</small>
-          </div>
-          <ElTag
-            v-if="aiAvailable && aiConfig?.model"
-            class="assistant-card__model"
-            size="small"
-          >
-            {{ aiConfig.model }}
-          </ElTag>
-        </aside>
       </div>
 
       <!-- 2. 精简 KPI 带 -->
@@ -404,11 +459,10 @@ defineExpose({ reload: load })
         data-kpi-band
       >
         <button
-          v-for="(kpi, index) in kpis"
+          v-for="kpi in kpis"
           :key="kpi.key"
           type="button"
           class="kpi-card"
-          :style="{ '--kpi-index': index }"
           :data-kpi="kpi.key"
           @click="open(kpi.path)"
         >
@@ -420,13 +474,17 @@ defineExpose({ reload: load })
           <span class="kpi-card__value">
             {{ kpi.value }}<small>{{ kpi.unit }}</small>
           </span>
-          <span class="kpi-card__note">{{ kpi.hint }}</span>
+          <span
+            class="kpi-card__note"
+            :title="kpi.hint"
+          >{{ kpi.hint }}</span>
         </button>
       </div>
 
       <!-- 3. 图表：只画真实口径 -->
       <div class="content-grid">
         <section
+          v-if="isManager"
           class="panel panel--chart"
           data-chart-panel
         >
@@ -438,31 +496,32 @@ defineExpose({ reload: load })
             v-if="budgetChart"
             class="budget-chart"
           >
-            <svg
-              class="budget-chart__ring"
-              viewBox="0 0 42 42"
-              role="img"
-              :aria-label="`已确认支出 ${budgetChart.approved} 元，占预算 ${budgetChart.percent}`"
-            >
-              <circle
-                class="budget-chart__track"
-                cx="21"
-                cy="21"
-                r="15.9155"
-              />
-              <circle
-                class="budget-chart__value"
-                cx="21"
-                cy="21"
-                r="15.9155"
-                :stroke-dasharray="budgetChart.dash"
-              />
-              <text
+            <div class="budget-chart__visual">
+              <svg
+                class="budget-chart__ring"
+                viewBox="0 0 42 42"
+                role="img"
+                :aria-label="`已确认支出 ${budgetChart.approved} 元，占预算 ${budgetChart.percent}`"
+              >
+                <circle
+                  class="budget-chart__track"
+                  cx="21"
+                  cy="21"
+                  r="15.9155"
+                />
+                <circle
+                  class="budget-chart__value"
+                  cx="21"
+                  cy="21"
+                  r="15.9155"
+                  :stroke-dasharray="budgetChart.dash"
+                />
+              </svg>
+              <span
                 class="budget-chart__label"
-                x="21"
-                y="22"
-              >{{ budgetChart.percent }}</text>
-            </svg>
+                aria-hidden="true"
+              >{{ budgetChart.percent }}<small>支出占预算</small></span>
+            </div>
             <dl class="budget-chart__legend">
               <div>
                 <dt>已确认支出</dt>
@@ -511,49 +570,66 @@ defineExpose({ reload: load })
             </div>
           </div>
           <p class="panel__note">
-            图表只使用真实统计：经费口径同经费区块，完成率与使用率分母为零时显示“—”，不画趋势曲线。
+            预算余额为预算减已确认支出，不代表账户余额。
           </p>
         </section>
 
-        <section
-          class="panel"
-          data-todo-panel
+        <aside
+          v-if="isManager"
+          class="assistant-card"
+          data-ai-card
         >
-          <div class="panel__head">
-            <h2>待办</h2>
-            <span class="panel__tag">{{ todos.length }} 项</span>
-          </div>
-          <ul
-            v-if="todos.length > 0"
-            class="todo-list"
+          <header class="assistant-card__head">
+            <span class="assistant-card__mark"><Document /></span>
+            <div>
+              <h2>AI 文稿助手</h2>
+              <p>把活动记录，整理成下一步。</p>
+            </div>
+            <span class="assistant-card__label">AI</span>
+          </header>
+          <div
+            class="assistant-card__modes"
+            role="group"
+            aria-label="AI 文稿类型"
           >
-            <li
-              v-for="todo in todos"
-              :key="`${todo.kind}-${todo.title}`"
-              class="todo-list__item"
+            <button
+              v-for="item in (['总结', '方案'] as const)"
+              :key="item"
+              type="button"
+              :class="{ selected: aiMode === item }"
+              :aria-pressed="aiMode === item"
+              @click="aiMode = item"
             >
-              <div>
-                <ElTag size="small">
-                  {{ todoKindLabel[todo.kind] ?? todo.kind }}
-                </ElTag>
-                <strong>{{ todo.title }}</strong>
-                <p>{{ todo.detail }}</p>
-              </div>
-              <ElButton
-                size="small"
-                @click="open(todo.path)"
-              >
-                处理
-              </ElButton>
-            </li>
-          </ul>
-          <p
-            v-else
-            class="panel__empty"
+              活动{{ item }}
+            </button>
+          </div>
+          <div class="assistant-card__paper">
+            <span>{{ aiMode === '总结' ? '复盘，从已有记录开始' : '让想法，变成可讨论的方案' }}</span>
+            <h3>{{ aiCandidate?.name ?? (aiMode === '总结' ? '暂无复盘中的活动' : '先创建一份活动草稿') }}</h3>
+            <p>
+              {{ aiMode === '总结'
+                ? '汇总任务、报名与经费，补充真实反馈，形成可编辑的总结草稿。'
+                : '围绕活动目标整理流程、分工与注意事项，待确认的信息清楚标出。' }}
+            </p>
+          </div>
+          <div class="assistant-card__bottom">
+            <ElButton
+              :disabled="!aiCandidate"
+              data-ai-open
+              @click="openActivity(aiCandidate, aiMode === '总结' ? 'lifecycle' : 'proposal')"
+            >
+              打开{{ aiMode === '总结' ? '复盘' : '方案' }}编辑<ArrowRight />
+            </ElButton>
+            <small>{{ aiConfig?.availabilityHint ?? '模型状态暂不可用，可前往编辑区手工编写' }}</small>
+          </div>
+          <ElTag
+            v-if="aiAvailable && aiConfig?.model"
+            class="assistant-card__model"
+            size="small"
           >
-            暂无待处理事项。
-          </p>
-        </section>
+            {{ aiConfig.model }}
+          </ElTag>
+        </aside>
         <section
           class="panel panel--wide"
           data-detail-panel
@@ -612,6 +688,7 @@ defineExpose({ reload: load })
 </template>
 
 <style scoped>
+
 .workbench {
   display: flex;
   flex-direction: column;
@@ -637,8 +714,9 @@ defineExpose({ reload: load })
   gap: var(--ui-layout-grid-gap);
 }
 
+/* 与真实重点卡同高：用工作台自己的最小高度 token，不用卡片最小宽度凑数。 */
 .skeleton-focus :deep(.el-skeleton__item) {
-  height: var(--ui-layout-card-min-width-wide);
+  height: var(--ui-workbench-focus-min-height);
   border-radius: var(--ui-radius-card);
 }
 
@@ -648,9 +726,98 @@ defineExpose({ reload: load })
   gap: var(--ui-layout-grid-gap);
 }
 
+/* KPI 占位沿用真实卡片的表面，避免出现四条没有边框的空灰块。 */
 .skeleton-kpis :deep(.el-skeleton__item) {
-  height: var(--ui-icon-large);
+  height: var(--ui-workbench-kpi-min-height);
   border-radius: var(--ui-radius-card);
+  border: var(--ui-border-width) solid var(--ui-color-glass-edge);
+  background: var(--ui-surface-glass);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+/* 分析区与明细区必须一起出现，否则整块塌成一条灰条。 */
+.skeleton-panels {
+  display: grid;
+  grid-template-columns: var(--ui-layout-analysis-columns);
+  gap: var(--ui-layout-grid-gap);
+  align-items: start;
+}
+
+.skeleton-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+.skeleton-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.skeleton-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+}
+
+.skeleton-panel__head :deep(.el-skeleton__item) {
+  width: 30%;
+  height: var(--ui-icon);
+}
+
+.skeleton-panel__head :deep(.el-skeleton__item:last-child) {
+  width: 18%;
+}
+
+.skeleton-panel__chart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-6);
+}
+
+/* 圆环占位按真实环图视觉区尺寸，避免整块高度少一截（实测约 220px）。 */
+.skeleton-panel__chart :deep(.el-skeleton__item) {
+  flex-shrink: 0;
+  width: var(--ui-chart-height);
+  height: var(--ui-chart-height);
+}
+
+.skeleton-panel__legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  flex: 1;
+  min-width: 0;
+}
+
+.skeleton-panel__legend :deep(.el-skeleton__item) {
+  width: 60%;
+  height: var(--ui-icon-small);
+}
+
+/* 两条比率进度条占位：与真实 .rate-bars 同量级高度。 */
+.skeleton-panel__rates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+}
+
+.skeleton-panel__rates :deep(.el-skeleton__item) {
+  width: 100%;
+  height: var(--ui-icon);
+}
+
+/* 明细与待办列表行：与真实条目的最小高度一致，高度随行数自然累积。 */
+.skeleton-panel > :deep(.el-skeleton__item:not(.el-skeleton__item--text)) {
+  width: 100%;
+  min-height: var(--ui-table-row-height);
+  border-radius: var(--ui-radius-control);
 }
 
 /* ---------- 重点活动 + AI 双卡 ---------- */
@@ -695,25 +862,11 @@ defineExpose({ reload: load })
   gap: var(--ui-space-2);
 }
 
-.spotlight__eyebrow i {
-  width: var(--ui-icon-small);
-  height: var(--ui-icon-small);
-  border-radius: var(--ui-radius-circle);
-  background: var(--ui-color-accent);
-}
-
 .spotlight__state {
   padding: 0 var(--ui-space-2);
   border: var(--ui-border-width) solid var(--ui-color-border-dark);
   border-radius: var(--ui-radius-pill);
   letter-spacing: normal;
-}
-
-.spotlight__title {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--ui-space-4);
 }
 
 .spotlight__slogan {
@@ -724,7 +877,8 @@ defineExpose({ reload: load })
 
 .spotlight__title h2 {
   margin: var(--ui-space-2) 0;
-  font-size: var(--ui-font-size-section);
+  font-size: var(--ui-font-size-kpi);
+  line-height: var(--ui-line-height-tight);
   letter-spacing: var(--ui-letter-spacing-title);
 }
 
@@ -734,26 +888,9 @@ defineExpose({ reload: load })
   line-height: var(--ui-line-height-body);
 }
 
-.spotlight__date {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  font-family: var(--ui-font-family-data);
-  font-size: var(--ui-font-size-page-title);
-  line-height: var(--ui-line-height-tight);
-}
-
 .spotlight__date small {
   font-size: var(--ui-font-size-caption);
   color: var(--ui-color-on-dark-muted);
-}
-
-.stage-rail {
-  display: flex;
-  gap: var(--ui-space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .stage-rail li {
@@ -777,24 +914,6 @@ defineExpose({ reload: load })
   font-family: var(--ui-font-family-data);
 }
 
-.stage-rail li.current {
-  color: var(--ui-color-accent);
-}
-
-.stage-rail li.current > span {
-  border-color: var(--ui-color-accent);
-  background: var(--ui-color-accent);
-  color: var(--ui-color-on-dark);
-}
-
-.spotlight__footer {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ui-space-4);
-  margin-top: auto;
-}
-
 .spotlight__meta {
   display: flex;
   align-items: center;
@@ -811,19 +930,6 @@ defineExpose({ reload: load })
 .spotlight__meta small {
   color: var(--ui-color-on-dark-muted);
   font-size: var(--ui-font-size-caption);
-}
-
-.assistant-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ui-space-3);
-  padding: var(--ui-layout-card-padding);
-  border: var(--ui-border-width) solid var(--ui-color-ai-border);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-surface-ai);
-  box-shadow: var(--ui-shadow-glass);
-  transition: transform var(--ui-motion-base) var(--ui-motion-ease);
 }
 
 .assistant-card__head {
@@ -844,7 +950,7 @@ defineExpose({ reload: load })
 
 .assistant-card__head h2 {
   margin: 0;
-  font-size: var(--ui-font-size-card-title);
+  font-size: var(--ui-font-size-emphasis);
   color: var(--ui-color-ai-text);
 }
 
@@ -863,34 +969,10 @@ defineExpose({ reload: load })
   font-size: var(--ui-font-size-caption);
 }
 
-.assistant-card__modes {
-  display: flex;
-  gap: var(--ui-space-2);
-}
-
-.assistant-card__modes button {
-  padding: var(--ui-space-1) var(--ui-space-3);
-  border: var(--ui-border-width) solid var(--ui-color-ai-border);
-  border-radius: var(--ui-radius-pill);
-  background: transparent;
-  color: var(--ui-color-ai-text);
-  font-size: var(--ui-font-size-small);
-  cursor: pointer;
-}
-
 .assistant-card__modes button.selected {
   background: var(--ui-color-ai-start);
   color: var(--ui-color-ai-text);
   font-weight: var(--ui-font-weight-medium);
-}
-
-.assistant-card__paper {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ui-space-1);
-  padding: var(--ui-space-3);
-  border-radius: var(--ui-radius-control);
-  background: var(--ui-color-surface);
 }
 
 .assistant-card__paper span {
@@ -911,19 +993,6 @@ defineExpose({ reload: load })
   line-height: var(--ui-line-height-body);
 }
 
-.assistant-card__bottom {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ui-space-3);
-  margin-top: auto;
-}
-
-.assistant-card__bottom small {
-  color: var(--ui-color-ai-muted);
-  font-size: var(--ui-font-size-caption);
-}
-
 .assistant-card__model {
   align-self: flex-start;
 }
@@ -936,27 +1005,15 @@ defineExpose({ reload: load })
   gap: var(--ui-layout-grid-gap);
 }
 
-.kpi-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ui-space-2);
-  padding: var(--ui-space-4) var(--ui-space-5);
-  border: var(--ui-border-width) solid var(--ui-color-border);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-color-surface);
-  color: var(--ui-color-text);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color var(--ui-motion-base) var(--ui-motion-ease),
-    box-shadow var(--ui-motion-base) var(--ui-motion-ease);
-}
-
 .kpi-card:hover {
   border-color: var(--ui-color-accent);
   box-shadow: var(--ui-shadow-hover);
 }
 
 .kpi-card__top {
+  position: absolute;
+  top: var(--ui-space-4);
+  right: var(--ui-space-4);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -973,6 +1030,7 @@ defineExpose({ reload: load })
 }
 
 .kpi-card__arrow {
+  display: none;
   width: var(--ui-icon-small);
   height: var(--ui-icon-small);
   color: var(--ui-color-text-muted);
@@ -980,11 +1038,13 @@ defineExpose({ reload: load })
 }
 
 .kpi-card:hover .kpi-card__arrow {
+  display: none;
   transform: translateX(var(--ui-space-1));
   color: var(--ui-color-accent);
 }
 
 .kpi-card__label {
+  padding-right: var(--ui-space-8);
   color: var(--ui-color-text-secondary);
   font-size: var(--ui-font-size-small);
 }
@@ -1007,6 +1067,9 @@ defineExpose({ reload: load })
 }
 
 .kpi-card__note {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-caption);
   line-height: var(--ui-line-height-body);
@@ -1045,7 +1108,7 @@ defineExpose({ reload: load })
   align-items: center;
   gap: var(--ui-space-2);
   margin: 0;
-  font-size: var(--ui-font-size-card-title);
+  font-size: var(--ui-font-size-emphasis);
   white-space: nowrap;
 }
 
@@ -1064,6 +1127,7 @@ defineExpose({ reload: load })
 
 .budget-chart {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--ui-space-6);
 }
@@ -1088,17 +1152,33 @@ defineExpose({ reload: load })
 }
 
 /* 环图中心显示真实占比（不只放在 aria-label 里） */
-.budget-chart__label {
-  fill: var(--ui-color-text);
-  font-family: var(--ui-font-family-data);
-  font-size: var(--ui-font-size-small);
-  text-anchor: middle;
-  dominant-baseline: middle;
-  transform: rotate(90deg);
-  transform-origin: center;
+
+.budget-chart__visual {
+  position: relative;
+  flex-shrink: 0;
 }
 
+.budget-chart__label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-kpi);
+  font-variant-numeric: tabular-nums;
+}
+
+.budget-chart__label small {
+  font-family: var(--ui-font-family-body);
+  font-size: var(--ui-font-size-caption);
+  color: var(--ui-color-text-muted);
+}
+
+
 /* 图表与待办同排，明细整行放在下方，避免左侧出现大块空白 */
+
 .panel--wide {
   grid-column: 1 / -1;
 }
@@ -1172,8 +1252,9 @@ defineExpose({ reload: load })
 
 .detail-list__item {
   display: flex;
-  flex-direction: column;
-  gap: var(--ui-space-1);
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ui-space-3);
   padding-bottom: var(--ui-space-3);
   border-bottom: var(--ui-border-width) solid var(--ui-color-border);
 }
@@ -1184,6 +1265,8 @@ defineExpose({ reload: load })
 }
 
 .detail-list__main {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1202,6 +1285,8 @@ defineExpose({ reload: load })
 }
 
 .detail-list__hint {
+  order: 1;
+  flex-basis: 100%;
   margin: 0;
   color: var(--ui-color-text-muted);
   font-size: var(--ui-font-size-caption);
@@ -1222,6 +1307,19 @@ defineExpose({ reload: load })
   border-bottom: none;
 }
 
+.todo-list__item > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.todo-list__item .el-button {
+  flex-shrink: 0;
+}
+
+.panel--todos {
+  border-top: var(--ui-space-1) solid var(--ui-color-accent);
+}
+
 .todo-list__item strong {
   display: block;
   margin-top: var(--ui-space-1);
@@ -1235,25 +1333,213 @@ defineExpose({ reload: load })
 
 /* 微交互：精确指针悬停上浮，减少动效偏好下取消（不依赖动画库） */
 @media (hover: hover) and (pointer: fine) {
-  .spotlight:hover,
+
+.spotlight:hover,
   .assistant-card:hover,
   .kpi-card:hover {
-    transform: translateY(calc(var(--ui-motion-lift) * -1));
-  }
+  transform: translateY(var(--ui-motion-lift));
+}
+}
+
+.workbench svg:not(.budget-chart__ring) {
+  width: var(--ui-icon);
+  height: var(--ui-icon);
+  flex-shrink: 0;
+}
+
+.spotlight, .assistant-card {
+  min-height: var(--ui-workbench-focus-min-height);
+  border: var(--ui-border-width) solid var(--ui-color-glass-edge-dark);
+}
+
+.spotlight__title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  margin: var(--ui-space-4) 0;
+}
+
+.spotlight__title > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.spotlight__date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: var(--ui-font-family-data);
+  line-height: var(--ui-line-height-tight);
+  font-size: var(--ui-font-size-brand);
+  color: var(--ui-color-on-dark-accent);
+  font-weight: var(--ui-font-weight-regular);
+}
+
+.spotlight__eyebrow i {
+  border-radius: var(--ui-radius-circle);
+  width: var(--ui-space-2);
+  height: var(--ui-space-2);
+  background: var(--ui-color-on-dark-accent);
+}
+
+.stage-rail {
+  display: flex;
+  margin: 0;
+  list-style: none;
+  padding: var(--ui-space-4) 0;
+  gap: 0;
+}
+
+.stage-rail li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--ui-icon-large) / 2);
+  left: calc(50% + var(--ui-icon-large) / 2);
+  width: calc(100% - var(--ui-icon-large));
+  height: var(--ui-border-width);
+  background: var(--ui-color-border-dark);
+}
+
+.stage-rail li.current {
+  color: var(--ui-color-on-dark-accent);
+}
+
+.stage-rail li.current > span {
+  background: var(--ui-color-on-dark-accent);
+  border-color: var(--ui-color-on-dark-accent);
+  color: var(--ui-color-text);
+}
+
+.stage-rail li.reached > span {
+  border-color: var(--ui-color-on-dark-accent);
+  color: var(--ui-color-on-dark-accent);
+}
+
+.spotlight__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-4);
+  margin-top: auto;
+  padding-top: var(--ui-space-5);
+  border-top: var(--ui-border-width) solid var(--ui-color-border-dark);
+  justify-content: space-between;
+}
+
+.spotlight__footer .el-button {
+  color: var(--ui-color-on-dark-accent);
+  background: var(--ui-color-glass-on-dark);
+  border-color: var(--ui-color-border-dark);
+}
+
+.assistant-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-ai-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-surface-ai);
+  box-shadow: var(--ui-shadow-glass);
+  transition: transform var(--ui-motion-base) var(--ui-motion-ease);
+  border-color: var(--ui-color-ai-border);
+}
+
+.assistant-card__modes {
+  display: flex;
+  background: var(--ui-color-ai-end);
+  border: var(--ui-border-width) solid var(--ui-color-ai-border);
+  border-radius: var(--ui-radius-control);
+  padding: var(--ui-space-1);
+  gap: 0;
+}
+
+.assistant-card__modes button {
+  padding: var(--ui-space-1) var(--ui-space-3);
+  background: transparent;
+  color: var(--ui-color-ai-text);
+  font-size: var(--ui-font-size-small);
+  cursor: pointer;
+  flex: 1;
+  border: 0;
+  border-radius: var(--ui-radius-control);
+  min-height: var(--ui-control-height);
+}
+
+.assistant-card__paper {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-glass);
+  padding: var(--ui-space-5);
+  border: var(--ui-border-width) solid var(--ui-color-glass-edge);
+  gap: var(--ui-space-2);
+}
+
+.assistant-card__bottom {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ui-space-2);
+}
+
+.assistant-card__bottom .el-button {
+  width: 100%;
+  background: var(--ui-color-ai-start);
+  border-color: var(--ui-color-ai-border);
+  color: var(--ui-color-ai-text);
+}
+
+.assistant-card__bottom small {
+  color: var(--ui-color-ai-muted);
+  font-size: var(--ui-font-size-caption);
+  text-align: center;
+}
+
+.kpi-card {
+  position: relative;
+  min-width: 0;
+  min-height: var(--ui-workbench-kpi-min-height);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  color: var(--ui-color-text);
+  text-align: left;
+  cursor: pointer;
+  background: var(--ui-surface-glass);
+  border-color: var(--ui-color-glass-edge);
+  transition: transform var(--ui-motion-base) var(--ui-motion-ease), box-shadow var(--ui-motion-base) var(--ui-motion-ease);
+}
+
+.skeleton-kpis :deep(.el-skeleton__item) {
+  border-radius: var(--ui-radius-card);
+  height: var(--ui-workbench-kpi-min-height);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spotlight,
+
+.spotlight,
   .assistant-card,
   .kpi-card,
   .kpi-card__arrow {
-    transition: none;
-  }
+  transition: none;
+}
 
-  .spotlight:hover,
+.spotlight:hover,
   .assistant-card:hover,
   .kpi-card:hover {
-    transform: none;
-  }
+  transform: none;
 }
+}
+
+
+
+.focus-board--member { grid-template-columns: minmax(0, 1fr); }
 </style>

@@ -81,6 +81,17 @@ public class GlobalExceptionHandler {
         return enrich(problem);
     }
 
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleParameterTypeMismatch(
+        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("输入无效");
+        problem.setDetail("请求参数格式或取值范围无效，请检查后重试。");
+        problem.setProperty("code", "VALIDATION_FAILED");
+        problem.setProperty("fieldErrors", List.of(new FieldErrorItem(ex.getName(), "参数格式或取值范围无效")));
+        return enrich(problem);
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ProblemDetail handleUnreadableBody(HttpMessageNotReadableException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);

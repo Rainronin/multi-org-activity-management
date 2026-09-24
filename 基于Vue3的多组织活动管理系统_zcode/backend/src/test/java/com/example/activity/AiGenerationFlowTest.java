@@ -164,6 +164,43 @@ class AiGenerationFlowTest extends FlowTestSupport {
     // ---------- 用例 ----------
 
     @Test
+    void concurrentSameKeyGenerationCallsModelOnlyOnce() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = reviewingActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-09-05T14:00:00+08:00");
+        configureAndEnable(owner, orgId, "OPENAI_CHAT_COMPLETIONS",
+            stub.baseUrl() + "/v1/chat/completions", 10);
+        String key = newIdempotencyKey();
+        String body = "{\"type\":\"ACTIVITY_SUMMARY\"}";
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var results = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            for (int i = 0; i < 8; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return generate(owner, orgId, activityId, key, body);
+                }));
+            }
+            start.countDown();
+            for (var result : results) {
+                var response = result.get(20, java.util.concurrent.TimeUnit.SECONDS).getResponse();
+                assertThat(response.getStatus()).isIn(201, 409);
+                if (response.getStatus() == 409) {
+                    assertThat(response.getContentAsString()).contains("REQUEST_IN_PROGRESS");
+                }
+            }
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_generation WHERE activity_id = ?",
+            Integer.class, activityId)).isEqualTo(1);
+        MvcResult replay = generate(owner, orgId, activityId, key, body);
+        assertThat(replay.getResponse().getStatus()).isEqualTo(201);
+        assertThat(field(replay, "$.status")).isEqualTo("SUCCEEDED");
+        assertThat(field(replay, "$.generationId")).isEqualTo(String.valueOf(latestGenerationId(activityId)));
+        assertThat(stub.callCount()).isEqualTo(1);
+    }
+
+    @Test
     void summaryGenerationCallsOpenAiOnceAndReplaysIdempotently() throws Exception {
         TestSession owner = registerAndLogin();
         Long orgId = createOrg(owner);

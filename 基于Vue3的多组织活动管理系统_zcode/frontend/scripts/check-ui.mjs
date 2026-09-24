@@ -77,8 +77,7 @@ const MOTION_LITERAL = /(?:transition|animation)(?:-duration)?\s*:[^;{}]*\d(?:\.
 const INLINE_STYLE_BYPASS = /(?:^|\s)style="[^"]*(?:px|#[0-9a-fA-F]{3}|rgb)/g
 // 组件数值 props 同样承载设计数值（R06）：width／height 等属性不允许像素字面量，
 // 应绑定 token（width="var(--ui-dialog-width)" 之类不受限）。SVG 绘图尺寸不在检查范围。
-// 表格列宽例外（见下方 scanComponentProps 注释）：只有 ElTableColumn 允许数值列宽。
-const TABLE_COLUMN_TAG = /^<ElTable(Column)?\b/
+// 表格列宽同样必须消费集中 token。
 const COMPONENT_SIZE_PROP = /<(?!svg)[A-Za-z][\w.-]*[^>]*?\s:?(min-width|max-width|width|height|min-height|max-height)="(\d+(?:\.\d+)?(?:px)?)"/g
 
 function scanCss(text, file, offset = 0) {
@@ -115,9 +114,6 @@ for (const file of businessFiles) {
     addProblem(file, lineOf(text, match.index), `内联 style 疑似绕过 token：${match[0].trim().slice(0, 60)}`)
   }
   for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
-    if (TABLE_COLUMN_TAG.test(match[0])) {
-      continue
-    }
     addProblem(file, lineOf(text, match.index), `组件尺寸 props 字面量 ${match[0].slice(-40)}，应绑定 token`)
   }
   if (file.endsWith('.vue')) {
@@ -171,9 +167,7 @@ function collect(text) {
   pick(FONT_FAMILY_LITERAL, () => 'font-family 字面量')
   pick(MOTION_LITERAL, (match) => `动效时长字面量 ${match[0].trim()}`)
   pick(/!important/g, () => '禁止用 !important')
-  for (const match of text.matchAll(COMPONENT_SIZE_PROP)) {
-    if (!TABLE_COLUMN_TAG.test(match[0])) found.push('组件尺寸 props 字面量')
-  }
+  pick(COMPONENT_SIZE_PROP, () => '组件尺寸 props 字面量')
   pick(INLINE_STYLE_BYPASS, () => '内联 style 疑似绕过 token')
   return found
 }
@@ -189,7 +183,7 @@ const SELF_TEST = [
   { text: '<ElButton :width="12">确定</ElButton>', expect: '组件尺寸 props 字面量' },
   { text: '<ElDialog width="480">', expect: '组件尺寸 props 字面量' },
   { text: '<ElDialog width="var(--ui-dialog-width)">', expect: null },
-  { text: '<ElTableColumn min-width="100" />', expect: null }, // 表格列宽例外：Element Plus 需要数值
+  { text: '<ElTableColumn min-width="100" />', expect: '组件尺寸 props 字面量' },
   { text: '<svg viewBox="0 0 32 32"><path d="M8 8h5" /></svg>', expect: null },
   { text: '<div style="margin-top: 12px">', expect: '内联 style 疑似绕过 token' },
 ]

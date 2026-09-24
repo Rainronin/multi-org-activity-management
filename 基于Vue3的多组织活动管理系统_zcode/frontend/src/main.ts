@@ -1,5 +1,8 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { provideGlobalConfig } from 'element-plus'
+// 未显式配置时组件库回落到英文（Select 占位、Pagination 等内置文案）；统一为简体中文。
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import './styles/tokens.css'
 import 'element-plus/dist/index.css'
 import './styles/element-plus.css'
@@ -12,6 +15,8 @@ import { useSessionStore } from './stores/session'
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
+// 在根实例上提供语言包，弹层与懒加载组件同样生效。
+provideGlobalConfig({ locale: zhCn }, app, true)
 
 const session = useSessionStore()
 session.bindRedirect((target) => {

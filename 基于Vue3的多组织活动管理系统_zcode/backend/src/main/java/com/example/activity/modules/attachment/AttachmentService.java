@@ -399,11 +399,15 @@ public class AttachmentService {
     }
 
     public Download download(Long accountId, Long orgId, Long activityId, Long attachmentId) {
-        requireContext(accountId, orgId, activityId);
+        Context ctx = requireContext(accountId, orgId, activityId);
         Attachment attachment = attachmentMapper.findActiveById(attachmentId);
         if (attachment == null || !attachment.getOrgId().equals(orgId)
             || !attachment.getActivityId().equals(activityId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "附件不存在或无权访问。");
+        }
+        // 票据下载与票据列表使用同一权限，不能经通用附件入口绕过。
+        if (Attachment.PURPOSE_EXPENSE_VOUCHER.equals(attachment.getPurpose()) && !ctx.canManage()) {
+            throw notFound();
         }
         try {
             Path path = storageDir.resolve(attachment.getStoredName()).normalize();

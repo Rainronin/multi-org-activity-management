@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { readUiLength } from '../../shared/utils/readUiToken'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -8,15 +9,14 @@ import {
   ElFormItem,
   ElInput,
   ElInputNumber,
-  ElLoading,
+  ElMessage,
   ElMessageBox,
   ElPagination,
-  ElSkeleton,
-
   ElTable,
   ElTableColumn,
   ElTag,
 } from 'element-plus'
+import ListPage from '../../shared/components/ListPage.vue'
 import { ApiError } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { useOrganizationsStore } from '../../stores/organizations'
@@ -31,12 +31,12 @@ import {
   revokeOwner,
   transferOwnership,
 } from './api'
-import { roleLabel, type InvitationCreated, type InvitationItem, type MemberItem } from './types'
+import { roleLabel, type InvitationCreated, type InvitationItem, type MemberItem, type OrganizationDetail } from './types'
 
 // 成员管理（P1.3 / 审核 R03、R06、R07）：
 // 读取随路由 orgId 重建并核对请求序号与会话代次；失败清空旧数据；
 // 确认框固定发起时的组织与目标；OWNER 可邀请、管理已发邀请、授予/撤销/移交与移除。
-const vLoading = ElLoading.directive
+const PAGE_SIZE = 20
 
 const route = useRoute()
 const router = useRouter()
@@ -47,6 +47,13 @@ const emit = defineEmits<{
   changed: []
 }>()
 
+// 管理入口按当前组织身份判断，不由“当前分页／搜索结果里的成员行”推断：
+// 换搜索词或翻到没有自己的那一页时，负责人身份不会因此消失（审核反馈 2）。
+const props = defineProps<{
+  orgDetail: OrganizationDetail | null
+  state: 'loading' | 'ready' | 'missing'
+}>()
+
 const orgId = computed(() => String(route.params.orgId ?? ''))
 
 const members = ref<MemberItem[]>([])
@@ -55,21 +62,29 @@ const memberPage = ref(1)
 const memberQuery = ref('')
 const appliedQuery = ref('')
 const loading = ref(false)
+const refreshing = ref(false)
+const loadedOnce = ref(false)
 const errorText = ref('')
 const actionError = ref('')
 const actingMemberId = ref('')
 
 const invitations = ref<InvitationItem[]>([])
+const invitationsLoading = ref(false)
+const invitationsLoaded = ref(false)
+const invitationsError = ref('')
 const inviteVisible = ref(false)
 const inviteSubmitting = ref(false)
 const inviteForm = ref({ expiresInDays: 7, maxUses: 10 })
 const issuedInvitation = ref<InvitationCreated | null>(null)
 const revokingInvitationId = ref('')
 
-const amOwner = computed(() => {
-  const me = session.account?.username
-  return members.value.some((m) => m.username === me && m.role === 'OWNER')
-})
+const canManage = computed(() => props.state === 'ready' && props.orgDetail?.role === 'OWNER')
+
+const hasFilter = computed(() => Boolean(appliedQuery.value))
+
+const emptyText = computed(() => (hasFilter.value
+  ? '没有匹配的成员，可清除关键词后重试。'
+  : '暂无其他成员，可通过邀请添加。'))
 
 // R03：读取随路由重建；请求序号 + 会话代次双守卫，迟到响应与旧组织数据不渲染。
 let requestSeq = 0
@@ -81,12 +96,17 @@ async function loadMembers(): Promise<void> {
   const seq = ++requestSeq
   const targetOrgId = orgId.value
   const gen = session.capture()
-  loading.value = true
+  // 首次加载与后台刷新分开：有旧数据时保留内容并就地提示（UI 规范第 10 节）。
+  if (members.value.length > 0) {
+    refreshing.value = true
+  } else {
+    loading.value = true
+  }
   errorText.value = ''
   try {
     const page = await fetchMembers(targetOrgId, {
       page: memberPage.value,
-      pageSize: 20,
+      pageSize: PAGE_SIZE,
       query: appliedQuery.value || undefined,
     })
     if (seq !== requestSeq || targetOrgId !== orgId.value || gen !== session.generation) {
@@ -110,29 +130,52 @@ async function loadMembers(): Promise<void> {
   } finally {
     if (seq === requestSeq) {
       loading.value = false
+      refreshing.value = false
+      loadedOnce.value = true
     }
   }
 }
 
 async function loadInvitations(): Promise<void> {
-  if (!orgId.value || !amOwner.value) {
+  if (!orgId.value || !canManage.value) {
     return
   }
   const seq = requestSeq
   const gen = session.capture()
+  invitationsLoading.value = true
+  invitationsError.value = ''
   try {
     const items = await fetchInvitations(orgId.value)
     if (seq === requestSeq && gen === session.generation) {
       invitations.value = items
     }
-  } catch {
-    // 邀请列表加载失败不影响成员列表
+  } catch (error) {
+    if (seq !== requestSeq || gen !== session.generation) {
+      return
+    }
+    // 邀请区段有自己的失败态：清空旧结果并给出重试，不能退化成“暂无有效邀请”（审核反馈 3）。
+    invitations.value = []
+    if (session.observeUnauthorized(error, gen)) {
+      return
+    }
+    invitationsError.value = error instanceof ApiError && error.isTransportError
+      ? '网络连接失败，请检查网络后重试。'
+      : '邀请列表加载失败，请重试。'
+  } finally {
+    // 成员已换组织或更新完成时不再改动新列表的状态
+    if (seq === requestSeq && gen === session.generation) {
+      invitationsLoading.value = false
+      invitationsLoaded.value = true
+    }
   }
 }
 
-function reloadAll(): void {
-  void loadMembers()
-  void loadInvitations()
+/** 成员列表加载完成后才按当前身份拉取邀请，避免用上一次的角色判断。 */
+async function reloadAll(): Promise<void> {
+  await loadMembers()
+  if (canManage.value) {
+    await loadInvitations()
+  }
 }
 
 watch(orgId, () => {
@@ -142,9 +185,11 @@ watch(orgId, () => {
   members.value = []
   memberTotal.value = 0
   invitations.value = []
+  invitationsLoaded.value = false
+  invitationsError.value = ''
   errorText.value = ''
   actionError.value = ''
-  reloadAll()
+  void reloadAll()
 })
 
 onMounted(reloadAll)
@@ -152,6 +197,13 @@ onMounted(reloadAll)
 function search() {
   memberPage.value = 1
   appliedQuery.value = memberQuery.value.trim()
+  void loadMembers()
+}
+
+function clearFilters() {
+  memberQuery.value = ''
+  appliedQuery.value = ''
+  memberPage.value = 1
   void loadMembers()
 }
 
@@ -202,6 +254,7 @@ async function copyInvitationCode() {
     return
   }
   await navigator.clipboard.writeText(issuedInvitation.value.code)
+  ElMessage.success('邀请码已复制到剪贴板。')
 }
 
 function closeInviteDialog() {
@@ -305,42 +358,70 @@ async function confirmLeave() {
 </script>
 
 <template>
-  <div class="members-page">
-    <div class="page-heading">
-      <div class="page-heading__title">
-        <p class="page-eyebrow">
-          组织协作 / 成员管理
-        </p>
-        <h1>成员管理</h1>
-        <p class="page-description">
-          邀请只授予普通成员身份；负责人授予、移交与移除会记录操作历史。
-        </p>
-      </div>
-      <div class="members-actions">
-        <ElButton
-          v-if="amOwner"
-          type="primary"
-          @click="inviteVisible = true"
-        >
-          创建邀请
-        </ElButton>
-        <ElButton
-          type="danger"
-          plain
-          @click="confirmLeave"
-        >
-          退出组织
-        </ElButton>
-      </div>
-    </div>
+  <ListPage
+    title="成员管理"
+    panel-title="成员列表"
+    eyebrow="组织协作 / 成员管理"
+    description="邀请只授予普通成员身份；负责人授予、移交与移除会记录操作历史。"
+    :context="`共 ${memberTotal} 名成员`"
+    :error="errorText"
+    :loading="loading"
+    :refreshing="refreshing"
+    :loaded="loadedOnce"
+    :row-count="members.length"
+    :total="0"
+    :empty-text="emptyText"
+    :skeleton-columns="4"
+    retry-text="重新加载"
+    @retry="loadMembers"
+  >
+    <template #actions>
+      <ElButton
+        v-if="canManage"
+        type="primary"
+        @click="inviteVisible = true"
+      >
+        创建邀请
+      </ElButton>
+      <ElButton
+        type="danger"
+        plain
+        @click="confirmLeave"
+      >
+        退出组织
+      </ElButton>
+    </template>
 
-    <p
-      v-if="errorText"
-      class="members-error"
-      role="alert"
-    >
-      {{ errorText }}
-    </p>
+    <template #filters>
+      <ElForm
+        class="members-search"
+        :inline="true"
+        @submit.prevent="search"
+      >
+        <ElFormItem>
+          <ElInput
+            v-model="memberQuery"
+            placeholder="按用户名搜索"
+            clearable
+            @clear="search"
+          />
+        </ElFormItem>
+        <ElFormItem>
+          <ElButton native-type="submit">
+            搜索
+          </ElButton>
+        </ElFormItem>
+        <ElFormItem v-if="hasFilter">
+          <ElButton
+            text
+            @click="clearFilters"
+          >
+            清除筛选
+          </ElButton>
+        </ElFormItem>
+      </ElForm>
+    </template>
+
     <p
       v-if="actionError"
       class="members-error"
@@ -349,287 +430,261 @@ async function confirmLeave() {
       {{ actionError }}
     </p>
 
-    <ElForm
-      class="members-search"
-      :inline="true"
-      @submit.prevent="search"
+    <ElTable
+      class="list-table"
+      :data="members"
     >
-      <ElFormItem>
-        <ElInput
-          v-model="memberQuery"
-          placeholder="按用户名搜索"
-          clearable
-          @clear="search"
-        />
-      </ElFormItem>
-      <ElFormItem>
-        <ElButton native-type="submit">
-          搜索
-        </ElButton>
-      </ElFormItem>
-    </ElForm>
-
-    <div
-      v-loading="loading"
-      class="members-table"
-    >
-      <ElTable :data="members">
-        <ElTableColumn
-          prop="username"
-          label="用户名"
-          min-width="160"
-        />
-        <ElTableColumn
-          label="角色"
-          min-width="110"
-        >
-          <template #default="{ row }">
-            <ElTag :type="row.role === 'OWNER' ? 'success' : 'info'">
-              {{ roleLabel((row as MemberItem).role) }}
-            </ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn
-          label="加入时间"
-          min-width="110"
-        >
-          <template #default="{ row }">
-            {{ (row as MemberItem).joinedAt.slice(0, 10) }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn
-          v-if="amOwner"
-          label="操作"
-          min-width="240"
-        >
-          <template #default="{ row }">
-            <template v-if="row.role === 'MEMBER'">
-              <ElButton
-                size="small"
-                @click="roleAction(row as MemberItem, 'promote')"
-              >
-                授予负责人
-              </ElButton>
-              <ElButton
-                size="small"
-                @click="roleAction(row as MemberItem, 'transfer')"
-              >
-                移交负责人
-              </ElButton>
-            </template>
+      <ElTableColumn
+        prop="username"
+        label="用户名"
+        :min-width="readUiLength('--ui-table-col-160')"
+      />
+      <ElTableColumn
+        label="角色"
+        :min-width="readUiLength('--ui-table-col-110')"
+      >
+        <template #default="{ row }">
+          <ElTag :type="row.role === 'OWNER' ? 'success' : 'info'">
+            {{ roleLabel((row as MemberItem).role) }}
+          </ElTag>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn
+        label="加入时间"
+        :min-width="readUiLength('--ui-table-col-110')"
+      >
+        <template #default="{ row }">
+          <span class="list-table__figure">{{ (row as MemberItem).joinedAt.slice(0, 10) }}</span>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn
+        v-if="canManage"
+        label="操作"
+        :min-width="readUiLength('--ui-table-col-240')"
+      >
+        <template #default="{ row }">
+          <template v-if="(row as MemberItem).role === 'MEMBER'">
             <ElButton
-              v-else
               size="small"
-              @click="roleAction(row as MemberItem, 'revoke')"
+              @click="roleAction(row as MemberItem, 'promote')"
             >
-              撤销负责人
+              授予负责人
             </ElButton>
+            <ElButton
+              size="small"
+              @click="roleAction(row as MemberItem, 'transfer')"
+            >
+              移交负责人
+            </ElButton>
+          </template>
+          <ElButton
+            v-else
+            size="small"
+            @click="roleAction(row as MemberItem, 'revoke')"
+          >
+            撤销负责人
+          </ElButton>
+          <ElButton
+            size="small"
+            type="danger"
+            plain
+            @click="roleAction(row as MemberItem, 'remove')"
+          >
+            移除
+          </ElButton>
+        </template>
+      </ElTableColumn>
+    </ElTable>
+
+    <template #footer>
+      <ElPagination
+        v-if="memberTotal > PAGE_SIZE"
+        class="members-pagination"
+        layout="prev, pager, next"
+        :total="memberTotal"
+        :page-size="PAGE_SIZE"
+        :current-page="memberPage"
+        @current-change="changePage"
+      />
+    </template>
+
+    <!-- 已发邀请是同一页面的独立区段：自己的加载／失败／空状态，不与成员表互斥 -->
+    <section
+      v-if="canManage"
+      class="list-panel"
+      data-invitations-panel
+    >
+      <div class="list-panel__head">
+        <h2>
+          已发邀请
+          <span
+            v-if="!invitationsError"
+            class="list-panel__count"
+          >{{ invitations.length }}</span>
+        </h2>
+        <span class="list-panel__aside">仅负责人可管理</span>
+      </div>
+      <p
+        v-if="invitationsError"
+        class="invitations-error"
+        role="alert"
+      >
+        {{ invitationsError }}
+        <ElButton
+          size="small"
+          @click="loadInvitations"
+        >
+          重新加载
+        </ElButton>
+      </p>
+      <p
+        v-else-if="invitationsLoading"
+        class="list-panel__note"
+        role="status"
+      >
+        正在加载邀请…
+      </p>
+      <ElTable
+        v-else
+        class="list-table"
+        :data="invitations"
+      >
+        <ElTableColumn
+          label="创建时间"
+          :min-width="readUiLength('--ui-table-col-110')"
+        >
+          <template #default="{ row }">
+            <span class="list-table__figure">{{ (row as InvitationItem).createdAt.slice(0, 10) }}</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="有效期至"
+          :min-width="readUiLength('--ui-table-col-110')"
+        >
+          <template #default="{ row }">
+            <span class="list-table__figure">{{ (row as InvitationItem).expiresAt.slice(0, 10) }}</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="使用情况"
+          :min-width="readUiLength('--ui-table-col-100')"
+        >
+          <template #default="{ row }">
+            {{ (row as InvitationItem).usedCount }} / {{ (row as InvitationItem).maxUses }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="操作"
+          :min-width="readUiLength('--ui-table-col-100')"
+        >
+          <template #default="{ row }">
             <ElButton
               size="small"
               type="danger"
               plain
-              @click="roleAction(row as MemberItem, 'remove')"
+              :loading="revokingInvitationId === (row as InvitationItem).invitationId"
+              @click="confirmRevokeInvitation(row as InvitationItem)"
             >
-              移除
+              撤销
             </ElButton>
           </template>
         </ElTableColumn>
         <template #empty>
-          <ElSkeleton
-            v-if="loading"
-            :rows="5"
-            animated
-            data-table-skeleton
-          />
-          <span class="members-note">{{ appliedQuery ? '没有匹配的成员。' : '暂无其他成员，可通过邀请添加。' }}</span>
+          <p
+            v-if="invitationsLoaded"
+            class="list-panel__note"
+          >
+            暂无有效邀请；创建邀请后可在此撤销。
+          </p>
         </template>
       </ElTable>
-    </div>
+    </section>
+  </ListPage>
 
-    <ElPagination
-      v-if="memberTotal > 20"
-      class="members-pagination"
-      layout="prev, pager, next"
-      :total="memberTotal"
-      :page-size="20"
-      :current-page="memberPage"
-      @current-change="changePage"
-    />
-
-    <template v-if="amOwner">
-      <h2 class="invitations-title">
-        已发邀请
-      </h2>
-      <div
-        v-loading="loading"
-        class="members-table"
+  <ElDialog
+    v-model="inviteVisible"
+    title="创建邀请"
+    width="var(--ui-dialog-width)"
+    @closed="closeInviteDialog"
+  >
+    <template v-if="!issuedInvitation">
+      <ElForm
+        :model="inviteForm"
+        label-position="top"
       >
-        <ElTable :data="invitations">
-          <ElTableColumn
-            label="创建时间"
-            min-width="110"
-          >
-            <template #default="{ row }">
-              {{ (row as InvitationItem).createdAt.slice(0, 10) }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn
-            label="有效期至"
-            min-width="110"
-          >
-            <template #default="{ row }">
-              {{ (row as InvitationItem).expiresAt.slice(0, 10) }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn
-            label="使用情况"
-            min-width="100"
-          >
-            <template #default="{ row }">
-              {{ (row as InvitationItem).usedCount }} / {{ (row as InvitationItem).maxUses }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn
-            label="操作"
-            min-width="100"
-          >
-            <template #default="{ row }">
-              <ElButton
-                size="small"
-                type="danger"
-                plain
-                :loading="revokingInvitationId === (row as InvitationItem).invitationId"
-                @click="confirmRevokeInvitation(row as InvitationItem)"
-              >
-                撤销
-              </ElButton>
-            </template>
-          </ElTableColumn>
-          <template #empty>
-            <span class="members-note">暂无有效邀请。</span>
-          </template>
-        </ElTable>
-      </div>
+        <ElFormItem label="有效期（天）">
+          <ElInputNumber
+            v-model="inviteForm.expiresInDays"
+            :min="1"
+            :max="30"
+          />
+        </ElFormItem>
+        <ElFormItem label="最大使用次数">
+          <ElInputNumber
+            v-model="inviteForm.maxUses"
+            :min="1"
+            :max="100"
+          />
+        </ElFormItem>
+      </ElForm>
+      <p class="list-panel__note">
+        接受邀请的账号将以普通成员身份加入组织。
+      </p>
     </template>
-
-    <ElDialog
-      v-model="inviteVisible"
-      title="创建邀请"
-      width="var(--ui-dialog-width)"
-      @closed="closeInviteDialog"
-    >
+    <template v-else>
+      <p
+        class="list-panel__note"
+        role="alert"
+      >
+        邀请码仅此一次展示，关闭后不可再次查看，请立即复制并分享给被邀请人。
+      </p>
+      <p class="members-code">
+        {{ issuedInvitation.code }}
+      </p>
+      <p class="list-panel__note">
+        有效期至 {{ issuedInvitation.expiresAt.slice(0, 10) }} · 最多使用 {{ issuedInvitation.maxUses }} 次
+      </p>
+    </template>
+    <template #footer>
       <template v-if="!issuedInvitation">
-        <ElForm
-          :model="inviteForm"
-          label-position="top"
+        <ElButton @click="closeInviteDialog">
+          取消
+        </ElButton>
+        <ElButton
+          type="primary"
+          :loading="inviteSubmitting"
+          @click="submitInvite"
         >
-          <ElFormItem label="有效期（天）">
-            <ElInputNumber
-              v-model="inviteForm.expiresInDays"
-              :min="1"
-              :max="30"
-            />
-          </ElFormItem>
-          <ElFormItem label="最大使用次数">
-            <ElInputNumber
-              v-model="inviteForm.maxUses"
-              :min="1"
-              :max="100"
-            />
-          </ElFormItem>
-        </ElForm>
-        <p class="members-note">
-          接受邀请的账号将以普通成员身份加入组织。
-        </p>
+          生成邀请码
+        </ElButton>
       </template>
       <template v-else>
-        <p
-          class="members-note"
-          role="alert"
+        <ElButton @click="copyInvitationCode">
+          复制邀请码
+        </ElButton>
+        <ElButton
+          type="primary"
+          @click="closeInviteDialog"
         >
-          邀请码仅此一次展示，关闭后不可再次查看，请立即复制并分享给被邀请人。
-        </p>
-        <p class="members-code">
-          {{ issuedInvitation.code }}
-        </p>
-        <p class="members-note">
-          有效期至 {{ issuedInvitation.expiresAt.slice(0, 10) }} · 最多使用 {{ issuedInvitation.maxUses }} 次
-        </p>
+          我已保存
+        </ElButton>
       </template>
-      <template #footer>
-        <template v-if="!issuedInvitation">
-          <ElButton @click="closeInviteDialog">
-            取消
-          </ElButton>
-          <ElButton
-            type="primary"
-            :loading="inviteSubmitting"
-            @click="submitInvite"
-          >
-            生成邀请码
-          </ElButton>
-        </template>
-        <template v-else>
-          <ElButton @click="copyInvitationCode">
-            复制邀请码
-          </ElButton>
-          <ElButton
-            type="primary"
-            @click="closeInviteDialog"
-          >
-            我已保存
-          </ElButton>
-        </template>
-      </template>
-    </ElDialog>
-  </div>
+    </template>
+  </ElDialog>
 </template>
 
 <style scoped>
-.members-page {
-  min-width: 0;
+/* 页头、面板与表格排版统一由 base.css 的公共类提供。 */
+.members-search {
+  row-gap: var(--ui-space-3);
 }
 
-/* 小屏重排仅用结构换行（wrap），断点仍由 tokens 集中管理。 */
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ui-space-6);
-  flex-wrap: wrap;
-}
-
-.page-heading__title {
-  min-width: 0;
-}
-
-.page-eyebrow {
-  margin-bottom: var(--ui-space-3);
-  color: var(--ui-color-selected-text);
-  font-size: var(--ui-font-size-caption);
-  letter-spacing: var(--ui-letter-spacing-eyebrow);
-}
-
-.page-heading h1 {
-  font-size: var(--ui-font-size-page-title);
-  font-weight: var(--ui-font-weight-bold);
-  letter-spacing: var(--ui-letter-spacing-title);
-}
-
-.page-description {
-  margin-top: var(--ui-space-3);
-  color: var(--ui-color-text-secondary);
-  line-height: var(--ui-line-height-body);
-}
-
-.members-actions {
-  display: flex;
-  gap: var(--ui-space-3);
-  flex-wrap: wrap;
+.members-invitations {
+  margin-top: var(--ui-layout-grid-gap);
 }
 
 .members-error {
-  margin-top: var(--ui-space-4);
+  margin: 0 0 var(--ui-space-4);
   padding: var(--ui-space-3) var(--ui-space-4);
   border: var(--ui-border-width) solid var(--ui-color-danger);
   border-radius: var(--ui-radius-control);
@@ -638,23 +693,23 @@ async function confirmLeave() {
   font-size: var(--ui-font-size-small);
 }
 
-.members-search {
-  margin-top: var(--ui-space-6);
-}
-
-.members-table {
-  margin-top: var(--ui-space-6);
-  width: 100%;
+/* 邀请区段的失败态与成员表错误同形，避免两个区段的错误样式各写一套。 */
+.invitations-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin: 0;
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border: var(--ui-border-width) solid var(--ui-color-danger);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-danger-bg);
+  color: var(--ui-color-danger);
+  font-size: var(--ui-font-size-small);
 }
 
 .members-pagination {
-  margin-top: var(--ui-space-4);
-}
-
-.members-note {
-  color: var(--ui-color-text-muted);
-  font-size: var(--ui-font-size-small);
-  line-height: var(--ui-line-height-prose);
+  margin-top: var(--ui-space-2);
 }
 
 .members-code {
@@ -668,11 +723,5 @@ async function confirmLeave() {
   letter-spacing: var(--ui-letter-spacing-eyebrow);
   text-align: center;
   overflow-wrap: anywhere;
-}
-
-.invitations-title {
-  margin-top: var(--ui-space-10);
-  font-size: var(--ui-font-size-section);
-  font-weight: var(--ui-font-weight-semibold);
 }
 </style>

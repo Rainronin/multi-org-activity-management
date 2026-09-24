@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { readUiLength } from '../../shared/utils/readUiToken'
+import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag, type FormInstance, type FormRules } from 'element-plus'
+import { formatDateTime } from './types'
 import { ApiError } from '../../shared/http/error'
 import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
@@ -32,6 +35,10 @@ const members = ref<{ memberId: string; username: string }[]>([])
 const myMemberId = ref<string | null>(null)
 const errorText = ref('')
 const loading = ref(false)
+/** 是否已完成一次成功读取；未完成时的空表格只能显示“正在加载”，不能显示“暂无”。 */
+const loaded = ref(false)
+/** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
+const skeleton = useLoadingSkeleton()
 const acting = ref('')
 
 const taskDialogVisible = ref(false)
@@ -40,6 +47,28 @@ const editingTask = ref<TaskItem | null>(null)
 const taskForm = ref({
   title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '',
 })
+
+const taskFormRef = ref<FormInstance>()
+let initialTaskForm = ''
+const taskRules: FormRules = {
+  title: [
+    { required: true, whitespace: true, message: '请输入任务标题', trigger: 'blur' },
+    { max: 128, message: '任务标题不超过 128 字符', trigger: 'blur' },
+  ],
+  assigneeMemberId: [{ required: true, message: '请选择任务负责人', trigger: 'change' }],
+  description: [{ max: 2000, message: '任务说明不超过 2000 字符', trigger: 'blur' }],
+}
+async function closeTaskDialog() {
+  if (taskSubmitting.value) return
+  if (JSON.stringify(taskForm.value) !== initialTaskForm) {
+    try {
+      await ElMessageBox.confirm('任务内容还未保存，确定放弃吗？', '未保存的任务', {
+        confirmButtonText: '放弃填写', cancelButtonText: '继续填写', type: 'warning',
+      })
+    } catch { return }
+  }
+  taskDialogVisible.value = false
+}
 
 const materialDialogVisible = ref(false)
 const materialSubmitting = ref(false)
@@ -88,6 +117,12 @@ async function loadAll(): Promise<void> {
   const seq = ++requestSeq
   const gen = session.capture()
   loading.value = true
+  // 已有内容时是后台刷新，不重放骨架；首次进入才走 leading／trailing 延迟
+  if (tasks.value.length > 0) {
+    skeleton.hide()
+  } else {
+    skeleton.begin()
+  }
   errorText.value = ''
   try {
     const [t, m, a, mine] = await Promise.all([
@@ -103,6 +138,7 @@ async function loadAll(): Promise<void> {
     materials.value = m
     attachments.value = a
     myMemberId.value = mine
+    loaded.value = true
     if (canManage.value && members.value.length === 0) {
       const page = await fetchMembers(orgId.value, { pageSize: 100 })
       if (seq === requestSeq && gen === session.generation) {
@@ -116,6 +152,8 @@ async function loadAll(): Promise<void> {
     tasks.value = []
     materials.value = []
     attachments.value = []
+    // 失败不冒充空态：保留 loaded=false，表格列继续显示“正在加载…”而非“暂无”
+    loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
@@ -125,11 +163,20 @@ async function loadAll(): Promise<void> {
   } finally {
     if (seq === requestSeq) {
       loading.value = false
+      skeleton.end()
     }
   }
 }
 
-watch([orgId, activityId], loadAll)
+watch([orgId, activityId], () => {
+  tasks.value = []
+  materials.value = []
+  attachments.value = []
+  loaded.value = false
+  errorText.value = ''
+  skeleton.hide()
+  return loadAll()
+})
 onMounted(loadAll)
 
 async function guard(fn: () => Promise<void>): Promise<void> {
@@ -175,7 +222,10 @@ function toLocalInput(value: string | null): string {
 function openCreateTask() {
   editingTask.value = null
   taskForm.value = { title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' }
+  initialTaskForm = JSON.stringify(taskForm.value)
+  errorText.value = ''
   taskDialogVisible.value = true
+  void nextTick(() => taskFormRef.value?.clearValidate())
 }
 
 function openEditTask(task: TaskItem) {
@@ -187,11 +237,19 @@ function openEditTask(task: TaskItem) {
     priority: task.priority,
     dueAt: toLocalInput(task.dueAt),
   }
+  initialTaskForm = JSON.stringify(taskForm.value)
+  errorText.value = ''
   taskDialogVisible.value = true
+  void nextTick(() => taskFormRef.value?.clearValidate())
 }
 
 async function submitTask() {
+  if (taskSubmitting.value) return
   taskSubmitting.value = true
+  if (!(await taskFormRef.value?.validate().catch(() => false))) {
+    taskSubmitting.value = false
+    return
+  }
   const target = editingTask.value
   await guard(async () => {
     const payload = {
@@ -470,6 +528,12 @@ defineExpose({ reload: loadAll })
       role="alert"
     >
       {{ errorText }}
+      <ElButton
+        size="small"
+        @click="loadAll"
+      >
+        重新加载
+      </ElButton>
     </p>
     <p
       v-if="frozen"
@@ -491,18 +555,46 @@ defineExpose({ reload: loadAll })
           新建任务
         </ElButton>
       </div>
+      <ElSkeleton
+        v-if="skeleton.loading.value && tasks.length === 0"
+        :rows="4"
+        animated
+        data-p3-skeleton="tasks"
+        aria-busy="true"
+        aria-label="正在加载任务"
+      />
       <ElTable
-        v-loading="loading"
+        v-else
         :data="tasks"
       >
+        <template #empty>
+          <span>{{ loaded ? '暂无任务。' : '正在加载任务…' }}</span>
+        </template>
         <ElTableColumn
-          prop="title"
           label="任务"
-          min-width="160"
-        />
+          :min-width="readUiLength('--ui-table-col-200')"
+        >
+          <template #default="{ row }">
+            <span>{{ row.title }}</span>
+            <p
+              v-if="row.description"
+              class="p3-task-description"
+            >
+              {{ row.description }}
+            </p>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn
+          label="截止时间"
+          :min-width="readUiLength('--ui-table-col-150')"
+        >
+          <template #default="{ row }">
+            {{ row.dueAt ? formatDateTime(row.dueAt) : '未设置' }}
+          </template>
+        </ElTableColumn>
         <ElTableColumn
           label="负责人"
-          min-width="110"
+          :min-width="readUiLength('--ui-table-col-110')"
         >
           <template #default="{ row }">
             {{ usernameOf(row.assigneeMemberId) }}
@@ -510,7 +602,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="优先级"
-          min-width="80"
+          :min-width="readUiLength('--ui-table-col-80')"
         >
           <template #default="{ row }">
             {{ priorityLabel[row.priority] ?? row.priority }}
@@ -518,7 +610,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="状态"
-          min-width="100"
+          :min-width="readUiLength('--ui-table-col-100')"
         >
           <template #default="{ row }">
             <ElTag
@@ -531,7 +623,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="220"
+          :min-width="readUiLength('--ui-table-col-220')"
         >
           <template #default="{ row }">
             <ElButton
@@ -591,9 +683,6 @@ defineExpose({ reload: loadAll })
             </template>
           </template>
         </ElTableColumn>
-        <template #empty>
-          <span class="p3-note">暂无任务。</span>
-        </template>
       </ElTable>
     </section>
 
@@ -610,18 +699,29 @@ defineExpose({ reload: loadAll })
           添加物资
         </ElButton>
       </div>
+      <ElSkeleton
+        v-if="skeleton.loading.value && materials.length === 0"
+        :rows="3"
+        animated
+        data-p3-skeleton="materials"
+        aria-busy="true"
+        aria-label="正在加载物资"
+      />
       <ElTable
-        v-loading="loading"
+        v-else
         :data="materials"
       >
+        <template #empty>
+          <span>{{ loaded ? '暂无物资。' : '正在加载物资…' }}</span>
+        </template>
         <ElTableColumn
           prop="name"
           label="物资"
-          min-width="140"
+          :min-width="readUiLength('--ui-table-col-140')"
         />
         <ElTableColumn
           label="数量"
-          min-width="90"
+          :min-width="readUiLength('--ui-table-col-90')"
         >
           <template #default="{ row }">
             {{ row.quantity }} {{ row.unit }}
@@ -629,7 +729,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="负责人"
-          min-width="110"
+          :min-width="readUiLength('--ui-table-col-110')"
         >
           <template #default="{ row }">
             {{ row.assigneeUsername || '—' }}
@@ -637,7 +737,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="状态"
-          min-width="100"
+          :min-width="readUiLength('--ui-table-col-100')"
         >
           <template #default="{ row }">
             <ElTag
@@ -650,7 +750,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="260"
+          :min-width="readUiLength('--ui-table-col-260')"
         >
           <template #default="{ row }">
             <ElButton
@@ -693,9 +793,6 @@ defineExpose({ reload: loadAll })
             </template>
           </template>
         </ElTableColumn>
-        <template #empty>
-          <span class="p3-note">暂无物资。</span>
-        </template>
       </ElTable>
     </section>
 
@@ -721,18 +818,29 @@ defineExpose({ reload: loadAll })
           @change="onFileChange"
         >
       </div>
+      <ElSkeleton
+        v-if="skeleton.loading.value && attachments.length === 0"
+        :rows="3"
+        animated
+        data-p3-skeleton="attachments"
+        aria-busy="true"
+        aria-label="正在加载资料"
+      />
       <ElTable
-        v-loading="loading"
+        v-else
         :data="attachments"
       >
+        <template #empty>
+          <span>{{ loaded ? '暂无资料。' : '正在加载资料…' }}</span>
+        </template>
         <ElTableColumn
           prop="originalName"
           label="文件名"
-          min-width="180"
+          :min-width="readUiLength('--ui-table-col-180')"
         />
         <ElTableColumn
           label="大小"
-          min-width="100"
+          :min-width="readUiLength('--ui-table-col-100')"
         >
           <template #default="{ row }">
             {{ Math.max(1, Math.round(row.sizeBytes / 1024)) }} KB
@@ -740,7 +848,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="上传者"
-          min-width="110"
+          :min-width="readUiLength('--ui-table-col-110')"
         >
           <template #default="{ row }">
             {{ row.uploaderUsername }}
@@ -748,7 +856,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="140"
+          :min-width="readUiLength('--ui-table-col-140')"
         >
           <template #default="{ row }">
             <ElButton
@@ -777,9 +885,6 @@ defineExpose({ reload: loadAll })
             </ElButton>
           </template>
         </ElTableColumn>
-        <template #empty>
-          <span class="p3-note">暂无资料。</span>
-        </template>
       </ElTable>
     </section>
 
@@ -808,18 +913,29 @@ defineExpose({ reload: loadAll })
           @change="onTaskFileChange"
         >
       </div>
+      <ElSkeleton
+        v-if="taskAttachmentLoading && taskAttachments.length === 0"
+        :rows="3"
+        animated
+        data-p3-skeleton="task-attachments"
+        aria-busy="true"
+        aria-label="正在加载任务资料"
+      />
       <ElTable
-        v-loading="taskAttachmentLoading"
+        v-else
         :data="taskAttachments"
       >
+        <template #empty>
+          <span class="p3-note">该任务暂无资料。</span>
+        </template>
         <ElTableColumn
           prop="originalName"
           label="文件名"
-          min-width="160"
+          :min-width="readUiLength('--ui-table-col-160')"
         />
         <ElTableColumn
           label="大小"
-          min-width="90"
+          :min-width="readUiLength('--ui-table-col-90')"
         >
           <template #default="{ row }">
             {{ Math.max(1, Math.round(row.sizeBytes / 1024)) }} KB
@@ -827,7 +943,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="上传者"
-          min-width="110"
+          :min-width="readUiLength('--ui-table-col-110')"
         >
           <template #default="{ row }">
             {{ row.uploaderUsername }}
@@ -835,7 +951,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
         <ElTableColumn
           label="操作"
-          min-width="140"
+          :min-width="readUiLength('--ui-table-col-140')"
         >
           <template #default="{ row }">
             <ElButton
@@ -864,9 +980,6 @@ defineExpose({ reload: loadAll })
             </ElButton>
           </template>
         </ElTableColumn>
-        <template #empty>
-          <span class="p3-note">该任务暂无资料。</span>
-        </template>
       </ElTable>
       <template #footer>
         <ElButton @click="taskAttachmentVisible = false">
@@ -917,24 +1030,38 @@ defineExpose({ reload: loadAll })
     <ElDialog
       v-model="taskDialogVisible"
       :title="editingTask ? '编辑任务' : '新建任务'"
-      width="var(--ui-dialog-width)"
+      width="min(100%, var(--ui-dialog-width))"
+      :before-close="closeTaskDialog"
+      :close-on-click-modal="false"
+      :show-close="!taskSubmitting"
     >
+      <p
+        v-if="errorText"
+        class="p3-error"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
       <ElForm
+        ref="taskFormRef"
+        :rules="taskRules"
+        :disabled="taskSubmitting"
         :model="taskForm"
         label-position="top"
       >
         <ElFormItem
           label="任务标题"
-          required
+          prop="title"
         >
           <ElInput
             v-model="taskForm.title"
-            placeholder="1-128 字符"
+            placeholder="例如：联系场地并确认报价"
+            :maxlength="128"
           />
         </ElFormItem>
         <ElFormItem
           label="任务负责人"
-          required
+          prop="assigneeMemberId"
         >
           <ElSelect
             v-model="taskForm.assigneeMemberId"
@@ -965,15 +1092,19 @@ defineExpose({ reload: loadAll })
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="说明">
+        <ElFormItem
+          label="说明"
+          prop="description"
+        >
           <ElInput
             v-model="taskForm.description"
             type="textarea"
             :rows="2"
-            placeholder="选填"
+            placeholder="选填，说明交付要求与注意事项"
+            :maxlength="2000"
           />
         </ElFormItem>
-        <ElFormItem label="截止时间">
+        <ElFormItem label="截止时间（北京时间）">
           <ElInput
             v-model="taskForm.dueAt"
             type="datetime-local"
@@ -981,7 +1112,10 @@ defineExpose({ reload: loadAll })
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="taskDialogVisible = false">
+        <ElButton
+          :disabled="taskSubmitting"
+          @click="closeTaskDialog"
+        >
           取消
         </ElButton>
         <ElButton
@@ -1134,5 +1268,12 @@ defineExpose({ reload: loadAll })
 .p3-material-qty {
   display: flex;
   gap: var(--ui-space-3);
+}
+.p3-task-description {
+  margin-top: var(--ui-space-2);
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

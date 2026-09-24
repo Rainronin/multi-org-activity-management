@@ -119,7 +119,11 @@ public class FeedbackService {
             feedback.setAccountId(accountId);
             feedback.setRating(rating);
             feedback.setComment(trimToNull(comment));
-            feedbackMapper.insert(feedback);
+            try {
+                feedbackMapper.insert(feedback);
+            } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+                throw conflict("FEEDBACK_CONFLICT", "反馈已由另一请求提交", "请刷新查看已保存的反馈，再决定是否修改。");
+            }
             auditService.record(accountId, "ACTIVITY", "FEEDBACK_SUBMITTED", "activity:" + activityId,
                 null, Map.of("rating", rating));
             return toItem(feedbackMapper.findByActivityAndAccount(activityId, accountId));

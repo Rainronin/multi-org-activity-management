@@ -31,3 +31,256 @@ h1 {
   outline: var(--ui-focus-ring);
   outline-offset: var(--ui-focus-offset);
 }
+
+/* 与 Demo 一致的盒模型，避免声明宽度再叠加内边距。 */
+*, *::before, *::after { box-sizing: border-box; }
+button, input, textarea { font-family: var(--ui-font-family-body); }
+
+/* ---------- 业务列表页：列表面板与表格 ----------
+   面板结构对照 UI演示/src/App.vue 的 .activity-panel，数值按正式 token 收敛。
+   页头排版属于页面级组合，由 ListPage 等组件自带 scoped 样式：全局 .page-heading
+   会连带改到工作台等标准页的既有构图（审核反馈 1）。 */
+
+.list-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-layout-grid-gap);
+  min-width: 0;
+}
+
+.list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  padding: var(--ui-layout-card-padding);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-glass);
+}
+
+.list-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+}
+
+.list-panel__head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+
+.list-panel__count {
+  padding: var(--ui-space-1) var(--ui-space-2);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-small);
+  background: var(--ui-color-surface-muted);
+  color: var(--ui-color-text-muted);
+  font-family: var(--ui-font-family-data);
+  font-size: var(--ui-font-size-caption);
+}
+
+.list-panel__aside {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.list-panel__status {
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-caption);
+}
+
+.list-panel__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding-bottom: var(--ui-space-3);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.list-panel__filters .el-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  width: 100%;
+}
+
+.list-panel__filters .el-form-item {
+  margin: 0;
+}
+
+.list-panel__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+}
+
+.list-panel__note {
+  margin: 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  line-height: var(--ui-line-height-body);
+  overflow-wrap: anywhere;
+}
+
+/* 首次加载的占位与真实表格同构：沿用表头与列宽，逐步出现灰色行。 */
+.list-panel__skeleton {
+  display: flex;
+  flex-direction: column;
+}
+
+.list-panel__skeleton-head,
+.list-panel__skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  border-bottom: var(--ui-border-width) solid var(--ui-color-border);
+}
+
+.list-panel__skeleton-head {
+  min-height: var(--ui-table-header-height);
+}
+
+.list-panel__skeleton-row {
+  min-height: var(--ui-table-row-height);
+}
+
+.list-panel__skeleton-head .el-skeleton__item,
+.list-panel__skeleton-row .el-skeleton__item {
+  flex: 1;
+  margin: 0;
+  height: var(--ui-icon-small);
+}
+
+.list-panel__skeleton-head .el-skeleton__item {
+  height: var(--ui-space-3);
+}
+
+.list-panel__skeleton-head .el-skeleton__item:first-child,
+.list-panel__skeleton-row .el-skeleton__item:first-child {
+  flex: 1.8;
+}
+
+.list-panel__empty {
+  padding: var(--ui-space-8) var(--ui-space-4);
+}
+
+.list-panel__empty .el-empty__description p {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-small);
+  line-height: var(--ui-line-height-body);
+}
+
+.list-panel__error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin: 0;
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border: var(--ui-border-width) solid var(--ui-color-danger);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-color-danger-bg);
+  color: var(--ui-color-danger);
+  font-size: var(--ui-font-size-small);
+}
+
+/* 紧凑可读的明细表：行高与表头来自 token，列宽由各页确认后传入。 */
+.list-table {
+  width: 100%;
+}
+
+.list-table .cell {
+  padding-right: var(--ui-table-cell-padding);
+  padding-left: var(--ui-table-cell-padding);
+}
+
+.list-table .el-table__header th {
+  height: var(--ui-table-header-height);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  font-weight: var(--ui-font-weight-medium);
+}
+
+.list-table .el-table__body td {
+  height: var(--ui-table-row-height);
+}
+
+.list-table__main {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+
+.list-table__main > div {
+  min-width: 0;
+}
+
+.list-table__icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--ui-table-col-40);
+  height: var(--ui-table-col-40);
+  border: var(--ui-border-width) solid var(--ui-color-border);
+  border-radius: var(--ui-radius-small);
+  background: var(--ui-color-surface-muted);
+  color: var(--ui-color-text-muted);
+}
+
+.list-table__link {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-body);
+  font-weight: var(--ui-font-weight-semibold);
+  line-height: var(--ui-line-height-body);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.list-table__link:hover {
+  color: var(--ui-color-selected-text);
+}
+
+/* 次要信息最多两行：真实简介可读，但长文案不会无限拉高整行。 */
+.list-table__secondary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  margin-top: var(--ui-space-1);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-caption);
+  line-height: var(--ui-line-height-body);
+  overflow: hidden;
+}
+
+.list-table__figure {
+  font-family: var(--ui-font-family-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.list-table td .list-table__secondary {
+  overflow-wrap: anywhere;
+}
+
+.list-table .el-tag {
+  border: none;
+}

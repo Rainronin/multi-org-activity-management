@@ -241,23 +241,35 @@ async function handleLogout() {
 
 <template>
   <main class="account-page">
-    <header class="account-page__head">
-      <h1>账号</h1>
-      <p class="account-page__identity">
-        当前身份：<strong>{{ session.account?.username }}</strong>
-      </p>
-    </header>
-
-    <section class="account-page__card">
-      <div class="account-page__card-head">
-        <h2>我的组织</h2>
+    <div class="page-heading">
+      <div class="page-heading__title">
+        <p class="page-eyebrow">
+          账号
+        </p>
+        <h1>我的工作区</h1>
+        <p class="page-description">
+          当前身份：<strong>{{ session.account?.username }}</strong>；这里管理你的组织、报名与账号安全。
+        </p>
+      </div>
+      <div class="page-actions">
+        <ElButton
+          plain
+          @click="joinDialogVisible = true"
+        >
+          加入组织
+        </ElButton>
         <ElButton
           type="primary"
-          plain
           @click="createDialogVisible = true"
         >
           创建组织
         </ElButton>
+      </div>
+    </div>
+
+    <section class="account-page__card">
+      <div class="account-page__card-head">
+        <h2>我的组织</h2>
       </div>
       <p
         v-if="directoryError"
@@ -265,6 +277,12 @@ async function handleLogout() {
         role="alert"
       >
         {{ directoryError }}
+        <ElButton
+          text
+          @click="loadDirectory"
+        >
+          重新加载
+        </ElButton>
       </p>
       <ul
         v-else-if="directoryStore.items.length > 0"
@@ -563,15 +581,36 @@ async function handleLogout() {
   padding: var(--ui-layout-page-padding);
 }
 
-.account-page__head h1 {
-  font-size: var(--ui-font-size-page-title);
-  font-weight: var(--ui-font-weight-bold);
-  letter-spacing: var(--ui-letter-spacing-title);
+/* 页头排版与工作台、表格页同口径；数值全部取自 token。 */
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-6);
+  flex-wrap: wrap;
 }
 
-.account-page__identity {
-  margin-top: var(--ui-space-2);
+.page-heading__title {
+  min-width: 0;
+}
+
+.page-eyebrow {
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-color-selected-text);
+  font-size: var(--ui-font-size-caption);
+  letter-spacing: var(--ui-letter-spacing-eyebrow);
+}
+
+.page-description {
+  margin-top: var(--ui-space-3);
   color: var(--ui-color-text-secondary);
+  line-height: var(--ui-line-height-body);
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-3);
 }
 
 .account-page__card {

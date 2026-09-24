@@ -2,17 +2,19 @@
 
 ## 前端 UI 设计与规范
 
-状态：用户已认可当前 Demo，以此作为正式前端的视觉与交互基线。本文统一设计 token、布局、组件使用与验收规则。正式业务工程已开始按本文实现；规范成立不代表所有页面已达标，当前缺口见[开发进度审核报告](开发进度审核报告.md)。
+状态：2026-09-23 用户认为当前正式 UI 已达到要求标准，暂时确认。本文维护后续页面修改的视觉、布局与交互标准；当前停点见[接手摘要](进度接手摘要.md)，技术待办见[审核报告](开发进度审核报告.md)，逐页还原过程已归档。
 
 业务范围与权限引用[项目计划书](项目计划书.md)，模块所有权引用[前端架构](前端架构与技术栈设计.md)，接口、错误与会话引用[开发规范](开发规范.md)。本文是 UI 规则的唯一维护位置，其他文档只引用，不复制 token 数值。
 
-指定实现参考：[工作台首屏](../UI演示/预览/工作台首屏.png)、[完整工作台](../UI演示/预览/活动列表.png)、[登录界面](../UI演示/预览/登录界面.png)、[演示运行说明](../UI演示/README.md)。当前单侧栏版本是用户确认的前端还原基准，不只是灵感参考；具体执行要求见下节。设计数值与工程约束以本文为准。
+原始风格参考：[工作台首屏](../UI演示/预览/工作台首屏.png)、[完整工作台](../UI演示/预览/活动列表.png)、[登录界面](../UI演示/预览/登录界面.png)、[演示运行说明](../UI演示/README.md)。现行正式页面优先于这些旧预览；设计数值只维护在正式工程 tokens.css，本文定义语义、布局与验收行为。
 
-### 前端开发必须以当前 Demo 为基础
+### 前端开发以已确认正式界面为基础
 
-AI 开发任何前端页面前，必须读取本文、演示说明及相关演示源码，查看对应预览；涉及交互时运行 Demo 核对行为。默认还原现有效果，不自行更换后台模板、重做配色或改变信息层级。`历史参考/` 中旧原型不作为开发基准。
+当前正式页面及本文是后续开发基线；Demo 保留原始风格与交互线索。
 
-| 开发对象 | 必须参考的现有实现 |
+修改前先查看对应正式页面与源码，按本文延续现有风格和行为。只有追溯原始设计或正式页面未覆盖的交互时，才查看 Demo 对应源码与预览；需要核对原演示行为时再运行 Demo。不自行更换后台模板、重做配色或改变信息层级。`历史参考/` 中旧原型不作为开发基准。
+
+| 开发对象 | 按需查阅的原始 Demo 实现 |
 | --- | --- |
 | 页面框架、组织切换、活动列表与详情 | [App.vue](../UI演示/src/App.vue)、[sidebar.css](../UI演示/src/sidebar.css)、[折叠侧栏预览](../UI演示/预览/侧栏折叠.png) |
 | 重点活动与 AI 文稿入口、编辑反馈 | [FocusBoard.vue](../UI演示/src/FocusBoard.vue)、[AI 编辑预览](../UI演示/预览/AI总结编辑.png) |
@@ -22,18 +24,25 @@ AI 开发任何前端页面前，必须读取本文、演示说明及相关演�
 
 执行与验收约束：
 
-1. **还原效果。** 保持黑白橙配色、字体层级、单个可折叠深色悬浮侧栏、卡片比例、留白、圆角、阴影、玻璃质感及动效节奏。工作台沿用重点活动与 AI 卡 → KPI → 图表 → 明细的顺序；登录沿用左右分屏。正式数据、文案长度、权限和屏幕尺寸可引起合理自适应，不要求固定截图中的人名、数值或行数。
-2. **复用合规实现。** 优先迁移已有合规模板、样式和交互，按前端架构拆入正式模块；先用 Element Plus，按本文规则封装复用。存量硬编码样式须转换为统一 token，不能直接把整个 Demo 或其大组件当作生产工程。业务实现放入 `frontend/`，保留 `UI演示/` 供对照。
+1. **维持已确认效果。** 保持黑白橙配色、字体层级、单个可折叠深色悬浮侧栏、卡片比例、留白、圆角、阴影、玻璃质感及动效节奏。工作台顺序为待办与重点活动 → KPI → 经费与 AI 文稿 → 明细；登录沿用左右分屏。正式数据、文案长度、权限和屏幕尺寸可引起合理自适应，不要求固定旧截图中的人名、数值或行数。
+2. **复用正式实现。** 优先复用现有正式组件、样式和交互，按前端架构放入对应模块；先用 Element Plus，按本文规则封装复用。存量硬编码样式须转换为统一 token，不直接把 Demo 大组件当作生产工程。业务实现放入 `frontend/`，保留 `UI演示/` 供追溯。
 3. **替换演示行为。** 虚构数据、内存保存、假登录、模拟 AI、固定加载延迟及“演示选项”不迁入正式业务。改接真实接口、权限、持久化与请求状态。图表仅呈现已确认且有接口支持的统计；不能为还原画面新增业务范围或填入假数据。未实现入口按开发流程不展示。
 4. **延续未覆盖页面。** Demo 没有的设置、成员管理等页面，复用同一布局、表单、表格、状态和 token 体系，按计划书补全功能，不另起视觉风格。真实业务、安全与可访问性要求优先；必要差异在交付时说明，整体风格和导航结构的重设计须先由用户确认。
-5. **逐页对照。** 每个页面交付前，以相同视口和可比状态对照 Demo；至少核对桌面展开、折叠和手机布局，以及本页涉及的加载、空态、错误、失焦校验和减少动效。保存或展示正式页面截图，说明必要差异；构建通过不能代替视觉检查，Demo 检查通过不能代替业务验收。
+5. **逐页对照。** 每个页面交付前，以相同视口和可比状态对照当前已确认页面，未调整部分参考 Demo；至少核对桌面展开、折叠和手机布局，以及本页涉及的加载、空态、错误、失焦校验和减少动效。保存或展示正式页面截图，说明必要差异；构建通过不能代替视觉检查，Demo 检查通过不能代替业务验收。
 
-> 检查范围说明：组件数值 props 检查覆盖弹层、抽屉、按钮等可用 CSS 长度表达的组件；`ElTableColumn` 的列宽是 Element Plus 布局计算所需的数值（传 CSS 变量会退化为默认值），作为**唯一例外**不参与该检查，其余组件仍必须绑定 token。该例外同时写进 `frontend/scripts/check-ui.mjs` 的规则自检，规则被改坏时会立即失败。
+### 规则冲突的处理与还原边界
+
+- 业务范围、权限与真实数据以计划书及接口合同为准；颜色、字体、间距等设计值只取正式 [tokens.css](../基于Vue3的多组织活动管理系统_zcode/frontend/src/styles/tokens.css)。Demo 提供原始视觉构图与交互参考，不能覆盖用户已确认的正式调整、安全或真实数据要求。
+- 原样还原的是信息顺序、主次比例、单侧栏、可读文字与交互节奏；允许的差异是正式数据、可访问字号、权限入口和已说明的统计缺口。不能以“使用了同样的 token”代替构图还原，也不能以像素照抄为由保留 Demo 的小字或虚构数据。
+- 阅读审核报告时先看最新结论和未关闭项；历史缺陷仅作原因追溯。实施自述不覆盖独立复核结果，不能边修代码边降低规范来宣布完成。
+- `frontend-design` 可用于自检排版和细节，但不重新选配色、字体或后台模板。任何“更有设计感”的建议都必须先满足当前基线。
+
+组件数值 props 仍属于 token 消费范围，**ElTableColumn 没有硬编码列宽豁免**。组件不能直接接收 CSS 变量字符串时，按 4.1 的单一读取函数将长度 token 转为该组件需要的数值；优先使用组件自然分配宽度，不建立第二份 TS 数值表。检查脚本已取消列宽豁免；现有列宽通过 `shared/utils/readUiToken.ts` 的 `readUiLength` 消费集中 px token。
 
 ## 一、设计原则与范围
 
 1. **黑白橙为主。** 浅色工作区、近黑文字、深色重点活动卡与暖橙 AI 文稿卡构成辨识度。橙色用于主要操作、当前重点与图表主序列，不将整页文字染成橙色。
-2. **先行动，再数字。** 工作台依次展示重点活动与 AI 文稿入口、精简 KPI、图表、明细。活动列表、报名审核等业务页面直接突出本页任务，不复制工作台大卡片。
+2. **先行动，再数字。** 工作台依次展示待办与重点活动、精简 KPI、经费与 AI 文稿辅助、明细。待办优先进入手机首屏。活动列表、报名审核等业务页面直接突出本页任务，不复制工作台大卡片。
 3. **玻璃有边界。** 悬浮导航和展示卡使用轻玻璃；输入框、长文编辑、表格正文和错误提示使用清晰底色。采用半透明、边缘高光与有限模糊，不折射或扭曲文字。
 4. **动效解释变化。** 入场、展开、选中、加载与操作反馈可以有动效；不使用粒子背景、持续漂浮、鼠标跟随光团、文字逐字跳动、滚动劫持或全站弹簧效果。
 5. **组件库优先。** Element Plus 负责基础交互与可访问行为；项目负责主题、组合、业务约束和内容。CSS 能完成的简单状态不用 GSAP 重写。
@@ -45,7 +54,7 @@ AI 开发任何前端页面前，必须读取本文、演示说明及相关演�
 
 ### 2.1 唯一来源与消费规则
 
-正式工程的值源固定为 `frontend/src/styles/tokens.css`。第三节给出初始化基线；工程创建前以本文为准，创建后 token 实现与本文须在同一次修改中保持一致，不建立另一份手工维护的 JSON／TS 数值清单。
+正式工程的值源固定为 `frontend/src/styles/tokens.css`。第三节只维护命名与消费语义；正式工程已经存在，本文不再复制一整份 CSS 数值表，也不建立手工维护的 JSON／TS 数值清单。修改数值以该文件的 Git 差异审查；新增语义或改变布局行为才同步本文。
 
 | 范围 | 必须遵守 |
 | --- | --- |
@@ -73,7 +82,7 @@ AI 开发任何前端页面前，必须读取本文、演示说明及相关演�
 
 ### 2.3 修改流程
 
-先搜索已有 token → 优先使用现有语义 → 确实需要时在 `tokens.css` 新增或修改 → 同步本文的用途说明 → 检查受影响页面、弹层和手机布局。只在确有新语义时加组件 token，不按每个页面建立私有主题。不要求为低风险 token 调整另外走审批流程，但必须可审查。
+先搜索已有 token → 优先使用现有语义 → 确实需要时在 `tokens.css` 新增或修改 → 新增语义或改变布局行为时同步本文 → 检查受影响页面、弹层和手机布局。只在确有新语义时加组件 token，不按每个页面建立私有主题。不要求为低风险 token 调整另外走审批流程，但必须可审查。
 
 ## 三、设计 token 基线
 
@@ -81,312 +90,9 @@ AI 开发任何前端页面前，必须读取本文、演示说明及相关演�
 
 统一前缀 `--ui-`；使用 `color-*`、`font-*`、`space-*`、`radius-*`、`shadow-*`、`motion-*`、`layout-*` 等类别。业务样式优先引用语义名，禁止按“看起来差不多”选其他用途的 token。
 
-以下代码块是 token 初始化的唯一数值表。颜色、阴影与渐变都在此定义，不在后文重复维护色值。`rem` 尊重浏览器根字号；不强制将根字号设小来实现紧凑界面。
+完整值源直接阅读 [frontend/src/styles/tokens.css](../基于Vue3的多组织活动管理系统_zcode/frontend/src/styles/tokens.css)，不从旧规范、截图或 Demo 复制另一套数值。统一前缀和尺度适用于实际样式；CSS 的 display、flex-direction 等结构状态不等于设计数值，不必为每一个声明发明 token。
 
-```css
-:root {
-  /* 颜色：明亮橙负责强调，较深橙承载白色按钮文字。 */
-  --ui-color-canvas: #f3f3ef;
-  --ui-color-surface: #ffffff;
-  --ui-color-surface-muted: #f8f8f6;
-  --ui-color-text: #1a1814;
-  --ui-color-text-secondary: #55534e;
-  --ui-color-text-muted: #706e68;
-  --ui-color-border: #e8e7e4;
-  --ui-color-control-border: #918c81;
-  --ui-color-accent: #ff6b2c;
-  --ui-color-action: #ce4313;
-  --ui-color-action-hover: #b53a10;
-  --ui-color-action-active: #9f320d;
-  --ui-color-action-tint-3: color-mix(in srgb, var(--ui-color-action) 70%, var(--ui-color-surface));
-  --ui-color-action-tint-5: color-mix(in srgb, var(--ui-color-action) 50%, var(--ui-color-surface));
-  --ui-color-action-tint-7: color-mix(in srgb, var(--ui-color-action) 30%, var(--ui-color-surface));
-  --ui-color-action-tint-8: color-mix(in srgb, var(--ui-color-action) 20%, var(--ui-color-surface));
-
-  /* Element Plus 语义色阶（Tag／Button 的浅色底与深色悬停）；
-     tint-N 对应 --el-color-*-light-N，dark 对应 dark-2。由正式工程 2026-09-12 主题接入新增。 */
-  --ui-color-success-tint-3: color-mix(in srgb, var(--ui-color-success) 70%, var(--ui-color-surface));
-  --ui-color-success-tint-5: color-mix(in srgb, var(--ui-color-success) 50%, var(--ui-color-surface));
-  --ui-color-success-tint-7: color-mix(in srgb, var(--ui-color-success) 30%, var(--ui-color-surface));
-  --ui-color-success-tint-8: color-mix(in srgb, var(--ui-color-success) 20%, var(--ui-color-surface));
-  --ui-color-success-tint-9: color-mix(in srgb, var(--ui-color-success) 10%, var(--ui-color-surface));
-  --ui-color-success-dark: color-mix(in srgb, var(--ui-color-success) 80%, #000);
-  --ui-color-warning-tint-3: color-mix(in srgb, var(--ui-color-warning) 70%, var(--ui-color-surface));
-  --ui-color-warning-tint-5: color-mix(in srgb, var(--ui-color-warning) 50%, var(--ui-color-surface));
-  --ui-color-warning-tint-7: color-mix(in srgb, var(--ui-color-warning) 30%, var(--ui-color-surface));
-  --ui-color-warning-tint-8: color-mix(in srgb, var(--ui-color-warning) 20%, var(--ui-color-surface));
-  --ui-color-warning-tint-9: color-mix(in srgb, var(--ui-color-warning) 10%, var(--ui-color-surface));
-  --ui-color-warning-dark: color-mix(in srgb, var(--ui-color-warning) 80%, #000);
-  --ui-color-danger-tint-3: color-mix(in srgb, var(--ui-color-danger) 70%, var(--ui-color-surface));
-  --ui-color-danger-tint-5: color-mix(in srgb, var(--ui-color-danger) 50%, var(--ui-color-surface));
-  --ui-color-danger-tint-7: color-mix(in srgb, var(--ui-color-danger) 30%, var(--ui-color-surface));
-  --ui-color-danger-tint-8: color-mix(in srgb, var(--ui-color-danger) 20%, var(--ui-color-surface));
-  --ui-color-danger-tint-9: color-mix(in srgb, var(--ui-color-danger) 10%, var(--ui-color-surface));
-  --ui-color-danger-dark: color-mix(in srgb, var(--ui-color-danger) 80%, #000);
-  --ui-color-info-tint-3: color-mix(in srgb, var(--ui-color-info) 70%, var(--ui-color-surface));
-  --ui-color-info-tint-5: color-mix(in srgb, var(--ui-color-info) 50%, var(--ui-color-surface));
-  --ui-color-info-tint-7: color-mix(in srgb, var(--ui-color-info) 30%, var(--ui-color-surface));
-  --ui-color-info-tint-8: color-mix(in srgb, var(--ui-color-info) 20%, var(--ui-color-surface));
-  --ui-color-info-tint-9: color-mix(in srgb, var(--ui-color-info) 10%, var(--ui-color-surface));
-  --ui-color-info-dark: color-mix(in srgb, var(--ui-color-info) 80%, #000);
-
-  --ui-color-on-action: #ffffff;
-  --ui-color-selected-bg: #fff0e5;
-  --ui-color-selected-text: #a33713;
-  --ui-color-focus: #a33713;
-  --ui-color-success: #337153;
-  --ui-color-success-bg: #edf5ef;
-  --ui-color-warning: #85600d;
-  --ui-color-warning-bg: #fff5df;
-  --ui-color-danger: #b43420;
-  --ui-color-danger-bg: #fff0eb;
-  --ui-color-info: #676860;
-  --ui-color-info-bg: #f0f0eb;
-  --ui-color-disabled-bg: #efeee9;
-  --ui-color-disabled-text: #79766e;
-  --ui-color-overlay: #1a181480;
-  --ui-color-skeleton: #e7e6e0;
-  --ui-color-skeleton-highlight: #f4f3ef;
-
-  /* 局部深色与暖橙卡，不作为全站暗色模式。 */
-  --ui-color-spotlight-start: #282723;
-  --ui-color-spotlight-end: #151613;
-  --ui-color-on-dark: #f8f5ef;
-  --ui-color-on-dark-muted: #c0b9af;
-  --ui-color-on-dark-accent: #ffb17c;
-  --ui-color-border-dark: #5e594e;
-  --ui-color-ai-start: #fff4e8;
-  --ui-color-ai-end: #ffdfc1;
-  --ui-color-ai-text: #76370f;
-  --ui-color-ai-muted: #78573f;
-  --ui-color-ai-border: #e3b68f;
-  --ui-color-glass-start: #fffffff2;
-  --ui-color-glass-end: #ffffffd9;
-  --ui-color-glass-edge: #ffffff;
-  --ui-color-glass-on-dark: #ffffff18;
-  --ui-color-glass-edge-dark: #ffffff43;
-  --ui-surface-glass: linear-gradient(135deg, var(--ui-color-glass-start), var(--ui-color-glass-end));
-  --ui-surface-spotlight: linear-gradient(125deg, var(--ui-color-spotlight-start), var(--ui-color-spotlight-end));
-  --ui-surface-ai: linear-gradient(130deg, var(--ui-color-ai-start), var(--ui-color-ai-end));
-  --ui-surface-glass-on-dark: linear-gradient(125deg, var(--ui-color-glass-on-dark), transparent);
-  --ui-glass-blur: 16px;
-  --ui-glass-saturation: 125%;
-  --ui-opacity-disabled: 0.55;
-
-  /* 图表不借用业务成功／失败色表达普通序列。 */
-  --ui-color-chart-primary: var(--ui-color-action);
-  --ui-color-chart-secondary: #5b6158;
-  --ui-color-chart-track: #d9d6cd;
-  --ui-color-chart-grid: var(--ui-color-border);
-  --ui-color-chart-area: #ff6b2c24;
-  --ui-chart-stroke: 2px;
-  --ui-chart-ring-stroke: 10px;
-  --ui-chart-point-radius: 4px;
-  --ui-chart-height: 220px;
-
-  /* 字体：中文正文用系统字体，数值可用等宽或等宽数字。 */
-  --ui-font-family-body: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --ui-font-family-display: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --ui-font-family-data: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  --ui-font-size-caption: 0.75rem;
-  --ui-font-size-small: 0.8125rem;
-  --ui-font-size-body: 0.875rem;
-  --ui-font-size-emphasis: 1rem;
-  --ui-font-size-section: 1.125rem;
-  --ui-font-size-card-title: 1.5rem;
-  --ui-font-size-page-title: 2rem;
-  --ui-font-size-kpi: 1.75rem;
-  --ui-font-size-brand: 4rem;
-  --ui-font-size-input: var(--ui-font-size-body);
-  --ui-font-weight-regular: 400;
-  --ui-font-weight-medium: 500;
-  --ui-font-weight-semibold: 600;
-  --ui-font-weight-bold: 700;
-  --ui-line-height-tight: 1.3;
-  --ui-line-height-body: 1.6;
-  --ui-line-height-prose: 1.8;
-  --ui-letter-spacing-body: normal;
-  --ui-letter-spacing-title: -0.02em;
-  --ui-letter-spacing-eyebrow: 0.08em;
-
-  /* 基础间距：不扩散成每个整数一档。 */
-  --ui-space-0: 0;
-  --ui-space-1: 4px;
-  --ui-space-2: 8px;
-  --ui-space-3: 12px;
-  --ui-space-4: 16px;
-  --ui-space-5: 20px;
-  --ui-space-6: 24px;
-  --ui-space-8: 32px;
-  --ui-space-10: 40px;
-  --ui-space-12: 48px;
-  --ui-space-16: 64px;
-  --ui-radius-small: 4px;
-  --ui-radius-control: 8px;
-  --ui-radius-card: 16px;
-  --ui-radius-island: 20px;
-  --ui-radius-pill: 999px;
-  --ui-radius-circle: 50%;
-  --ui-border-width: 1px;
-  --ui-focus-width: 2px;
-  --ui-focus-offset: 3px;
-  --ui-focus-ring: var(--ui-focus-width) solid var(--ui-color-focus);
-  --ui-shadow-none: none;
-  --ui-shadow-glass: inset 0 1px 0 #ffffff, 0 5px 18px #2520150a;
-  --ui-shadow-hover: inset 0 1px 0 #ffffff, 0 14px 32px #30221414;
-  --ui-shadow-spotlight: inset 0 1px 0 #ffffff25, 0 10px 28px #201e1520;
-  --ui-shadow-popover: 0 12px 35px #29221826;
-  --ui-shadow-modal: 0 24px 64px #1a18142e;
-
-  /* 密度和布局语义。 */
-  --ui-control-height-small: 32px;
-  --ui-control-height: 40px;
-  --ui-control-height-large: 48px;
-  --ui-control-min-touch: 44px;
-  --ui-icon-small: 16px;
-  --ui-icon: 20px;
-  --ui-icon-large: 24px;
-  --ui-table-header-height: 40px;
-  --ui-table-row-height: 64px;
-  --ui-table-detail-row-height: 80px;
-  --ui-form-field-gap: var(--ui-space-6);
-  --ui-form-max-width: 640px;
-  --ui-login-form-width: 384px;
-  --ui-dialog-width: 480px;
-  --ui-drawer-width: 740px;
-  --ui-layout-outer-gap: var(--ui-space-4);
-  --ui-layout-nav-collapsed-width: 72px;
-  --ui-layout-nav-width: 240px;
-  --ui-layout-nav-left: var(--ui-layout-outer-gap);
-  --ui-layout-main-offset: calc(var(--ui-layout-nav-left) + var(--ui-layout-nav-width) + var(--ui-layout-outer-gap));
-  --ui-layout-content-max: 1440px;
-  --ui-layout-page-padding: var(--ui-space-8);
-  --ui-layout-card-padding: var(--ui-space-6);
-  --ui-layout-grid-gap: var(--ui-space-5);
-  --ui-layout-topbar-height: 64px;
-  --ui-layout-focus-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
-  --ui-layout-analysis-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  --ui-layout-kpi-columns: repeat(4, minmax(0, 1fr));
-  --ui-layout-form-columns: repeat(2, minmax(0, 1fr));
-  --ui-layout-login-columns: 1.04fr 1fr;
-  --ui-layout-nav-position: fixed;
-
-  /* 层级：Element Plus 浮层从 overlay-base 开始，由库管理增量。 */
-  --ui-z-content: 0;
-  --ui-z-sticky: 10;
-  --ui-z-navigation: 20;
-  --ui-z-overlay-base: 2000;
-
-  /* CSS 用 ms；GSAP 读取后统一转换为秒。 */
-  --ui-motion-instant: 0ms;
-  --ui-motion-fast: 160ms;
-  --ui-motion-base: 240ms;
-  --ui-motion-enter: 600ms;
-  --ui-motion-chart: 900ms;
-  --ui-motion-stagger: 60ms;
-  --ui-motion-lift: -4px;
-  --ui-motion-enter-y: 16px;
-  --ui-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --ui-motion-ease-gsap: power3.out;
-  --ui-motion-ease-chart-gsap: power2.inOut;
-  --ui-loading-leading: 200ms;
-  --ui-loading-trailing: 150ms;
-  --ui-skeleton-duration: 1400ms;
-}
-
-/* 单栏导航的状态与响应式变量仍在唯一值源中维护。 */
-:root {
-  --ui-nav-label-display: block;
-  --ui-nav-group-display: flex;
-  --ui-nav-display: block;
-  --ui-nav-items-display: block;
-  --ui-nav-item-direction: row;
-  --ui-nav-columns: none;
-  --ui-nav-item-padding: var(--ui-space-3);
-  --ui-nav-meta-display: flex;
-  --ui-nav-toggle-display: flex;
-  --ui-nav-height: calc(100dvh - var(--ui-layout-outer-gap) * 2);
-  --ui-nav-margin: 0;
-  --ui-nav-logo-size: 32px;
-}
-.workspace[data-nav-collapsed="true"] {
-  --ui-layout-nav-width: var(--ui-layout-nav-collapsed-width);
-  --ui-nav-label-display: none;
-  --ui-nav-group-display: none;
-  --ui-nav-meta-display: none;
-}
-.workspace[data-group-collapsed="true"][data-nav-collapsed="false"] {
-  --ui-nav-items-display: none;
-}
-.workspace {
-  --ui-layout-main-offset: calc(var(--ui-layout-nav-left) + var(--ui-layout-nav-width) + var(--ui-layout-outer-gap));
-}
-/* 断点也是集中设计决策；不要把这些查询再复制到业务页面。 */
-@media (width <= 1250px) {
-  :root {
-    --ui-layout-focus-columns: minmax(0, 1fr);
-    --ui-layout-analysis-columns: minmax(0, 1fr);
-    --ui-layout-kpi-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@media (width <= 1000px) {
-  :root {
-    --ui-layout-nav-width: 240px;
-    --ui-layout-page-padding: var(--ui-space-6);
-    --ui-layout-form-columns: minmax(0, 1fr);
-  }
-}
-@media (width <= 700px) {
-  :root {
-    --ui-layout-nav-position: static;
-    --ui-layout-nav-width: auto;
-    --ui-layout-main-offset: 0px;
-    --ui-layout-page-padding: var(--ui-space-4);
-    --ui-layout-card-padding: var(--ui-space-5);
-    --ui-layout-grid-gap: var(--ui-space-3);
-    --ui-layout-login-columns: minmax(0, 1fr);
-    --ui-font-size-page-title: 1.5rem;
-    --ui-font-size-card-title: 1.25rem;
-    --ui-font-size-brand: 2.5rem;
-    --ui-font-size-input: 1rem;
-    --ui-control-height: var(--ui-control-min-touch);
-  }
-}
-@media (width <= 700px) {
-  .workspace, .workspace[data-nav-collapsed="true"], .workspace[data-group-collapsed="true"][data-nav-collapsed="false"] {
-    --ui-layout-nav-width: auto;
-    --ui-layout-main-offset: 0px;
-    --ui-nav-label-display: block;
-    --ui-nav-group-display: none;
-    --ui-nav-meta-display: none;
-    --ui-nav-toggle-display: none;
-    --ui-nav-display: grid;
-    --ui-nav-items-display: contents;
-    --ui-nav-columns: repeat(3, minmax(0, 1fr));
-    --ui-nav-item-direction: column;
-    --ui-nav-item-padding: var(--ui-space-2);
-    --ui-nav-height: auto;
-    --ui-nav-margin: var(--ui-layout-outer-gap);
-  }
-}
-@media (pointer: coarse) {
-  :root {
-    --ui-control-height-small: var(--ui-control-min-touch);
-    --ui-control-height: var(--ui-control-min-touch);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --ui-motion-fast: var(--ui-motion-instant);
-    --ui-motion-base: var(--ui-motion-instant);
-    --ui-motion-enter: var(--ui-motion-instant);
-    --ui-motion-chart: var(--ui-motion-instant);
-    --ui-motion-stagger: var(--ui-motion-instant);
-    --ui-motion-lift: 0px;
-    --ui-motion-enter-y: 0px;
-  }
-}
-```
+被所有视口消费的 token 必须具有默认值，再由集中断点或状态选择器覆盖。只在手机断点定义、桌面仍引用属于缺失；静态扫描发现名称出现过不能证明运行时有效。新增导航状态时核对桌面展开／折叠、手机、桌面折叠后缩到手机、再放大五种状态。删除不再触发的状态选择器，避免保留两套互相覆盖的实现。
 
 ### 3.2 使用语义
 
@@ -417,7 +123,7 @@ frontend/src/
     element-plus.css           --el-* 映射与必要的库样式适配
     base.css                   根字体、页面底色、焦点、排版与少量重置
   shared/
-    utils/readUiToken.ts       实际出现 GSAP／图表数值消费时才建立
+    utils/readUiToken.ts       已有 readUiLength；只在实际需要时扩展其他类型读取
     components/                下表确认需要共享的展示组件
   layouts/                     导航与登录壳，按架构实际建立
   features/                    业务组件、页面及各自状态映射
@@ -429,7 +135,7 @@ frontend/src/
 
 ### 4.2 基础映射示例
 
-下面示例只引用第三节的值源，放入 `styles/element-plus.css`；并非把第三方所有 CSS 复制到项目。
+下面示例只引用正式 tokens.css 的值源，放入 `styles/element-plus.css`；并非把第三方所有 CSS 复制到项目。
 
 ```css
 html:root {
@@ -525,19 +231,21 @@ html:root {
 
 - 左侧只保留一个深色悬浮侧栏，顶部放一处品牌及组织切换，中部承载菜单，底部放一处账号入口；移除第二条常驻图标栏和工作区品牌标语。展开时显示图标与文字及必要子菜单，折叠时同一侧栏变为窄图标岛，两种形态不同时出现。
 - 侧栏宽度通过展开／折叠按钮切换，按钮有可访问名称与展开状态；折叠后叶子入口可直接访问并提供名称提示，组织仍可切换。展开恢复原子菜单状态。手机不保留窄栏，使用同一导航的紧凑文档流布局。二级目录最多一层展开，即总计两级；使用 Element Plus Menu／SubMenu 或等价的既有组件能力，统一键盘与折叠行为，不重写树形导航引擎。
-- 顶部显示当前组织、面包屑、必要站内提示和账号菜单。演示中的“重播骨架”“登录预览”不得进入正式用户菜单。
+- 桌面顶部采用内缩圆角毛玻璃导航：与正文对齐留白，半透明暖白渐变、细亮边和轻阴影；滚动时在顶部留白处吸附，文字保持实色清晰。模糊与饱和度复用 glass token，不支持 backdrop-filter 时退回白底。手机继续使用紧凑导航，不额外显示此栏。顶部显示当前组织、面包屑、必要站内提示和账号菜单。演示中的“重播骨架”“登录预览”不得进入正式用户菜单。
 - 当前组织由 URL 决定，切换时的请求、未保存提示和权限处理遵守前端架构。导航选中只表达当前位置，不作为权限凭证。
 - 左侧固定导航内部可以滚动，底部账号入口保持可达；不能让短屏用户无法到达菜单末尾。
 - 页面主滚动由文档承担；表格、抽屉长文在必要时局部滚动。避免全页固定高度和多层滚动容器叠加。
+
+手机与电脑共用同一套页面和导航。700px 及以下默认只显示当前组织、页面名和带文字的菜单按钮；展开后提供组织切换、完整菜单与账号入口。导航成功或按 Esc 后收起并恢复按钮焦点；未保存拦截取消导航时保持原页面。桌面折叠状态独立保留，缩放窗口不得丢失手机菜单文字。触控目标达到 control-min-touch；手机首屏优先呈现可处理的内容。
 
 ### 5.2 工作台
 
 | 层级 | 内容与规则 |
 | --- | --- |
 | 页面头 | 页面标题、简短上下文与一个主操作；不放无意义欢迎语轮播 |
-| 核心区 | 左侧深色重点活动，右侧暖橙 AI 文稿入口；重点活动显示主状态、时间、负责人／地点和实际报名摘要 |
-| KPI 信息带 | 最多四项，数字、单位、统计口径一起出现；能跳转对应明细才做可点击卡片 |
-| 分析区 | 最多两张必要图表，不因布局留白强加图表；无真实统计接口时不出示伪造趋势 |
+| 核心区 | 左侧待我处理，右侧深色重点活动；窄屏先待办后活动。待办数量标注为当前显示条数，不冒充未返回的总量 |
+| KPI 信息带 | 最多四项，数字、单位与简短口径可见，长解释通过说明入口读取；能跳转对应明细才做可点击卡片 |
+| 分析区 | 经费图表与暖橙 AI 文稿卡作为辅助区，不抢占待办；无真实统计接口时不出示伪造趋势 |
 | 明细区 | 表格、筛选、分页与必要操作；本人待办与全组织管理视图明确区分 |
 
 以上是组织负责人／活动管理视图的视觉层级，实际数据范围遵循计划书；普通成员以本人待办、报名和提示为中心，不展示内部经费或 AI 管理卡。无权创建活动时不展示创建入口；无权生成时不请求 AI 候选数据。
@@ -546,13 +254,17 @@ html:root {
 
 ### 5.3 业务页与详情
 
+详情摘要集中显示负责人、开始时间、地点与预算，概览不再重复这些字段；活动安排单独成段。按现有可见页签提供任务与物资、执行与复盘快捷入口，只导航，不代为执行状态变更。
+
 活动列表以列表、筛选和创建为中心；长方案、复盘等完整编辑使用可直达的业务路由。抽屉适合快速查看、短编辑与预览，不把所有功能塞进一个无限长抽屉。
 
-详情页签按权限与功能组织为概览、方案、任务、报名、经费、物资、复盘、资料；只展示可用区段，不一次请求所有页签。选择和 URL 可恢复，浏览器前进／后退有效。移动端页签可以横向滚动，不能挤成不可读的小字。
+详情按业务域组织，可将任务／物资／资料合并为筹备区、执行／复盘合并为生命周期区；不强制拆成八个独立页签。只展示当前权限与状态允许的区段，首次选择该页签再加载其内容，不一次请求所有页签。用户切换须同步 URL，刷新恢复当前页签，前进／后退同步选中项；AI 入口直接定位相应编辑区。无效目标回概览并规范 URL。切换及路由变化遵守未保存提示；状态更新后保留仍有效的当前页签，不能每次重新加载都回概览。移动端页签可以横向滚动，不能挤成不可读的小字。
 
 ### 5.4 登录与公开参与页
 
 登录采用左右分屏：左边为品牌文字与一处活动主题图形，右边为有明确标签的表单；不展示未授权的真实组织资料。正式登录不预填演示密码，也不附带跳过登录入口。注册和恢复入口仅对应计划书已有能力。
+
+认证视觉须对照 `LoginPreview.vue` 的环形主题图形、品牌标题构图、玻璃区域与表单密度。移除虚构数据时保留视觉承载结构，玻璃区可改为静态产品流程说明，不展示虚构日期或未授权活动信息。认证专用设计值仍进入集中 token；不能只保留左右分屏便认定还原完成。按钮须验证最终渲染及触控尺寸，根变量存在不能替代组件实测。
 
 手机按顺序显示压缩的品牌区与表单，装饰可以隐藏，字段与错误不能隐藏。公开活动页面独立于组织管理壳，不为了复用外观暴露内部导航、预算、成员或附件。
 
@@ -563,6 +275,20 @@ html:root {
 至少检查 1440、1024、768、390 与 320 CSS 像素宽度，及短屏、200% 缩放。屏幕宽度是验收输入，不是可以在页面新增的断点。弹窗、抽屉宽度使用 `min(100%, var(--ui-drawer-width))` 等结构式与布局 token；考虑安全区 `env(safe-area-inset-*)`。
 
 固定尺寸只用于边界和最小可操作面积。按钮文字变长、状态变多、中文姓名变长、长数字和错误出现时，页面仍能换行或在指定区段滚动，不能整体横向溢出。
+
+### 5.6 页面一致性检查单
+
+| 对象 | 构图与行为必须同时满足 | 不合格的替代做法 |
+| --- | --- | --- |
+| 工作台 | 深色重点卡与暖橙 AI 卡为视觉重心；KPI 为辅助带；分析与待办可并列，明细紧凑承接 | 同色大框平铺全部字段；为补空白伪造曲线；把说明文字铺满整页 |
+| 主活动卡 | 标题比辅助信息突出；时间、地点／负责人分组；阶段轨清晰；动作位置稳定 | 日期被窄列逐段切断；图标比标题更抢眼；只数六个圆点就判定还原 |
+| AI 卡 | 明确当前总结／方案类型、关联活动和下一步；主按钮进入对应编辑区域 | 按钮命名为编辑却进入概览；未配置状态无限显示加载 |
+| 图表 | 百分比在最终显示尺寸中完整放入环内；数据、单位和可见文本一致 | SVG 字号引用 token 后任其被 viewBox 放大／缩小；仅 aria-label 正确 |
+| 详情 | 顶部概览／主操作稳定，页签承载功能，URL 与当前选择双向同步 | 堆叠所有模块；只测试打开链接，不测试切换后刷新／后退 |
+| 列表／设置 | 列表保留筛选、表头、操作区；设置保持表单标签与字段结构；加载占位匹配这些分区 | 所有页面统一放几条段落骨架；同时显示加载、空态和失败 |
+| 登录 | 独立匿名会话看到分屏表单；正常、失焦错误、提交状态分别验证 | 已登录会话跳到账号页仍将截图命名为登录 |
+
+新增页面先选上表中最接近的已确认正式页面作为参考，交付时说明复用对象与必要差异。不要为此新增万能页面生成器。新增功能不能无条件往详情底部或工作台末尾追加区块。
 
 ## 六、组件使用与封装边界
 
@@ -664,7 +390,11 @@ Dialog 用于短编辑或确认；Drawer 用于查看与相对较长的编辑。
 | 请求失败 | 区段错误与重试入口，保留可保留的数据和表单；不无限转圈 |
 | 无权限／资源不存在 | 独立明确状态与返回入口；不残留受限数据摘要 |
 
+同一区块 loading／error／empty／success 必须互斥：未完成请求时不显示“暂无数据”。首次加载显示匹配列或字段的骨架，不再叠加遮住骨架的整表 v-loading；有旧数据的刷新保留内容并给局部更新提示。先用现有插槽组合，只有重复稳定结构才抽取共享骨架。
+
 Skeleton 使用 Element Plus，自带 shimmer 的持续时间接入 skeleton-duration；leading／trailing 接入 loading token，实际请求状态决定结束。不复制 Demo 的固定等待，也不设置最少等待数秒让动画显得完整。减少动态效果时停止 shimmer，仍保留灰色占位与状态文字。
+
+leading／trailing 由 `shared/utils/useLoadingSkeleton.ts` 统一实现：首次进入且尚无内容时，请求在 leading 内返回就完全不显示骨架（本地接口常只有几十毫秒，直接显示只会闪一帧，等于没做）；骨架一旦出现则至少停留 trailing，避免出现即消失。已有内容的刷新不重放骨架，改用就地提示。**这两个 token 必须由该 composable 消费**，页面不要各写一套计时器，也不要绕过延迟直接显示骨架；`readUiDuration` 只接受 ms，秒值必须换算。骨架是否真的看得见要用真实限速核对，不能只看响应替身下的 DOM 计数。
 
 进入终态后结束 loading；异常、取消、组件卸载与组织切换都要清理计时器及旧请求副作用。骨架只表示结构，不伪造真实用户名、人数或费用。
 
@@ -721,24 +451,20 @@ AI 工作台卡只是业务入口：总结进入单场活动复盘，方案进�
 
 ### 14.1 最小有效门禁
 
-正式工程建立后提供 `npm run check:ui`，与 typecheck、lint、必要测试和 build 一起执行。此名称在正式工程表示 UI 规范门禁，Demo 同名命令仍仅是演示回归，两者不能互作证据。
+正式工程已提供 `npm run check:ui`，与 typecheck、lint、必要测试和 build 一起执行。此名称在正式工程表示 UI 规范门禁，Demo 同名命令仍仅是演示回归，两者不能互作证据。
 
 门禁覆盖项目拥有的 CSS、Vue style、模板内联 style／尺寸 props、SVG、图表配置和动画参数，排除依赖与生成产物：
 
 1. 检查 token 未定义引用、重复定义和循环依赖；集中响应式覆盖属于有意覆盖，不误判成并列值源。
 2. 检查值源之外的颜色、字体、间距、圆角、阴影及固定视觉尺寸字面量。结构／绘图数值按第二节判定，不用一个正则把全部数字禁止掉。
 3. 优先用已有 ESLint 扩展点和样式解析器完成检查；先覆盖实际写法，再根据真实漏检补充，不先引入整套设计系统治理平台。静态检查不容易准确判断的 props／数据几何由代码审核补足，不宣称工具能理解全部语义。
-4. 初次主题接入保留一条浏览器检查，覆盖 Button／Input／Select／Table／Tag／Skeleton／弹层的实际配色、焦点及局部变量；懒加载和 teleported 弹层一起检查。
+4. 调整主题时保留一条浏览器检查，覆盖本次涉及组件的实际配色、焦点及局部变量；触及懒加载或 teleported 弹层时一并检查。
 5. 验证普通、hover、focus、disabled、loading、error、empty、手机、减少动效与不支持 blur 的状态；只测试本次实际变化及相关风险，不每次全量重跑无关场景。
+
+检查结果分三层记录：静态约束是否通过、真实交互是否正确、与已确认正式页面的视觉一致性是否通过；三者不能互相代替。截图须标明提交、路由、视口、角色与数据／加载状态，截图前断言最终页面和关键内容，不能只按文件名判断。每个本轮改动至少留一个能暴露其失败的核对：手机看可见标签，加载看状态互斥，图表看最终文字边界，页签看切换后刷新。
 
 审查时出现越界值应回到 token 或主题适配修复，不能靠全局禁用规则通过。自动检查之外，至少查看实际渲染，防止“没有硬编码但视觉不可读”。
 
-### 14.2 实施顺序
+### 14.2 后续修改
 
-1. P0.2 建立 token、Element Plus 主题映射与 base 样式，先验证首批实际基础组件和弹层，建立静态 token 检查；浏览器检查和库局部适配随组件接入补齐，不先建设全组件演示平台。
-2. 随 P1 建立 AuthLayout、OrganizationLayout 与 OrganizationSwitcher，接入真实会话与未保存处理。
-3. 随 P2—P6 建立业务页面；仅抽取已经出现的共享表面与业务组件，逐项接入状态、骨架、错误和手机布局。
-4. 随 P7 以真实服务端数据实现重点活动、KPI 与图表；未实现的统计不摆样例占位装作已完成。
-5. 随 P8 接入真实 AI 生成，沿用本文的草稿操作边界；最后验证典型完整流程。
-
-本次交付为规范与文档同步，不创建正式业务工程，不勾选尚未实现的功能。`UI演示/` 保留为已认可的外观参考，其存量 CSS 尚未全部 token 化；不得直接复制为符合规范的生产源码。后续若继续修改 Demo，也遵守新增样式的 token 规则，并按实际触及范围迁移；正式工程的首个页面不得携带这项原型债务。
+在现有正式模块内按实际任务修改，先复用已确认页面与现有组件；触及的状态、手机布局和交互按本节验证。阶段完成状态仍以[功能清单](功能开发清单.md)及[当前审核](开发进度审核报告.md)为准，不因视觉暂时确认而自动勾选。`UI演示/` 只供追溯原始风格，存量 CSS 不直接复制为生产源码。
