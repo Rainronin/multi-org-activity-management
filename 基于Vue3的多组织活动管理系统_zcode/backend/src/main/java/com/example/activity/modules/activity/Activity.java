@@ -35,12 +35,14 @@ public class Activity {
         return STATUS_ARCHIVED.equals(status);
     }
 
-    /** S06：未发布（草稿／待确认）仅组织负责人与活动负责人可见；其余状态对有效成员可见。 */
+    /** S06：未发布内容（含从未确认的取消／归档）仅组织负责人与活动负责人可见。 */
     public boolean isVisibleTo(OrganizationMember member, Long accountId) {
         if (member == null) {
             return false;
         }
-        if (!STATUS_DRAFT.equals(status) && !STATUS_PENDING_APPROVAL.equals(status)) {
+        boolean unpublished = STATUS_DRAFT.equals(status) || STATUS_PENDING_APPROVAL.equals(status)
+            || (confirmedAt == null && (STATUS_CANCELLED.equals(status) || STATUS_ARCHIVED.equals(status)));
+        if (!unpublished) {
             return true;
         }
         return OrganizationMember.ROLE_OWNER.equals(member.getRole())

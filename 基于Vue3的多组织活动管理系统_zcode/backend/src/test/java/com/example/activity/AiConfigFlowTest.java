@@ -171,6 +171,43 @@ class AiConfigFlowTest extends FlowTestSupport {
     }
 
     @Test
+    void saveWithExplicitClearKeyRemovesCipherAndInvalidatesAvailability() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String endpoint = stub.baseUrl() + "/v1/messages";
+        save(orgId, owner, "ANTHROPIC_MESSAGES", endpoint, API_KEY, null);
+        mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+            .andExpect(status().isOk());
+        mockMvc.perform(post(configPath(orgId) + "/enable").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+            .andExpect(status().isOk());
+        long version = configVersion(orgId);
+        String clearBody = saveBody("ANTHROPIC_MESSAGES", endpoint, "X_API_KEY", null, version)
+            .replace("\"apiKey\":null", "\"apiKey\":null,\"clearApiKey\":true");
+        mockMvc.perform(put(configPath(orgId)).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(clearBody))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.hasApiKey").value(false))
+            .andExpect(jsonPath("$.enabled").value(false))
+            .andExpect(jsonPath("$.testedRevision").value(org.hamcrest.Matchers.nullValue()))
+            .andExpect(jsonPath("$.connectionRevision").value(2))
+            .andExpect(jsonPath("$.version").value(version + 1));
+        assertThat(jdbcTemplate.queryForObject(
+            "SELECT api_key_cipher IS NULL AND api_key_key_id IS NULL FROM ai_config WHERE org_id = ?",
+            Boolean.class, orgId)).isTrue();
+        mockMvc.perform(get(configPath(orgId)).session(owner.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.hasApiKey").value(false));
+        mockMvc.perform(post(configPath(orgId) + "/enable").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + configVersion(orgId) + "}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("AI_KEY_MISSING"));
+        mockMvc.perform(put(configPath(orgId)).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(clearBody))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("EDIT_CONFLICT"));
+        assertThat(configVersion(orgId)).isEqualTo(version + 1);
+    }
+
+    @Test
     void connectionTestBindsRevisionThenEnablesAndSurvivesEnable() throws Exception {
         TestSession owner = registerAndLogin();
         Long orgId = createOrg(owner);

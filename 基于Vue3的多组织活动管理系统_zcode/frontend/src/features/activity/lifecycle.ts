@@ -11,9 +11,29 @@ export interface ExecutionRecordItem {
   recordId: string
   category: ExecutionRecordCategory
   content: string
-  recordedBy: number
+  recordedBy: string
   recordedByUsername: string
   createdAt: string
+}
+
+export interface ConfirmationItem {
+  id: string
+  kind: 'PROPOSAL' | 'SUMMARY' | 'CANCEL_NOTE'
+  content: string
+  activityVersion: number
+  sourceHash: string
+  confirmedBy: string
+  confirmedByUsername: string
+  confirmedAt: string
+  reopenReason: string | null
+  reopenCount: number
+}
+
+export interface ConfirmationPage {
+  items: ConfirmationItem[]
+  page: number
+  pageSize: number
+  total: number
 }
 
 export const executionCategoryLabel: Record<ExecutionRecordCategory, string> = {
@@ -41,6 +61,11 @@ export function isArchivable(status: ActivityLifecycleStatus): boolean {
 
 function base(orgId: string, activityId: string): string {
   return `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}`
+}
+
+export async function fetchConfirmations(orgId: string, activityId: string, page = 1): Promise<ConfirmationPage> {
+  const response = await request<ConfirmationPage>(`${base(orgId, activityId)}/confirmations?page=${page}`)
+  return response.data
 }
 
 async function postLifecycle(
@@ -102,10 +127,12 @@ export async function fetchExecutionRecords(
 
 export async function addExecutionRecord(
   orgId: string, activityId: string, category: ExecutionRecordCategory, content: string,
+  requestKey: string,
 ): Promise<ExecutionRecordItem> {
   const response = await request<ExecutionRecordItem>(`${base(orgId, activityId)}/execution-records`, {
     method: 'POST',
     json: { category, content },
+    headers: { 'Idempotency-Key': requestKey },
   })
   return response.data
 }

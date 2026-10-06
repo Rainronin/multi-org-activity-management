@@ -3,8 +3,8 @@
 <mapper namespace="com.example.activity.common.audit.AuditMapper">
 
     <insert id="insert">
-        INSERT INTO audit_log (actor_account_id, scope, action, target, reason, detail)
-        VALUES (#{actorAccountId}, #{scope}, #{action}, #{target}, #{reason}, #{detail})
+        INSERT INTO audit_log (actor_account_id, scope, action, target, reason, detail, request_id)
+        VALUES (#{actorAccountId}, #{scope}, #{action}, #{target}, #{reason}, #{detail}, #{requestId})
     </insert>
 
 </mapper>

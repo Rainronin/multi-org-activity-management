@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ElButton, ElSkeleton, ElTag } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { readErrorMessage } from '../../shared/http/error'
 import { useSessionStore } from '../../stores/session'
 import { applyBlockReason, fetchPublicActivities, type PublicActivityItem } from './publicActivity'
 import { formatDateTime, scopeLabel } from './types'
@@ -31,9 +31,7 @@ async function load(targetPage = page.value): Promise<void> {
   } catch (error) {
     items.value = []
     total.value = 0
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '公开活动加载失败，请稍后重试。'
+    errorText.value = readErrorMessage(error, '公开活动加载失败，请稍后重试。')
   } finally {
     loading.value = false
     loadedOnce.value = true

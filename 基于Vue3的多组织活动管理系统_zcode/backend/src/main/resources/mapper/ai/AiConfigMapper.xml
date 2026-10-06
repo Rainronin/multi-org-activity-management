@@ -24,31 +24,37 @@
     </insert>
 
     <!--
-      保存：带期望版本。密钥只在服务层判定为替换时写入，未传表示保留原密文（apiKeyCipher 为 null 时不动该列）。
+      保存：带期望版本。明确清除时两列置 NULL；替换时写新密文；未传表示保留原密文。
       connection_revision 是否递增由服务层判定；递增时同时清空旧测试状态（revision 变化使旧测试失效）。
     -->
     <update id="update">
         UPDATE ai_config
-        SET protocol = #{protocol},
-            endpoint = #{endpoint},
-            model = #{model},
-            auth_scheme = #{authScheme},
-            <if test="apiKeyCipher != null">
-                api_key_cipher = #{apiKeyCipher},
-                api_key_key_id = #{apiKeyKeyId},
-            </if>
-            max_output_tokens = #{maxOutputTokens},
-            output_limit_field = #{outputLimitField},
-            timeout_seconds = #{timeoutSeconds},
-            enabled = #{enabled},
-            connection_revision = #{connectionRevision},
-            tested_revision = #{testedRevision},
-            tested_at = #{testedAt},
-            tested_by = #{testedBy},
-            operator_account_id = #{operatorAccountId},
+        SET protocol = #{config.protocol},
+            endpoint = #{config.endpoint},
+            model = #{config.model},
+            auth_scheme = #{config.authScheme},
+            <choose>
+                <when test="clearApiKey">
+                    api_key_cipher = NULL,
+                    api_key_key_id = NULL,
+                </when>
+                <when test="config.apiKeyCipher != null">
+                    api_key_cipher = #{config.apiKeyCipher},
+                    api_key_key_id = #{config.apiKeyKeyId},
+                </when>
+            </choose>
+            max_output_tokens = #{config.maxOutputTokens},
+            output_limit_field = #{config.outputLimitField},
+            timeout_seconds = #{config.timeoutSeconds},
+            enabled = #{config.enabled},
+            connection_revision = #{config.connectionRevision},
+            tested_revision = #{config.testedRevision},
+            tested_at = #{config.testedAt},
+            tested_by = #{config.testedBy},
+            operator_account_id = #{config.operatorAccountId},
             version = version + 1
-        WHERE org_id = #{orgId}
-          AND version = #{version}
+        WHERE org_id = #{config.orgId}
+          AND version = #{config.version}
     </update>
 
     <!-- 测试：只标记仍与测试时相同配置版本的记录，过期响应不写 -->

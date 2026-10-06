@@ -9,6 +9,7 @@ export interface NotificationItem {
   readAt: string | null
   activityId: string | null
   activityName: string | null
+  activityPath: string | null
 }
 
 export interface NotificationPage {

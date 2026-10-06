@@ -28,7 +28,7 @@ public class NotificationController {
 
     public record NotificationResponse(
         String notificationId, String type, String payload, java.time.OffsetDateTime createdAt,
-        java.time.OffsetDateTime readAt, String activityId, String activityName) {
+        java.time.OffsetDateTime readAt, String activityId, String activityName, String activityPath) {
     }
 
     public record NotificationsResponse(
@@ -45,7 +45,7 @@ public class NotificationController {
             notificationService.listMine(principal.getAccountId(), page, pageSize);
         List<NotificationResponse> items = result.items().stream()
             .map(item -> new NotificationResponse(String.valueOf(item.notificationId()), item.type(),
-                item.payload(), item.createdAt(), item.readAt(), item.activityId(), item.activityName()))
+                item.payload(), item.createdAt(), item.readAt(), item.activityId(), item.activityName(), item.activityPath()))
             .toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new NotificationsResponse(items, result.page(), result.pageSize(), result.total(),

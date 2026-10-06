@@ -84,8 +84,8 @@ try {
     name: '桌牌', quantity: 20, unit: '个', assigneeMemberId: memberMemberId, note: '提前一天准备',
   })
   const reg = await call(member, 'POST', `/api/activities/${flow.id}/registrations`,
-    { displayName: '演示成员', note: '希望参加分享环节' })
-  await call(owner, 'POST', `${fp}/registrations/${reg.registrationId}/approve`)
+    { displayName: '演示成员', note: '希望参加分享环节', version: 0 })
+  await call(owner, 'POST', `${fp}/registrations/${reg.registrationId}/approve`, { version: reg.version })
   const expense = await call(member, 'POST', `${fp}/expenses`, {
     purpose: '场地布置物料', amount: '328.50', incurredOn: '2027-06-01', category: 'MATERIAL',
     handledNote: '经手人：演示成员', noReceiptNote: '小票已遗失，附说明',
@@ -99,7 +99,7 @@ try {
   await call(owner, 'POST', `${fp}/execution-records`, { category: 'PROGRESS', content: '按计划完成场地布置' })
   await call(owner, 'POST', `${fp}/execution-records`, { category: 'ISSUE', content: '签到台排队较长，已加开一条通道' })
   await call(owner, 'POST', `${fp}/finish-execution`, { version: await versionOf(fp) })
-  await call(member, 'POST', `${fp}/feedback`, { rating: 5, comment: '流程顺畅，建议增加指引牌' })
+  await call(member, 'POST', `${fp}/feedback`, { rating: 5, comment: '流程顺畅，建议增加指引牌', version: 0 })
   await call(owner, 'PUT', `${fp}/summary`, {
     summary: '活动目标：帮助新成员熟悉组织。执行概况：按计划完成，参与 20 人。\n'
       + '任务与报名：任务 2 个已完成，报名 1 人已通过。经费：已确认支出 328.50 元。\n'

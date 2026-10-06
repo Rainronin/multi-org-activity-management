@@ -3,7 +3,8 @@ import { request } from '../../shared/http/client'
 /** P6.3 反馈：固定 1～5 分总体评分与文字建议，每账号每活动一份。 */
 export interface FeedbackItem {
   feedbackId: string
-  accountId: number
+  version: number
+  accountId: string
   accountUsername: string
   rating: number
   comment: string | null
@@ -19,6 +20,7 @@ export interface FeedbackSummary {
   mineSubmitted: boolean
   myRating: number | null
   myComment: string | null
+  myVersion: number | null
   canSubmit: boolean
   submitBlockedReason: string | null
 }
@@ -35,11 +37,11 @@ export async function fetchFeedback(orgId: string, activityId: string): Promise<
 
 /** 提交或修改本人反馈；无资格或已关闭时后端返回 403／409。 */
 export async function submitFeedback(
-  orgId: string, activityId: string, rating: number, comment?: string,
+  orgId: string, activityId: string, rating: number, comment?: string, version?: number,
 ): Promise<FeedbackItem> {
   const response = await request<FeedbackItem>(feedbackUrl(orgId, activityId), {
     method: 'POST',
-    json: { rating, comment: comment || null },
+    json: { rating, comment: comment || null, version },
   })
   return response.data
 }

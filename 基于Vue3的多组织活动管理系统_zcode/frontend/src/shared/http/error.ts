@@ -52,6 +52,16 @@ export class ApiError extends Error {
   }
 }
 
+/** 读取区段统一区分传输失败与服务端权限／资源状态，不附带页面副作用。 */
+export function readErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.isTransportError) return '网络连接失败，请检查网络后重试。'
+    if (error.status === 403) return '无权访问此内容。'
+    if (error.status === 404) return '内容不存在或已不可访问。'
+  }
+  return fallback
+}
+
 export function toProblemDetail(value: unknown): ProblemDetail | null {
   if (typeof value !== 'object' || value === null) {
     return null

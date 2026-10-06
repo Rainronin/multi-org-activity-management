@@ -7,7 +7,7 @@ spring:
     password: "本机数据库密码"
 
 # P8：组织 AI 模型配置的主加密密钥（Base64 的 32 字节 AES 密钥，例如
-#   [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('0123456789abcdef0123456789abcdef')) 得到的值）。
+#   [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) 得到的值）。
 # 主密钥由部署环境保管：不进数据库、不进仓库、不提交；轮换时改动 master-key-id 并重新录入组织密钥。
 # 本机联调如果要用本地桩模型服务，才临时开启 allow-private-hosts（生产必须保持 false）。
 app:

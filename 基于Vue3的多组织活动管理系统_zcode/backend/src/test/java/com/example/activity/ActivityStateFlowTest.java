@@ -150,6 +150,10 @@ class ActivityStateFlowTest extends ActivityTestBase {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("APPROVED"))
             .andExpect(jsonPath("$.confirmType").value("SELF"));
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/confirmations")
+                .session(owner.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1))
+            .andExpect(jsonPath("$.items[0].kind").value("PROPOSAL"));
 
         // 已确认活动：组织负责人可改简介；关键内容 409
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)
@@ -217,6 +221,11 @@ class ActivityStateFlowTest extends ActivityTestBase {
                 .content(versioned(activityId, "{}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.confirmType").value("OTHER"));
+        mockMvc.perform(get("/api/organizations/" + orgId + "/activities/" + activityId + "/confirmations")
+                .session(activityOwner.session()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1))
+            .andExpect(jsonPath("$.items[0].kind").value("PROPOSAL"))
+            .andExpect(jsonPath("$.items[0].content").value("方案内容"));
 
         // 已确认后活动负责人仅能改简介之外的内容 → 409（非组织负责人）
         mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + activityId)

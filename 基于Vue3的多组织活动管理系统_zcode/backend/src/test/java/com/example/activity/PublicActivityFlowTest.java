@@ -134,7 +134,8 @@ class PublicActivityFlowTest extends FlowTestSupport {
             .andReturn();
         String registrationId = readField(applied, "$.registrationId");
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
-                + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session()))
+                + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
 
         // 已发布状态（执行中、复盘中）仍可从公开端点读取：外部参与者要能在参与后查询与反馈
@@ -176,12 +177,21 @@ class PublicActivityFlowTest extends FlowTestSupport {
             .andExpect(jsonPath("$.count").value(1))
             .andExpect(jsonPath("$.mineSubmitted").value(true))
             .andExpect(jsonPath("$.myRating").value(5))
+            .andExpect(jsonPath("$.myVersion").value(1))
             .andExpect(jsonPath("$.averageRating").value("5.0"));
+        mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
+                .session(participant.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rating\":4,\"comment\":\"无版本修改\"}"))
+            .andExpect(status().isBadRequest());
         // 每账号一份：再次提交是修改而不是新增
         mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
                 .session(participant.session()).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"rating\":4,\"comment\":\"补充建议\"}"))
-            .andExpect(status().isOk());
+                .content(feedbackVersioned(activityId, participant.username(), "{\"rating\":4,\"comment\":\"补充建议\"}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.version").value(2));
+        mockMvc.perform(post("/api/public/activities/" + activityId + "/feedback").with(csrf())
+                .session(participant.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rating\":1,\"comment\":\"旧版本覆盖\",\"version\":1}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("EDIT_CONFLICT"));
         assertThat(jdbcTemplate.queryForObject(
             "SELECT COUNT(*) FROM feedback WHERE activity_id = ?", Long.class, activityId)).isEqualTo(1L);
     }

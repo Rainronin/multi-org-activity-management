@@ -3,9 +3,15 @@
 <mapper namespace="com.example.activity.modules.organization.OrganizationInvitationMapper">
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO organization_invitation (org_id, code_hash, created_by, expires_at, max_uses, used_count, status)
-        VALUES (#{orgId}, #{codeHash}, #{createdBy}, #{expiresAt}, #{maxUses}, 0, #{status})
+        INSERT INTO organization_invitation (org_id, code_hash, created_by, request_key, request_fingerprint, expires_at, max_uses, used_count, status)
+        VALUES (#{orgId}, #{codeHash}, #{createdBy}, #{requestKey}, #{requestFingerprint}, #{expiresAt}, #{maxUses}, 0, #{status})
     </insert>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.organization.OrganizationInvitation">
+        SELECT id, org_id, created_by, request_key, request_fingerprint, expires_at, max_uses, used_count, status, created_at
+        FROM organization_invitation
+        WHERE org_id = #{orgId} AND request_key = #{requestKey}
+    </select>
 
     <select id="findById" resultType="com.example.activity.modules.organization.OrganizationInvitation">
         SELECT id, org_id, code_hash, created_by, expires_at, max_uses, used_count, status, created_at

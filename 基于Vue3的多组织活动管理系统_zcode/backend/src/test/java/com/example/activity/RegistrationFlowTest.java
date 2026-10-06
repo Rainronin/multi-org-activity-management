@@ -138,7 +138,8 @@ class RegistrationFlowTest extends ActivityTestBase {
         MvcResult result = mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
                 .with(csrf()).session(session.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"" + session.username() + "\"}"))
+                .content(registrationForAccountVersioned(activityId, session.username(),
+                    "{\"displayName\":\"" + session.username() + "\"}")))
             .andExpect(status().isCreated())
             .andReturn();
         return Long.parseLong(com.jayway.jsonpath.JsonPath.read(
@@ -162,13 +163,15 @@ class RegistrationFlowTest extends ActivityTestBase {
         // OWNER 审批通过
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("APPROVED"));
 
         // 本人取消
         mockMvc.perform(post("/api/activities/" + activityId + "/registrations/cancel-self")
-                .with(csrf()).session(member.session()))
+                .with(csrf()).session(member.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isNoContent());
 
         // 重新申请（更新主记录，同一 registrationId）
@@ -202,14 +205,16 @@ class RegistrationFlowTest extends ActivityTestBase {
             barrier.await();
             return mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                     + "/registrations/" + regA + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(regA, "{}")))
                 .andReturn().getResponse().getStatus();
         }));
         results.add(pool.submit(() -> {
             barrier.await();
             return mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                     + "/registrations/" + regB + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(regB, "{}")))
                 .andReturn().getResponse().getStatus();
         }));
         int approved = 0;

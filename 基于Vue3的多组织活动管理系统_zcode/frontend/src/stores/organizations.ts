@@ -12,6 +12,7 @@ import type { OrganizationDirectoryItem } from '../features/organization/types'
 export const useOrganizationsStore = defineStore('organizations', () => {
   const items = ref<OrganizationDirectoryItem[]>([])
   const loaded = ref(false)
+  let requestId = 0
 
   async function fetchDirectory(force = false): Promise<void> {
     if (loaded.value && !force) {
@@ -19,8 +20,9 @@ export const useOrganizationsStore = defineStore('organizations', () => {
     }
     const session = useSessionStore()
     const gen = session.capture()
+    const currentRequest = ++requestId
     const responseItems = await fetchMyOrganizations()
-    if (gen !== session.generation) {
+    if (gen !== session.generation || currentRequest !== requestId) {
       return
     }
     items.value = responseItems
@@ -28,6 +30,7 @@ export const useOrganizationsStore = defineStore('organizations', () => {
   }
 
   function clear(): void {
+    requestId++
     items.value = []
     loaded.value = false
   }

@@ -3,7 +3,7 @@
 <mapper namespace="com.example.activity.modules.feedback.FeedbackMapper">
 
     <sql id="baseColumns">
-        id, org_id, activity_id, account_id, rating, comment, created_at, updated_at
+        id, org_id, activity_id, account_id, rating, comment, created_at, updated_at, version
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
@@ -14,8 +14,10 @@
     <update id="update">
         UPDATE feedback
         SET rating = #{rating},
-            comment = #{comment}
+            comment = #{comment},
+            version = version + 1
         WHERE id = #{id}
+          AND version = #{version}
     </update>
 
     <select id="findByActivityAndAccount" resultType="com.example.activity.modules.feedback.Feedback">

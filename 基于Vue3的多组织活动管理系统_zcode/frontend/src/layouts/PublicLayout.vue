@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
-import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
+import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu, ElMessage } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 import { useSessionStore } from '../stores/session'
 
@@ -15,7 +15,10 @@ function onAccountCommand(command: string) {
   if (command === 'account') {
     void router.push('/')
   } else if (command === 'logout') {
-    void session.logout()
+    const gen = session.capture()
+    void session.logout().catch(() => {
+      if (gen === session.generation) ElMessage.error('退出结果尚未确认，请检查网络后再次退出。')
+    })
   }
 }
 </script>
@@ -96,10 +99,11 @@ function onAccountCommand(command: string) {
 
 .public-topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--ui-space-6);
   min-height: var(--ui-layout-topbar-height);
-  padding: 0 var(--ui-layout-page-padding);
+  padding: var(--ui-space-3) var(--ui-layout-page-padding);
   border-bottom: var(--ui-border-width) solid var(--ui-color-border);
   background: var(--ui-color-surface);
 }
@@ -132,6 +136,7 @@ function onAccountCommand(command: string) {
 
 .public-nav {
   display: flex;
+  white-space: nowrap;
   gap: var(--ui-space-4);
   font-size: var(--ui-font-size-small);
 }
@@ -148,10 +153,17 @@ function onAccountCommand(command: string) {
 
 .public-account {
   margin-left: auto;
+  max-width: 100%;
+}
+
+.public-account :deep(.el-dropdown) {
+  max-width: 100%;
 }
 
 .public-account-button {
   display: inline-flex;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   align-items: center;
   gap: var(--ui-space-2);
   padding: var(--ui-space-2) var(--ui-space-3);
@@ -161,6 +173,11 @@ function onAccountCommand(command: string) {
   color: var(--ui-color-text);
   font: inherit;
   cursor: pointer;
+}
+
+.public-account-button svg {
+  width: var(--ui-font-size-small);
+  flex-shrink: 0;
 }
 
 .public-main {

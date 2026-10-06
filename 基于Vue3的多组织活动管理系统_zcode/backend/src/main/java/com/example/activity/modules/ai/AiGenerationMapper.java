@@ -12,6 +12,10 @@ public interface AiGenerationMapper {
 
     AiGeneration findById(@Param("id") Long id);
 
+    AiGeneration findByIdForUpdate(@Param("id") Long id);
+
+    List<AiGeneration> listStaleRunning(@Param("orgId") Long orgId, @Param("before") OffsetDateTime before);
+
     /** 防重键重放：同组织同操作者同键返回既有记录，不重复调用模型。 */
     AiGeneration findByRequestKey(
         @Param("orgId") Long orgId,
@@ -31,12 +35,6 @@ public interface AiGenerationMapper {
 
     /** 组织额度：按持久生成记录统计当日调用次数（含连接测试）。 */
     long countSince(@Param("orgId") Long orgId, @Param("since") OffsetDateTime since);
-
-    /** 遗留 RUNNING 核对：进程中断或超时后转为明确失败，不无限挂起。 */
-    int failStaleRunning(
-        @Param("orgId") Long orgId,
-        @Param("before") OffsetDateTime before,
-        @Param("errorCode") String errorCode);
 
     /** 活动最近一次指定类型的生成记录（复盘页展示采用状态）。 */
     List<AiGeneration> listRecent(

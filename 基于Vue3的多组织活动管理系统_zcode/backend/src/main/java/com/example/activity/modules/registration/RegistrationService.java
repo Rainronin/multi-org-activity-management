@@ -74,7 +74,7 @@ public class RegistrationService {
         OffsetDateTime decidedAt, OffsetDateTime createdAt,
         String activityName, String organizationName, String location,
         OffsetDateTime startTime, OffsetDateTime endTime,
-        boolean registrationOpen, boolean adjusting) {
+        boolean registrationOpen, boolean adjusting, Long version) {
     }
 
     public record RegistrationPage(List<RegistrationItem> items, int page, int pageSize, long total) {
@@ -82,7 +82,7 @@ public class RegistrationService {
 
     /** 报名/重新申请：活动须已确认且在有效窗口内；重复申请幂等或更新主记录。 */
     @Transactional
-    public RegistrationItem apply(Long accountId, Long activityId, String displayName, String note) {
+    public RegistrationItem apply(Long accountId, Long activityId, String displayName, String note, Long version) {
         Activity activity = activityMapper.findById(activityId);
         if (activity == null) {
             throw notFound();
@@ -126,11 +126,16 @@ public class RegistrationService {
                 return toItem(existing, resolveUsername(accountId));
             }
             // 已取消或已驳回：重新申请更新主记录
-            registrationMapper.reapply(existing.getId(), displayName, note);
-            auditService.record(accountId, "REGISTRATION", "REGISTRATION_REAPPLIED",
-                "registration:" + existing.getId(), null, java.util.Map.of("activityId", activityId));
-            return toItem(registrationMapper.findByActivityAndAccount(activityId, accountId), resolveUsername(accountId));
+            requireCurrentVersion(existing, version);
+            if (registrationMapper.reapply(existing.getId(), displayName, note, version) != 1) {
+                throw editConflict();
+            }
+            Registration updated = registrationMapper.findById(existing.getId());
+            recordChange(accountId, "REGISTRATION_REAPPLIED", existing, updated, null);
+            return toItem(updated, resolveUsername(accountId));
         }
+
+        if (version != null && version != 0L) throw editConflict();
 
         Registration registration = new Registration();
         registration.setOrgId(activity.getOrgId());
@@ -140,9 +145,9 @@ public class RegistrationService {
         registration.setNote(note);
         registration.setStatus(Registration.STATUS_PENDING);
         registrationMapper.insert(registration);
-        auditService.record(accountId, "REGISTRATION", "REGISTRATION_APPLIED",
-            "registration:" + registration.getId(), null, java.util.Map.of("activityId", activityId));
-        return toItem(registration, resolveUsername(accountId));
+        Registration created = registrationMapper.findById(registration.getId());
+        recordChange(accountId, "REGISTRATION_APPLIED", null, created, null);
+        return toItem(created, resolveUsername(accountId));
     }
 
     /**
@@ -151,7 +156,7 @@ public class RegistrationService {
      * S08：组织行锁 → 活动行锁 → 锁内重读活动状态与报名记录，容量校验与状态更新在同一临界区。
      */
     @Transactional
-    public RegistrationItem approve(Long approverAccountId, Long orgId, Long activityId, Long registrationId) {
+    public RegistrationItem approve(Long approverAccountId, Long orgId, Long activityId, Long registrationId, Long version) {
         organizationMapper.lockOrganization(orgId);
         activityMapper.lockActivity(activityId);
         requireReviewPermission(orgId, activityId, approverAccountId);
@@ -160,6 +165,7 @@ public class RegistrationService {
             throw conflict("活动已开始，不能再批准报名。");
         }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
+        requireCurrentVersion(registration, version);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
             throw conflict();
         }
@@ -169,38 +175,40 @@ public class RegistrationService {
             throw new ApiException(HttpStatus.CONFLICT, "CAPACITY_FULL", "名额已满",
                 "活动名额已用完，无法批准更多报名。");
         }
-        if (registrationMapper.review(registrationId, Registration.STATUS_APPROVED, approverAccountId, null) != 1) {
+        if (registrationMapper.review(registrationId, Registration.STATUS_APPROVED, approverAccountId, null, version) != 1) {
             throw conflict();
         }
-        auditService.record(approverAccountId, "REGISTRATION", "REGISTRATION_APPROVED",
-            "registration:" + registrationId, null, java.util.Map.of("activityId", activityId));
+        Registration updated = registrationMapper.findById(registrationId);
+        recordChange(approverAccountId, "REGISTRATION_APPROVED", registration, updated, null);
         notifyIntent(registration.getAccountId(), "REGISTRATION_APPROVED", activityId,
             "你报名的活动「" + activity.getName() + "」已通过审核。",
-            "registration:" + registrationId + ":approved");
-        return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
+            "registration:" + registrationId + ":v" + updated.getVersion() + ":approved");
+        return toItem(updated, resolveUsername(registration.getAccountId()));
     }
 
     /** 驳回待审：开始后仍允许，用于清空待审申请（计划书 6.2 结束审核）。 */
     @Transactional
-    public RegistrationItem reject(Long approverAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
+    public RegistrationItem reject(Long approverAccountId, Long orgId, Long activityId, Long registrationId, String reason,
+        Long version) {
         organizationMapper.lockOrganization(orgId);
         activityMapper.lockActivity(activityId);
         requireReviewPermission(orgId, activityId, approverAccountId);
         Activity activity = requireApprovedActivity(activityId);
         Registration registration = requireRegistration(orgId, activityId, registrationId);
+        requireCurrentVersion(registration, version);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())) {
             throw conflict();
         }
-        if (registrationMapper.review(registrationId, Registration.STATUS_REJECTED, approverAccountId, reason) != 1) {
+        if (registrationMapper.review(registrationId, Registration.STATUS_REJECTED, approverAccountId, reason, version) != 1) {
             throw conflict();
         }
-        auditService.record(approverAccountId, "REGISTRATION", "REGISTRATION_REJECTED",
-            "registration:" + registrationId, reason, null);
+        Registration updated = registrationMapper.findById(registrationId);
+        recordChange(approverAccountId, "REGISTRATION_REJECTED", registration, updated, reason);
         notifyIntent(registration.getAccountId(), "REGISTRATION_REJECTED", activityId,
             "你报名的活动「" + activity.getName() + "」未通过审核"
                 + (reason == null || reason.isBlank() ? "。" : "：" + reason),
-            "registration:" + registrationId + ":rejected");
-        return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
+            "registration:" + registrationId + ":v" + updated.getVersion() + ":rejected");
+        return toItem(updated, resolveUsername(registration.getAccountId()));
     }
 
     /**
@@ -208,7 +216,7 @@ public class RegistrationService {
      * 已占名额仅释放一次，重复取消幂等。
      */
     @Transactional
-    public void cancelSelf(Long accountId, Long activityId) {
+    public void cancelSelf(Long accountId, Long activityId, Long version) {
         Activity activity = activityMapper.findById(activityId);
         if (activity == null) {
             throw notFound();
@@ -231,6 +239,7 @@ public class RegistrationService {
         if (registration == null) {
             throw notFound();
         }
+        requireCurrentVersion(registration, version);
         boolean cancellable = Registration.STATUS_PENDING.equals(registration.getStatus())
             || Registration.STATUS_APPROVED.equals(registration.getStatus());
         if (!cancellable) {
@@ -238,21 +247,22 @@ public class RegistrationService {
             return;
         }
         // S03：专用取消条件更新（支持 PENDING 和 APPROVED 源状态），检查行数
-        if (registrationMapper.cancel(registration.getId(), Registration.STATUS_CANCELLED_SELF, accountId, "本人取消") != 1) {
+        if (registrationMapper.cancel(registration.getId(), Registration.STATUS_CANCELLED_SELF, accountId, "本人取消", version) != 1) {
             return; // 并发下已被处理，幂等返回
         }
-        auditService.record(accountId, "REGISTRATION", "REGISTRATION_CANCELLED_SELF",
-            "registration:" + registration.getId(), null, java.util.Map.of("activityId", activityId));
+        Registration updated = registrationMapper.findById(registration.getId());
+        recordChange(accountId, "REGISTRATION_CANCELLED_SELF", registration, updated, null);
         // F08：本人取消属关键活动变更，给活动负责人留下来源意图（组织负责人可在名单中看到结果）
         OrganizationMember owner = memberMapper.findById(activity.getOwnerMemberId());
         notifyIntent(owner == null ? null : owner.getAccountId(), "REGISTRATION_CANCELLED_SELF", activityId,
             resolveUsername(accountId) + " 取消了活动「" + activity.getName() + "」的报名。",
-            "registration:" + registration.getId() + ":cancelled-self");
+            "registration:" + registration.getId() + ":v" + updated.getVersion() + ":cancelled-self");
     }
 
     /** 管理取消：组织负责人或活动负责人（S04），活动进入执行前可说明原因取消（计划书 6.2）。 */
     @Transactional
-    public RegistrationItem cancelOrg(Long actorAccountId, Long orgId, Long activityId, Long registrationId, String reason) {
+    public RegistrationItem cancelOrg(Long actorAccountId, Long orgId, Long activityId, Long registrationId, String reason,
+        Long version) {
         organizationMapper.lockOrganization(orgId);
         activityMapper.lockActivity(activityId);
         Activity activity = requireReviewPermission(orgId, activityId, actorAccountId);
@@ -260,21 +270,22 @@ public class RegistrationService {
             throw conflict("活动已开始，不能再由管理者取消报名，请在执行记录中说明。");
         }
         Registration registration = requireRegistration(orgId, activityId, registrationId);
+        requireCurrentVersion(registration, version);
         if (!Registration.STATUS_PENDING.equals(registration.getStatus())
             && !Registration.STATUS_APPROVED.equals(registration.getStatus())) {
             throw conflict();
         }
         // S03：专用取消条件更新（支持 PENDING 和 APPROVED 源状态），检查行数
-        if (registrationMapper.cancel(registrationId, Registration.STATUS_CANCELLED_ORG, actorAccountId, reason) != 1) {
+        if (registrationMapper.cancel(registrationId, Registration.STATUS_CANCELLED_ORG, actorAccountId, reason, version) != 1) {
             throw conflict();
         }
-        auditService.record(actorAccountId, "REGISTRATION", "REGISTRATION_CANCELLED_ORG",
-            "registration:" + registrationId, reason, java.util.Map.of("activityId", activityId));
+        Registration updated = registrationMapper.findById(registrationId);
+        recordChange(actorAccountId, "REGISTRATION_CANCELLED_ORG", registration, updated, reason);
         notifyIntent(registration.getAccountId(), "REGISTRATION_CANCELLED_ORG", activityId,
             "你在活动「" + activity.getName() + "」的报名已被组织取消"
                 + (reason == null || reason.isBlank() ? "。" : "：" + reason),
-            "registration:" + registrationId + ":cancelled-org");
-        return toItem(registrationMapper.findById(registrationId), resolveUsername(registration.getAccountId()));
+            "registration:" + registrationId + ":v" + updated.getVersion() + ":cancelled-org");
+        return toItem(updated, resolveUsername(registration.getAccountId()));
     }
 
     /** 管理名单：组织负责人或本活动负责人（S04）；活动自身可见性同样适用（S06）。 */
@@ -370,6 +381,38 @@ public class RegistrationService {
         return new ApiException(HttpStatus.BAD_REQUEST, "REGISTRATION_INVALID", "报名无效", detail);
     }
 
+    private void requireCurrentVersion(Registration registration, Long version) {
+        if (version == null || version < 1) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "输入无效", "请携带本次报名版本后再提交。",
+                List.of(new com.example.activity.common.FieldErrorItem("version", "请携带当前报名版本号")));
+        }
+        if (!version.equals(registration.getVersion())) throw editConflict();
+    }
+
+    private ApiException editConflict() {
+        return new ApiException(HttpStatus.CONFLICT, "EDIT_CONFLICT", "报名已变化", "报名已由其他操作处理，请核对当前结果后重新操作。");
+    }
+
+    private void recordChange(Long actorAccountId, String action, Registration before, Registration after, String reason) {
+        auditService.recordChange(actorAccountId, "REGISTRATION", action, "registration:" + after.getId(), reason,
+            java.util.Map.of("orgId", after.getOrgId(), "activityId", after.getActivityId()),
+            auditState(before), auditState(after));
+    }
+
+    /** 批量取消与成员退出复用同一白名单快照，报名姓名与备注不进入审计。 */
+    public static java.util.Map<String, Object> auditState(Registration registration) {
+        if (registration == null) return null;
+        java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+        state.put("orgId", registration.getOrgId());
+        state.put("activityId", registration.getActivityId());
+        state.put("accountId", registration.getAccountId());
+        state.put("status", registration.getStatus());
+        state.put("version", registration.getVersion());
+        state.put("decidedBy", registration.getDecidedBy());
+        state.put("decidedAt", registration.getDecidedAt());
+        return state;
+    }
+
     private ApiException conflict() {
         return new ApiException(HttpStatus.CONFLICT, "REGISTRATION_STATE_CONFLICT", "报名状态不允许此操作",
             "报名已被处理，请刷新后查看。");
@@ -408,6 +451,6 @@ public class RegistrationService {
             activity == null ? null : activity.getStartTime(),
             activity == null ? null : activity.getEndTime(),
             activity != null && activity.isRegistrationOpen(),
-            activity != null && activity.isPendingReconfirmation());
+            activity != null && activity.isPendingReconfirmation(), r.getVersion());
     }
 }

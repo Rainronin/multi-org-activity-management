@@ -31,7 +31,7 @@ function onChange(orgId: string): void {
   <!-- 可搜索组织选择（UI 规范 5.1 / 8）：切换只发出事件，导航由布局协调。 -->
   <ElSelect
     class="organization-select"
-    :model-value="modelValue"
+    :model-value="current?.id ?? ''"
     filterable
     aria-label="切换组织"
     popper-class="organization-popper"

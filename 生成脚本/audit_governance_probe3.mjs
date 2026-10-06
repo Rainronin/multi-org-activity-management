@@ -104,9 +104,11 @@ await owner.write('POST', `/api/organizations/${org}/activities/${fbActId}/appro
 // 负责人本人报名（内部报名 + 执行前须清空待审）
 const members = await owner.json(`/api/organizations/${org}/members?pageSize=100`)
 const ownerMid = members.body?.items?.find((m) => m.username === OWNER_USER)?.memberId
-const reg = await owner.write('POST', `/api/activities/${fbActId}/registrations`, { displayName: '审核负责人', note: '审核取证报名' })
+const reg = await owner.write('POST', `/api/activities/${fbActId}/registrations`,
+  { displayName: '审核负责人', note: '审核取证报名', version: 0 })
 const regId = reg.body?.registrationId ?? reg.body?.id
-const appr = await owner.write('POST', `/api/organizations/${org}/activities/${fbActId}/registrations/${regId}/approve`)
+const appr = await owner.write('POST', `/api/organizations/${org}/activities/${fbActId}/registrations/${regId}/approve`,
+  { version: reg.body?.version })
 note('B.报名与审批', { reg: reg.status, regId, approve: appr.status, ownerMid })
 bv = await act(fbActId)
 const start = await owner.write('POST', `/api/organizations/${org}/activities/${fbActId}/start-execution`, { version: bv.version })
@@ -120,7 +122,9 @@ if (afterFin.status === 'REVIEWING') {
   // 两个独立会话并发提交同一账号的反馈
   const s1 = S(); const s2 = S()
   await s1.login(OWNER_USER, 'Demo12345!'); await s2.login(OWNER_USER, 'Demo12345!')
-  const body = { rating: 5, comment: '审核并发提交取证' }
+  const loadedFeedback = await s1.json(`/api/organizations/${org}/activities/${fbActId}/feedback`)
+  const loadedFeedbackVersion = loadedFeedback.body?.myVersion ?? 0
+  const body = { rating: 5, comment: '审核并发提交取证', version: loadedFeedbackVersion }
   const [r1, r2] = await Promise.all([
     s1.write('POST', `/api/organizations/${org}/activities/${fbActId}/feedback`, body),
     s2.write('POST', `/api/organizations/${org}/activities/${fbActId}/feedback`, body),
@@ -132,8 +136,9 @@ if (afterFin.status === 'REVIEWING') {
     反馈总数: summary.body?.count,
     结论: [r1.status, r2.status].includes(500) ? '出现 500 → 唯一键未兜底成立' : '未出现 500 → 未复现',
   })
-  // 串行重复提交（双击场景）
-  const s3 = await s1.write('POST', `/api/organizations/${org}/activities/${fbActId}/feedback`, { rating: 4, comment: '串行重复提交' })
+  // 串行重复提交（双击场景）：沿用点击时的原版本，不刷新版本掩盖重复提交。
+  const s3 = await s1.write('POST', `/api/organizations/${org}/activities/${fbActId}/feedback`,
+    { rating: 4, comment: '串行重复提交', version: loadedFeedbackVersion })
   note('CONC-01 串行重复提交', { status: s3.status, code: s3.body?.code })
 }
 

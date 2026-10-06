@@ -29,6 +29,14 @@
         WHERE id = #{id}
     </select>
 
+    <select id="findByIdForUpdate" resultType="com.example.activity.modules.account.Account">
+        SELECT id, username, password_hash, status, auth_version FROM account WHERE id = #{id} FOR UPDATE
+    </select>
+
+    <select id="findByUsernameForUpdate" resultType="com.example.activity.modules.account.Account">
+        SELECT id, username, password_hash, status, auth_version FROM account WHERE username = #{username} FOR UPDATE
+    </select>
+
     <update id="updatePasswordAndBumpVersion">
         UPDATE account
         SET password_hash = #{passwordHash},

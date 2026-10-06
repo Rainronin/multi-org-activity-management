@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { readUiLength } from '../../shared/utils/readUiToken'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElButton, ElRadioButton, ElRadioGroup, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import ListPage from '../../shared/components/ListPage.vue'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { advanceTask, fetchMyTasks, type TaskItem } from './p3'
 
@@ -39,6 +39,9 @@ const priorityLabel: Record<string, string> = { HIGH: '高', MEDIUM: '中', LOW:
 
 // R03 模式：请求序号 + 会话代次双守卫。
 let requestSeq = 0
+let alive = true
+let actionGeneration = 0
+watch(orgId, () => { actionGeneration++ }, { flush: 'sync' })
 
 async function loadTasks(): Promise<void> {
   if (!orgId.value) {
@@ -67,9 +70,7 @@ async function loadTasks(): Promise<void> {
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '任务列表加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '任务列表加载失败，请重试。')
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -88,6 +89,15 @@ watch(orgId, () => {
   void loadTasks()
 })
 onMounted(loadTasks)
+function checkTasks(): void {
+  if (!document.hidden && session.status === 'authenticated') void loadTasks()
+}
+onMounted(() => document.addEventListener('visibilitychange', checkTasks))
+onBeforeUnmount(() => {
+  alive = false
+  document.removeEventListener('visibilitychange', checkTasks)
+  requestSeq++
+})
 
 /** P3.3：本人任务按状态筛选（服务端返回全部本人任务，前端筛选不改变权限口径）。 */
 const statusFilter = ref('')
@@ -95,14 +105,25 @@ const visibleTasks = computed(() => (statusFilter.value
   ? tasks.value.filter((task) => task.status === statusFilter.value)
   : tasks.value))
 
-async function guard(fn: () => Promise<void>): Promise<void> {
+function captureAction() {
+  return { orgId: orgId.value, generation: session.capture(), scope: actionGeneration }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.orgId === orgId.value && context.generation === session.generation
+    && context.scope === actionGeneration
+}
+
+async function guard(fn: () => Promise<void>, context = captureAction()): Promise<void> {
+  if (!isActionCurrent(context)) return
   actionError.value = ''
   try {
     await fn()
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
+    if (session.observeUnauthorized(error, context.generation)) {
       return
     }
+    if (!isActionCurrent(context)) return
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
@@ -123,16 +144,18 @@ function nextStatus(task: TaskItem): string | null {
 }
 
 function advance(task: TaskItem) {
+  const context = captureAction()
   const next = nextStatus(task)
   if (!next) {
     return
   }
   actingId.value = task.taskId
   void guard(async () => {
-    await advanceTask(orgId.value, task.activityId.toString(), task.taskId, next)
+    await advanceTask(context.orgId, task.activityId.toString(), task.taskId, next)
+    if (!isActionCurrent(context)) return
     await loadTasks()
-  }).finally(() => {
-    actingId.value = ''
+  }, context).finally(() => {
+    if (isActionCurrent(context)) actingId.value = ''
   })
 }
 

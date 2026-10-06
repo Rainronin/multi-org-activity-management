@@ -36,7 +36,7 @@ public class NotificationService {
 
     public record NotificationItem(
         Long notificationId, String type, String payload, OffsetDateTime createdAt,
-        OffsetDateTime readAt, String activityId, String activityName, boolean accessible) {
+        OffsetDateTime readAt, String activityId, String activityName, String activityPath, boolean accessible) {
     }
 
     public record NotificationPage(List<NotificationItem> items, int page, int pageSize, long total, long unread) {
@@ -68,7 +68,7 @@ public class NotificationService {
         int from = Math.min((page - 1) * pageSize, accessible.size());
         int to = Math.min(from + pageSize, accessible.size());
         return new NotificationPage(accessible.subList(from, to), page, pageSize, accessible.size(),
-            notificationMapper.countUnread(accountId));
+            accessible.stream().filter(item -> item.readAt() == null).count());
     }
 
     /** 未读数量：同样只统计仍可访问的条目。 */
@@ -95,19 +95,27 @@ public class NotificationService {
     private NotificationItem toItem(Long accountId, Notification notification) {
         Activity activity = notification.getActivityId() == null
             ? null : activityMapper.findById(notification.getActivityId());
-        boolean accessible = activity != null && canAccess(accountId, activity);
+        OrganizationMember member = activity == null ? null : memberMapper.findActive(activity.getOrgId(), accountId);
+        boolean accessible = activity != null && canAccess(accountId, activity, member);
+        String activityPath = null;
+        if (accessible) {
+            if (activity.isVisibleTo(member, accountId)) {
+                activityPath = "/org/" + activity.getOrgId() + "/activities/" + activity.getId();
+            } else if (Activity.isPublished(activity.getStatus())) {
+                activityPath = "/public/activities/" + activity.getId();
+            }
+        }
         return new NotificationItem(
             notification.getId(), notification.getType(), notification.getPayload(),
             notification.getCreatedAt(), notification.getReadAt(),
             activity == null ? null : String.valueOf(activity.getId()),
             // 名称随访问权限一起判定：不可访问时不下发任何活动信息
-            accessible ? activity.getName() : null,
+            accessible ? activity.getName() : null, activityPath,
             accessible);
     }
 
     /** 当前是否仍可访问该活动：有效成员且活动可见，或公开活动的报名者按外部身份保留。 */
-    private boolean canAccess(Long accountId, Activity activity) {
-        OrganizationMember member = memberMapper.findActive(activity.getOrgId(), accountId);
+    private boolean canAccess(Long accountId, Activity activity, OrganizationMember member) {
         if (member != null && activity.isVisibleTo(member, accountId)) {
             return true;
         }

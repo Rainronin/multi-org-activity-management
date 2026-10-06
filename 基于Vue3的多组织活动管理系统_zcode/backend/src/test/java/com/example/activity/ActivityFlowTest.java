@@ -101,6 +101,106 @@ class ActivityFlowTest extends ActivityTestBase {
     }
 
     @Test
+    void creationKeyCannotReplayAnotherOwnersActivity() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession otherOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, otherOwner, orgId);
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/"
+                + memberIdOf(orgId, otherOwner.username()) + "/promote-owner")
+                .with(csrf()).session(owner.session()))
+            .andExpect(status().isOk());
+        String path = "/api/organizations/" + orgId + "/activities";
+        String key = newIdempotencyKey();
+        String body = "{\"name\":\"原创建意图\",\"ownerMemberId\":" + memberIdOf(orgId, owner.username()) + "}";
+        MvcResult first = mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        String id = com.jayway.jsonpath.JsonPath.read(first.getResponse().getContentAsString(), "$.id");
+        mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value(id));
+        mockMvc.perform(post(path).with(csrf()).session(otherOwner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        Assertions.assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM activity WHERE org_id = ?", Integer.class, orgId)).isEqualTo(1);
+    }
+
+    @Test
+    void creationKeyDistinguishesMissingDescriptionFromLiteralNull() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String path = "/api/organizations/" + orgId + "/activities";
+        String key = newIdempotencyKey();
+        String body = "{\"name\":\"原活动\",\"ownerMemberId\":" + memberIdOf(orgId, owner.username()) + "}";
+        mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated());
+        mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content(body.replace("}", ",\"description\":\"null\"}")))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        Assertions.assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM activity WHERE org_id = ?",
+            Integer.class, orgId)).isEqualTo(1);
+    }
+
+    @Test
+    void ambiguousLegacyCreationKeyRequiresManualVerification() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long memberId = memberIdOf(orgId, owner.username());
+        String path = "/api/organizations/" + orgId + "/activities";
+        String key = newIdempotencyKey();
+        String body = "{\"name\":\"旧歧义活动\",\"ownerMemberId\":" + memberId + "}";
+        MvcResult created = mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        String id = com.jayway.jsonpath.JsonPath.read(created.getResponse().getContentAsString(), "$.id");
+        String legacy = com.example.activity.common.SecureCodes.hash(
+            "旧歧义活动\u001f%d\u001fnull\u001fnull\u001fnull\u001fnull\u001fINTERNAL\u001fnull\u001fnull\u001fnull\u001f0".formatted(memberId));
+        jdbcTemplate.update("UPDATE activity SET request_fingerprint = ? WHERE id = ?", legacy, id);
+        for (String request : new String[] {body, body.replace("}", ",\"description\":\"null\"}")}) {
+            mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                    .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_RESULT_UNVERIFIABLE"));
+        }
+        Assertions.assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM activity WHERE org_id = ?",
+            Integer.class, orgId)).isEqualTo(1);
+        Assertions.assertThat(jdbcTemplate.queryForObject("SELECT request_fingerprint FROM activity WHERE id = ?",
+            String.class, id)).isEqualTo(legacy);
+    }
+
+    @Test
+    void legacyCreationKeyStillReplaysOriginalInputAfterEditing() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long memberId = memberIdOf(orgId, owner.username());
+        String path = "/api/organizations/" + orgId + "/activities";
+        String key = newIdempotencyKey();
+        String body = "{\"name\":\"旧活动\",\"ownerMemberId\":" + memberId
+            + ",\"description\":\"原简介\",\"location\":\"原地点\"}";
+        MvcResult created = mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        String id = com.jayway.jsonpath.JsonPath.read(created.getResponse().getContentAsString(), "$.id");
+        // V14原请求的手工展开值；不使用生产指纹函数推导预期。
+        String legacy = com.example.activity.common.SecureCodes.hash(
+            "旧活动\u001f%d\u001f原简介\u001fnull\u001fnull\u001f原地点\u001fINTERNAL\u001fnull\u001fnull\u001fnull\u001f0".formatted(memberId));
+        jdbcTemplate.update("UPDATE activity SET request_fingerprint = ? WHERE id = ?", legacy, id);
+        mockMvc.perform(patch(path + "/" + id).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"已编辑活动\",\"version\":1}"))
+            .andExpect(status().isOk());
+        mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value(id))
+            .andExpect(jsonPath("$.name").value("已编辑活动"));
+        Assertions.assertThat(jdbcTemplate.queryForObject("SELECT request_fingerprint FROM activity WHERE id = ?",
+            String.class, id)).isEqualTo(legacy);
+    }
+
+    @Test
     void ownerCreatesDraftAssigningMemberAsActivityOwner() throws Exception {
         TestSession owner = registerAndLogin();
         TestSession member = registerAndLogin();

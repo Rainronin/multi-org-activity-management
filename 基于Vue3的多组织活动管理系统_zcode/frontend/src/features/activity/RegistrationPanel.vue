@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { readUiLength } from '../../shared/utils/readUiToken'
 import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElPagination, ElSelect,
   ElSkeleton, ElSwitch, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import type { FormInstance, FormRules } from 'element-plus'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { resolveMyMemberId } from './p3'
@@ -41,7 +41,7 @@ const mine = ref<RegistrationItem | null>(null)
 const roster = ref<RegistrationItem[]>([])
 const myMemberId = ref<string | null>(null)
 const loading = ref(false)
-/** 是否已完成一次成功读取；未完成时的空名册只能显示“正在加载”，不能显示“暂无”。 */
+/** 成功读取后才能展示本人报名和空名单；失败时只保留错误与重试。 */
 const loaded = ref(false)
 /** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
 const skeleton = useLoadingSkeleton()
@@ -51,6 +51,8 @@ const acting = ref('')
 const applyVisible = ref(false)
 const applySubmitting = ref(false)
 const applyForm = ref({ displayName: '', note: '' })
+let initialApplyForm = ''
+let applyVersion = 0
 /** F10：报名表单失焦即校验，提交前再整体校验一次。 */
 const applyFormRef = ref<FormInstance | null>(null)
 const applyRules: FormRules = {
@@ -65,6 +67,10 @@ const rejectVisible = ref(false)
 const rejectTarget = ref<RegistrationItem | null>(null)
 const rejectReason = ref('')
 const rejectSubmitting = ref(false)
+const formSubmitting = computed(() => applySubmitting.value || rejectSubmitting.value)
+const applyDirty = computed(() => applyVisible.value && JSON.stringify(applyForm.value) !== initialApplyForm)
+const rejectDirty = computed(() => rejectVisible.value && Boolean(rejectReason.value.trim()))
+let rejectContext: ReturnType<typeof captureAction> | null = null
 
 const toggleSaving = ref(false)
 const rosterFilter = ref('')
@@ -99,13 +105,32 @@ const statusType: Record<string, 'success' | 'info' | 'warning' | 'danger'> = {
 }
 
 let requestSeq = 0
+let alive = true
+let actionGeneration = 0
+watch([orgId, activityId, () => session.generation, canManage], () => {
+  actionGeneration++
+  acting.value = ''
+  applySubmitting.value = false
+  rejectSubmitting.value = false
+  toggleSaving.value = false
+  if (!canManage.value) {
+    rejectVisible.value = false
+    rejectContext = null
+  }
+}, { flush: 'sync' })
+onBeforeUnmount(() => {
+  alive = false
+  requestSeq++
+})
 
 async function loadAll(): Promise<void> {
-  if (!orgId.value || !activityId.value) {
+  if (!alive || !orgId.value || !activityId.value) {
     return
   }
   const seq = ++requestSeq
   const gen = session.capture()
+  const targetOrg = orgId.value
+  const targetActivity = activityId.value
   loading.value = true
   // 已有名册时是后台刷新，不重放骨架
   if (roster.value.length > 0) {
@@ -117,9 +142,9 @@ async function loadAll(): Promise<void> {
   try {
     const [mineItems, memberId] = await Promise.all([
       fetchMyRegistrations(),
-      resolveMyMemberId(orgId.value, session.account?.username ?? ''),
+      resolveMyMemberId(targetOrg, session.account?.username ?? ''),
     ])
-    const current = mineItems.find((item) => item.activityId === activityId.value) ?? null
+    const current = mineItems.find((item) => item.activityId === targetActivity) ?? null
     if (seq !== requestSeq || gen !== session.generation) {
       return
     }
@@ -127,7 +152,7 @@ async function loadAll(): Promise<void> {
     myMemberId.value = memberId
     if (canManage.value) {
       const page = await fetchActivityRegistrations(
-        orgId.value, activityId.value, rosterFilter.value || undefined, rosterPage.value, ROSTER_PAGE_SIZE,
+        targetOrg, targetActivity, rosterFilter.value || undefined, rosterPage.value, ROSTER_PAGE_SIZE,
       )
       if (seq !== requestSeq || gen !== session.generation) {
         return
@@ -150,14 +175,12 @@ async function loadAll(): Promise<void> {
       return
     }
     roster.value = []
-    // 失败不冒充空态：名册继续显示“正在加载…”而不是“暂无”
+    // 失败不冒充加载或空态，保留表单草稿供用户重试。
     loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '报名信息加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '报名信息加载失败，请重试。')
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -167,6 +190,12 @@ async function loadAll(): Promise<void> {
 }
 
 watch([orgId, activityId], () => {
+  mine.value = null
+  myMemberId.value = null
+  applyVisible.value = false
+  rejectVisible.value = false
+  rejectTarget.value = null
+  rejectContext = null
   roster.value = []
   loaded.value = false
   skeleton.hide()
@@ -185,14 +214,25 @@ watch(rosterPage, () => {
 })
 onMounted(loadAll)
 
-async function guard(fn: () => Promise<void>): Promise<void> {
+function captureAction() {
+  return { orgId: orgId.value, activityId: activityId.value, generation: session.capture(), scope: actionGeneration }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.orgId === orgId.value && context.activityId === activityId.value
+    && context.generation === session.generation && context.scope === actionGeneration
+}
+
+async function guard(fn: (context: ReturnType<typeof captureAction>) => Promise<void>, context = captureAction()): Promise<unknown> {
+  if (!isActionCurrent(context)) return
   errorText.value = ''
   try {
-    await fn()
+    await fn(context)
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
-      return
+    if (session.observeUnauthorized(error, context.generation)) {
+      return error
     }
+    if (!isActionCurrent(context)) return error
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
@@ -203,121 +243,183 @@ async function guard(fn: () => Promise<void>): Promise<void> {
     } else {
       errorText.value = '网络连接失败，请检查网络后重试。'
     }
+    return error
   }
 }
 
 function openApply() {
+  applyVersion = mine.value?.version ?? 0
   applyForm.value = {
     displayName: mine.value?.displayName ?? session.account?.username ?? '',
     note: mine.value?.note ?? '',
   }
+  initialApplyForm = JSON.stringify(applyForm.value)
+  errorText.value = ''
   applyVisible.value = true
 }
 
-async function submitApply() {
-  const form = applyFormRef.value
-  if (form) {
-    const valid = await form.validate().catch(() => false)
-    if (!valid) {
-      return
-    }
-  }
-  applySubmitting.value = true
-  await guard(async () => {
-    await applyRegistration(activityId.value, {
-      displayName: applyForm.value.displayName.trim(),
-      note: applyForm.value.note.trim() || undefined,
+async function confirmDiscard(dirty: boolean): Promise<boolean> {
+  if (formSubmitting.value) return false
+  if (!dirty) return true
+  try {
+    await ElMessageBox.confirm('填写内容还未保存，确定放弃填写？', '未保存的修改', {
+      confirmButtonText: '放弃填写', cancelButtonText: '继续编辑', type: 'warning',
     })
-    applyVisible.value = false
-    await loadAll()
-    emit('changed')
-  })
-  applySubmitting.value = false
+    return true
+  } catch { return false }
+}
+
+async function closeApply(done?: () => void) {
+  if (!await confirmDiscard(applyDirty.value)) return
+  if (done) done()
+  else applyVisible.value = false
+}
+
+async function closeReject(done?: () => void) {
+  if (!await confirmDiscard(rejectDirty.value)) return
+  if (done) done()
+  else rejectVisible.value = false
+}
+
+async function submitApply() {
+  if (formSubmitting.value) return
+  const context = captureAction()
+  applySubmitting.value = true
+  try {
+    const form = applyFormRef.value
+    if (form) {
+      const valid = await form.validate().catch(() => false)
+      if (!valid) return
+    }
+    if (!isActionCurrent(context)) return
+    await guard(async () => {
+      await applyRegistration(context.activityId, {
+        displayName: applyForm.value.displayName.trim(),
+        note: applyForm.value.note.trim() || undefined,
+        version: applyVersion,
+      })
+      if (!isActionCurrent(context)) return
+      applyVisible.value = false
+      await loadAll()
+      if (isActionCurrent(context)) emit('changed')
+    }, context)
+  } finally {
+    if (isActionCurrent(context)) applySubmitting.value = false
+  }
 }
 
 function cancelMine() {
+  const context = captureAction()
+  const version = mine.value?.version
+  if (version === undefined) return
   acting.value = 'mine'
   void ElMessageBox.confirm('确定取消本人报名？名额将立即释放。', '取消报名', {
     confirmButtonText: '取消报名', cancelButtonText: '返回', type: 'warning',
   })
     .then(() => guard(async () => {
-      await cancelMyRegistration(activityId.value)
+      await cancelMyRegistration(context.activityId, version)
+      if (!isActionCurrent(context)) return
       await loadAll()
-      emit('changed')
-    }))
+      if (isActionCurrent(context)) emit('changed')
+    }, context))
     .catch(() => undefined)
     .finally(() => {
-      acting.value = ''
+      if (isActionCurrent(context)) acting.value = ''
     })
 }
 
 async function toggleOpen(value: boolean) {
+  if (toggleSaving.value) return
+  const context = captureAction()
   toggleSaving.value = true
   await guard(async () => {
-    registrationOpen.value = await setRegistrationOpen(orgId.value, activityId.value, value)
+    const open = await setRegistrationOpen(context.orgId, context.activityId, value)
+    if (!isActionCurrent(context)) return
+    registrationOpen.value = open
     emit('changed')
-  })
-  toggleSaving.value = false
+  }, context)
+  if (isActionCurrent(context)) toggleSaving.value = false
 }
 
 function approve(item: RegistrationItem) {
+  const context = captureAction()
   acting.value = item.registrationId
   void guard(async () => {
-    await approveRegistration(orgId.value, activityId.value, item.registrationId)
+    await approveRegistration(context.orgId, context.activityId, item.registrationId, item.version)
+    if (!isActionCurrent(context)) return
     await loadAll()
-    emit('changed')
-  }).finally(() => {
-    acting.value = ''
+    if (isActionCurrent(context)) emit('changed')
+  }, context).finally(() => {
+    if (isActionCurrent(context)) acting.value = ''
   })
 }
 
 function openReject(item: RegistrationItem) {
-  rejectTarget.value = item
+  rejectContext = captureAction()
+  rejectTarget.value = { ...item }
   rejectReason.value = ''
+  errorText.value = ''
   rejectVisible.value = true
 }
 
 async function submitReject() {
   const target = rejectTarget.value
-  if (!target) {
+  const context = rejectContext
+  if (!target || !context || !isActionCurrent(context) || formSubmitting.value) {
     return
   }
   rejectSubmitting.value = true
   await guard(async () => {
-    await rejectRegistration(orgId.value, activityId.value, target.registrationId, rejectReason.value.trim())
+    await rejectRegistration(context.orgId, context.activityId, target.registrationId, rejectReason.value.trim(), target.version)
+    if (!isActionCurrent(context)) return
     rejectVisible.value = false
     rejectTarget.value = null
     await loadAll()
-  })
-  rejectSubmitting.value = false
+  }, context)
+  if (isActionCurrent(context)) rejectSubmitting.value = false
 }
 
 function cancelByManager(item: RegistrationItem) {
+  const context = captureAction()
   acting.value = item.registrationId
   void ElMessageBox.prompt('请填写取消原因', '管理取消报名', {
     confirmButtonText: '取消报名', cancelButtonText: '返回',
     inputPlaceholder: '例如：报名者请假',
     inputValidator: (value) => (value && value.trim() ? true : '必须填写原因'),
+    beforeClose: async (action, instance, done) => {
+      if (instance.confirmButtonLoading) return
+      if (action !== 'confirm') { done(); return }
+      instance.confirmButtonLoading = true
+      const failure = await guard(async () => {
+        await cancelRegistrationByManager(context.orgId, context.activityId, item.registrationId, instance.inputValue.trim(), item.version)
+        if (isActionCurrent(context)) await loadAll()
+      }, context)
+      instance.confirmButtonLoading = false
+      if (!failure || !isActionCurrent(context)) done()
+      else instance.editorErrorMessage = errorText.value
+    },
   })
-    .then(({ value }) => guard(async () => {
-      await cancelRegistrationByManager(orgId.value, activityId.value, item.registrationId, value.trim())
-      await loadAll()
-    }))
     .catch(() => undefined)
     .finally(() => {
-      acting.value = ''
+      if (isActionCurrent(context)) acting.value = ''
     })
 }
 
 function exportRoster() {
-  void guard(async () => {
+  void guard(async (context) => {
     // F09：超限时后端 409 EXPORT_TOO_LARGE，按业务错误提示而不是下载出错页
-    const blob = await exportRegistrationRoster(orgId.value, activityId.value, rosterFilter.value || undefined)
-    saveRosterCsv(blob, activityId.value, rosterFilter.value || undefined)
+    const filter = rosterFilter.value || undefined
+    const blob = await exportRegistrationRoster(context.orgId, context.activityId, filter)
+    if (!isActionCurrent(context)) return
+    saveRosterCsv(blob, context.activityId, filter)
   })
 }
 
-defineExpose({ reload: loadAll })
+defineExpose({
+  reload: loadAll,
+  hasUnsavedForm: () => applyDirty.value || rejectDirty.value,
+  isSubmitting: () => formSubmitting.value,
+})
 </script>
 
 <template>
@@ -348,11 +450,17 @@ defineExpose({ reload: loadAll })
     </div>
 
     <p
-      v-if="errorText"
+      v-if="errorText && !applyVisible && !rejectVisible"
       class="reg-error"
       role="alert"
     >
       {{ errorText }}
+      <ElButton
+        size="small"
+        @click="loadAll"
+      >
+        重新加载
+      </ElButton>
     </p>
 
     <p
@@ -362,18 +470,28 @@ defineExpose({ reload: loadAll })
       报名开关仅在活动已确认且尚未开始时可以调整。
     </p>
 
-    <div class="reg-mine">
+    <div
+      v-if="loading || loaded"
+      class="reg-mine"
+    >
       <div class="reg-mine__row">
         <span class="reg-label">我的报名</span>
+        <span
+          v-if="loading && !loaded"
+          class="reg-note"
+          role="status"
+        >
+          正在加载本人报名…
+        </span>
         <ElTag
-          v-if="mine"
+          v-else-if="mine"
           size="small"
           :type="statusType[mine.status] ?? 'info'"
         >
           {{ registrationStatusLabel[mine.status] ?? mine.status }}
         </ElTag>
         <span
-          v-else
+          v-else-if="loaded"
           class="reg-note"
         >
           尚未报名
@@ -385,7 +503,10 @@ defineExpose({ reload: loadAll })
       >
         处理说明：{{ mine.cancelReason }}
       </p>
-      <div class="reg-mine__actions">
+      <div
+        v-if="loaded"
+        class="reg-mine__actions"
+      >
         <ElButton
           size="small"
           type="primary"
@@ -439,7 +560,7 @@ defineExpose({ reload: loadAll })
         </ElSelect>
       </div>
       <ElSkeleton
-        v-if="skeleton.loading.value && roster.length === 0"
+        v-if="(loading || loaded) && skeleton.loading.value && roster.length === 0"
         :rows="4"
         animated
         data-registration-skeleton
@@ -447,7 +568,7 @@ defineExpose({ reload: loadAll })
         aria-label="正在加载报名名单"
       />
       <ElTable
-        v-else
+        v-else-if="loading || loaded"
         :data="roster"
       >
         <template #empty>
@@ -520,7 +641,7 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
       </ElTable>
       <ElPagination
-        v-if="rosterTotal > ROSTER_PAGE_SIZE"
+        v-if="loaded && rosterTotal > ROSTER_PAGE_SIZE"
         class="reg-panel__pager"
         layout="prev, pager, next, total"
         :total="rosterTotal"
@@ -534,12 +655,18 @@ defineExpose({ reload: loadAll })
       v-model="applyVisible"
       :title="mine ? '更新报名信息' : '报名'"
       width="var(--ui-dialog-width)"
+      :before-close="closeApply"
+      :close-on-click-modal="!formSubmitting"
+      :close-on-press-escape="!formSubmitting"
+      :show-close="!formSubmitting"
     >
       <ElForm
         ref="applyFormRef"
         :model="applyForm"
         :rules="applyRules"
+        :disabled="formSubmitting"
         label-position="top"
+        @submit.prevent="submitApply"
       >
         <ElFormItem
           label="展示姓名"
@@ -551,7 +678,10 @@ defineExpose({ reload: loadAll })
             placeholder="报名姓名（1-64 字符）"
           />
         </ElFormItem>
-        <ElFormItem label="备注">
+        <ElFormItem
+          label="备注"
+          prop="note"
+        >
           <ElInput
             v-model="applyForm.note"
             type="textarea"
@@ -560,13 +690,24 @@ defineExpose({ reload: loadAll })
           />
         </ElFormItem>
       </ElForm>
+      <p
+        v-if="errorText"
+        class="reg-panel__error"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
       <template #footer>
-        <ElButton @click="applyVisible = false">
+        <ElButton
+          :disabled="formSubmitting"
+          @click="closeApply()"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
           :loading="applySubmitting"
+          :disabled="formSubmitting"
           @click="submitApply"
         >
           提交
@@ -578,8 +719,16 @@ defineExpose({ reload: loadAll })
       v-model="rejectVisible"
       title="驳回报名"
       width="var(--ui-dialog-width)"
+      :before-close="closeReject"
+      :close-on-click-modal="!formSubmitting"
+      :close-on-press-escape="!formSubmitting"
+      :show-close="!formSubmitting"
     >
-      <ElForm label-position="top">
+      <ElForm
+        label-position="top"
+        :disabled="formSubmitting"
+        @submit.prevent="submitReject"
+      >
         <ElFormItem
           label="驳回原因"
           required
@@ -592,13 +741,24 @@ defineExpose({ reload: loadAll })
           />
         </ElFormItem>
       </ElForm>
+      <p
+        v-if="errorText"
+        class="reg-panel__error"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
       <template #footer>
-        <ElButton @click="rejectVisible = false">
+        <ElButton
+          :disabled="formSubmitting"
+          @click="closeReject()"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
           :loading="rejectSubmitting"
+          :disabled="formSubmitting"
           @click="submitReject"
         >
           确认驳回

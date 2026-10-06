@@ -87,7 +87,8 @@ class RegistrationAuthorityTest extends FlowTestSupport {
         switchRegistration(owner, orgId, activityId, true, 200);
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("APPROVED"));
 
@@ -98,7 +99,8 @@ class RegistrationAuthorityTest extends FlowTestSupport {
             .andExpect(jsonPath("$.items[0].status").value("APPROVED"));
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isConflict());
     }
 
@@ -121,16 +123,18 @@ class RegistrationAuthorityTest extends FlowTestSupport {
         assertThat(applyStatus(member, activityId)).isEqualTo(400);
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isConflict());
         mockMvc.perform(post("/api/activities/" + activityId + "/registrations/cancel-self")
-                .with(csrf()).session(member.session()))
+                .with(csrf()).session(member.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isConflict());
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + pendingRegistrationId + "/cancel-org")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"开始后清理\"}"))
+                .content(registrationVersioned(pendingRegistrationId, "{\"reason\":\"开始后清理\"}")))
             .andExpect(status().isConflict());
         assertThat(jdbcTemplate.queryForObject(
             "SELECT status FROM registration WHERE id = ?", String.class, registrationId)).isEqualTo("PENDING");
@@ -140,7 +144,7 @@ class RegistrationAuthorityTest extends FlowTestSupport {
                 + "/registrations/" + registrationId + "/reject")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"已开始，未获批准\"}"))
+                .content(registrationVersioned(registrationId, "{\"reason\":\"已开始，未获批准\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("REJECTED"));
     }
@@ -167,14 +171,15 @@ class RegistrationAuthorityTest extends FlowTestSupport {
 
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(delegate.session()))
+                .with(csrf()).session(delegate.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
 
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/cancel-org")
                 .with(csrf()).session(delegate.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"报名者请假\"}"))
+                .content(registrationVersioned(registrationId, "{\"reason\":\"报名者请假\"}")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("CANCELLED_ORG"));
         assertThat(jdbcTemplate.queryForObject(

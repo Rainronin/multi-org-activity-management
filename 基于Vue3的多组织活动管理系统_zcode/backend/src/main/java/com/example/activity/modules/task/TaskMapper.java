@@ -12,6 +12,11 @@ public interface TaskMapper {
 
     Task findById(@Param("id") Long id);
 
+    /** 写入前锁住任务并读取当前承担者、状态与版本。 */
+    Task findByIdForUpdate(@Param("id") Long id);
+
+    Task findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
     /**
      * S08／F07 锁协议：任务行共享锁（附件登记等子记录写入前按「组织 → 活动 → 任务」取锁）。
      * 与任务改派的 UPDATE 互斥，避免改派与资料登记各自按旧承担者判断。

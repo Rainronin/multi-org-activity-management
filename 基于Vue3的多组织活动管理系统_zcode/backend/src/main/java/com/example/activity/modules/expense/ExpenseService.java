@@ -1,6 +1,7 @@
 package com.example.activity.modules.expense;
 
 import com.example.activity.common.ApiException;
+import com.example.activity.common.RequestFingerprint;
 import com.example.activity.common.audit.AuditService;
 import com.example.activity.modules.activity.Activity;
 import com.example.activity.modules.activity.ActivityMapper;
@@ -115,14 +116,15 @@ public class ExpenseService {
     @Transactional
     public ExpenseItem create(
         Long accountId, Long orgId, Long activityId, String idempotencyKey, Expense draft) {
-        Context ctx = requireRegisterContext(accountId, orgId, activityId);
+        Context ctx = lockManageContext(accountId, orgId, activityId);
         String requestKey = requireIdempotencyKey(idempotencyKey);
         validateDraft(draft);
         String fingerprint = fingerprintOf(draft, null);
         Expense existing = expenseMapper.findByRequestKey(orgId, requestKey);
         if (existing != null) {
-            return replayResult(existing, fingerprint);
+            return replayResult(existing, fingerprint, accountId, activityId, draft, null);
         }
+        requirePreparationWritable(ctx.activity());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
         draft.setStatus(Expense.STATUS_DRAFT);
@@ -136,10 +138,11 @@ public class ExpenseService {
             if (committed == null) {
                 throw duplicate;
             }
-            return replayResult(committed, fingerprint);
+            return replayResult(committed, fingerprint, accountId, activityId, draft, null);
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_DRAFT_CREATED", "expense:" + draft.getId(),
-            null, Map.of("activityId", activityId, "amount", money(draft.getAmount())));
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_DRAFT_CREATED", "expense:" + draft.getId(),
+            null, Map.of("activityId", activityId, "amount", money(draft.getAmount())),
+            null, auditState(expenseMapper.findById(draft.getId())));
         return toItem(expenseMapper.findById(draft.getId()));
     }
 
@@ -149,7 +152,7 @@ public class ExpenseService {
         Long accountId, Long orgId, Long activityId, Long expenseId, Expense patch) {
         requireRegisterContext(accountId, orgId, activityId);
         requireVersion(patch.getVersion());
-        Expense expense = requireExpense(orgId, activityId, expenseId);
+        Expense expense = requireLockedExpense(orgId, activityId, expenseId);
         if (!expense.isEditable()) {
             throw conflict("EXPENSE_STATE_CONFLICT", "支出状态不允许修改",
                 "待确认与已确认的支出不能直接修改；已确认请先作废再建立更正记录。");
@@ -161,8 +164,8 @@ public class ExpenseService {
             throw conflict("EDIT_CONFLICT", "支出已被他人修改",
                 "该支出已由其他操作保存（当前版本 " + expense.getVersion() + "），请刷新后重新编辑。");
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_UPDATED", "expense:" + expenseId,
-            null, Map.of("activityId", activityId));
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_UPDATED", "expense:" + expenseId,
+            null, Map.of("activityId", activityId), auditState(expense), auditState(expenseMapper.findById(expenseId)));
         return toItem(expenseMapper.findById(expenseId));
     }
 
@@ -171,7 +174,7 @@ public class ExpenseService {
     public ExpenseItem submit(Long accountId, Long orgId, Long activityId, Long expenseId, Long version) {
         requireRegisterContext(accountId, orgId, activityId);
         requireVersion(version);
-        Expense expense = requireExpense(orgId, activityId, expenseId);
+        Expense expense = requireLockedExpense(orgId, activityId, expenseId);
         if (!expense.isEditable()) {
             throw conflict("EXPENSE_STATE_CONFLICT", "支出状态不允许提交", "仅草稿或已驳回的支出可以提交。");
         }
@@ -184,8 +187,8 @@ public class ExpenseService {
                 expenseId, expense.getStatus(), Expense.STATUS_PENDING, accountId, null, null, true, null) != 1) {
             throw conflict("EDIT_CONFLICT", "支出已被他人修改", "该支出状态或版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_SUBMITTED", "expense:" + expenseId,
-            null, Map.of("activityId", activityId));
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_SUBMITTED", "expense:" + expenseId,
+            null, Map.of("activityId", activityId), auditState(expense), auditState(expenseMapper.findById(expenseId)));
         String activityName = requireActivityName(activityId);
         for (Long owner : memberMapper.listActiveOwnerAccountIds(orgId)) {
             if (!owner.equals(accountId)) {
@@ -227,9 +230,10 @@ public class ExpenseService {
                 null, accountId, null, false, note) != 1) {
             throw conflict("EXPENSE_STATE_CONFLICT", "支出状态不允许确认", "该支出状态已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_APPROVED", "expense:" + expenseId, note,
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_APPROVED", "expense:" + expenseId, note,
             Map.of("activityId", activityId, "amount", money(expense.getAmount()),
-                "approvedTotal", money(projected), "overBudget", projected.compareTo(budget) > 0));
+                "approvedTotal", money(projected), "overBudget", projected.compareTo(budget) > 0),
+            auditState(expense), auditState(expenseMapper.findById(expenseId)));
         notifyIntent(expense.getSubmittedBy() == null ? expense.getCreatedBy() : expense.getSubmittedBy(),
             "EXPENSE_APPROVED", activityId, "你登记的支出已确认。", accountId,
             "expense:" + expenseId + ":approved");
@@ -250,8 +254,8 @@ public class ExpenseService {
                 expenseId, Expense.STATUS_PENDING, Expense.STATUS_REJECTED, null, accountId, reason, false, null) != 1) {
             throw conflict("EDIT_CONFLICT", "支出已被他人修改", "该支出状态或版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_REJECTED", "expense:" + expenseId, reason,
-            Map.of("activityId", activityId));
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_REJECTED", "expense:" + expenseId, reason,
+            Map.of("activityId", activityId), auditState(expense), auditState(expenseMapper.findById(expenseId)));
         notifyIntent(expense.getSubmittedBy() == null ? expense.getCreatedBy() : expense.getSubmittedBy(),
             "EXPENSE_REJECTED", activityId, "你登记的支出被驳回：" + (reason == null ? "" : reason), accountId,
             "expense:" + expenseId + ":rejected");
@@ -273,28 +277,30 @@ public class ExpenseService {
         if (!expense.getVersion().equals(version) || expenseMapper.voidApproved(expenseId, accountId, reason) != 1) {
             throw conflict("EDIT_CONFLICT", "支出已被他人修改", "该支出状态或版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "EXPENSE", "EXPENSE_VOIDED", "expense:" + expenseId, reason,
-            Map.of("activityId", activityId, "amount", money(expense.getAmount())));
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_VOIDED", "expense:" + expenseId, reason,
+            Map.of("activityId", activityId, "amount", money(expense.getAmount())),
+            auditState(expense), auditState(expenseMapper.findById(expenseId)));
         return toItem(expenseMapper.findById(expenseId));
     }
 
-    /** 更正登记：原记录必须是已作废或已确认；新记录关联原记录，重新提交与确认后只计一次。 */
+    /** 更正登记：原已确认记录必须先作废；新记录关联原记录，重新提交与确认后只计一次。 */
     @Transactional
     public ExpenseItem createCorrection(
         Long accountId, Long orgId, Long activityId, Long originalId, String idempotencyKey, Expense draft) {
-        Context ctx = requireRegisterContext(accountId, orgId, activityId);
+        Context ctx = lockManageContext(accountId, orgId, activityId);
         Expense original = requireExpense(orgId, activityId, originalId);
-        if (Expense.STATUS_DRAFT.equals(original.getStatus()) || Expense.STATUS_PENDING.equals(original.getStatus())) {
-            throw conflict("EXPENSE_STATE_CONFLICT", "原纪录状态不允许更正",
-                "更正针对已确认或已作废的支出；草稿与待确认请直接修改。");
+        if (!Expense.STATUS_VOIDED.equals(original.getStatus())) {
+            throw conflict("EXPENSE_STATE_CONFLICT", "原记录尚未作废",
+                "请先由组织负责人作废原已确认支出，再建立更正登记；草稿、待确认及已驳回记录请直接修改。");
         }
         String requestKey = requireIdempotencyKey(idempotencyKey);
         validateDraft(draft);
         String fingerprint = fingerprintOf(draft, originalId);
         Expense existing = expenseMapper.findByRequestKey(orgId, requestKey);
         if (existing != null) {
-            return replayResult(existing, fingerprint);
+            return replayResult(existing, fingerprint, accountId, activityId, draft, originalId);
         }
+        requirePreparationWritable(ctx.activity());
         draft.setOrgId(orgId);
         draft.setActivityId(activityId);
         draft.setStatus(Expense.STATUS_DRAFT);
@@ -302,9 +308,14 @@ public class ExpenseService {
         draft.setCorrectsExpenseId(originalId);
         draft.setRequestKey(requestKey);
         draft.setRequestFingerprint(fingerprint);
-        expenseMapper.insert(draft);
-        auditService.record(accountId, "EXPENSE", "EXPENSE_CORRECTION_CREATED", "expense:" + draft.getId(),
-            null, Map.of("activityId", activityId, "corrects", originalId));
+        try {
+            expenseMapper.insert(draft);
+        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+            throw conflict("REQUEST_IN_PROGRESS", "相同请求已被受理", "请保留原请求键核对更正结果。");
+        }
+        auditService.recordChange(accountId, "EXPENSE", "EXPENSE_CORRECTION_CREATED", "expense:" + draft.getId(),
+            null, Map.of("activityId", activityId, "corrects", originalId),
+            null, auditState(expenseMapper.findById(draft.getId())));
         return toItem(expenseMapper.findById(draft.getId()));
     }
 
@@ -325,15 +336,17 @@ public class ExpenseService {
 
     /** 读取与登记：组织 → 活动共享锁，锁内重读身份与活动（F04）。 */
     private Context requireRegisterContext(Long accountId, Long orgId, Long activityId) {
-        organizationMapper.lockOrganizationShared(orgId);
-        activityMapper.lockActivityShared(activityId);
-        Context ctx = loadVisible(accountId, orgId, activityId);
-        if (!ctx.canRegister()) {
-            throw notFound();
-        }
+        Context ctx = lockManageContext(accountId, orgId, activityId);
         // 登记费用属于筹备期动作；调整期待确认期间费用只读（计划书 6.1）
         requirePreparationWritable(ctx.activity());
         return ctx;
+    }
+
+    /** 原键核对仍取锁并重新授权；已有结果只读返回，新增才检查可写阶段。 */
+    private Context lockManageContext(Long accountId, Long orgId, Long activityId) {
+        organizationMapper.lockOrganizationShared(orgId);
+        activityMapper.lockActivityShared(activityId);
+        return requireManageContext(accountId, orgId, activityId);
     }
 
     /** 仅查看：不加锁，权限同为组织负责人或活动负责人。 */
@@ -409,6 +422,14 @@ public class ExpenseService {
 
     /** 防重指纹：登记输入的规范化摘要；更正登记把原记录 id 一并纳入。 */
     private String fingerprintOf(Expense draft, Long correctsId) {
+        return "v2:" + RequestFingerprint.of(draft.getPurpose(),
+            draft.getAmount() == null ? null : draft.getAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString(),
+            draft.getIncurredOn(), draft.getCategory(), blankToNull(draft.getHandledNote()),
+            blankToNull(draft.getNoReceiptNote()), correctsId);
+    }
+
+    /** 仅核对旧64位指纹，保留原算法与历史请求兼容；新记录使用字段长度分隔。 */
+    private String legacyFingerprintOf(Expense draft, Long correctsId) {
         String canonical = String.join("\u001f",
             String.valueOf(draft.getPurpose()),
             draft.getAmount() == null ? "null" : draft.getAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString(),
@@ -430,10 +451,19 @@ public class ExpenseService {
         }
     }
 
-    private ExpenseItem replayResult(Expense existing, String fingerprint) {
-        if (!fingerprint.equals(existing.getRequestFingerprint())) {
+    private ExpenseItem replayResult(Expense existing, String fingerprint, Long accountId, Long activityId,
+        Expense draft, Long correctsId) {
+        String stored = existing.getRequestFingerprint();
+        String expected = stored != null && stored.length() == 64 ? legacyFingerprintOf(draft, correctsId) : fingerprint;
+        if (!accountId.equals(existing.getCreatedBy()) || !activityId.equals(existing.getActivityId())
+            || !expected.equals(stored)) {
             throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键",
-                "该 Idempotency-Key 已用于登记内容不同的支出，请使用新的键重试。");
+                "该 Idempotency-Key 已用于其他费用登记请求，请使用新的键重试。");
+        }
+        if (stored.length() == 64 && !RequestFingerprint.legacyTextUnambiguous(
+                draft.getPurpose(), blankToNull(draft.getHandledNote()), blankToNull(draft.getNoReceiptNote()))) {
+            throw conflict("IDEMPOTENCY_RESULT_UNVERIFIABLE", "历史登记结果需人工核对",
+                "该历史请求的旧摘要无法可靠区分原内容，请先在支出列表核对已有记录，不要更换防重键再次登记。");
         }
         return toItem(existing);
     }
@@ -445,6 +475,20 @@ public class ExpenseService {
             throw notFound();
         }
         return expense;
+    }
+
+    private Expense requireLockedExpense(Long orgId, Long activityId, Long expenseId) {
+        Expense expense = expenseMapper.findByIdForUpdate(expenseId);
+        if (expense == null || !expense.getOrgId().equals(orgId) || !expense.getActivityId().equals(activityId)) throw notFound();
+        return expense;
+    }
+
+    private record ExpenseState(String status, Long version, String amount, Long submittedBy, Long decidedBy,
+        Long correctsExpenseId) { }
+
+    private ExpenseState auditState(Expense expense) {
+        return new ExpenseState(expense.getStatus(), expense.getVersion(), money(expense.getAmount()),
+            expense.getSubmittedBy(), expense.getDecidedBy(), expense.getCorrectsExpenseId());
     }
 
     private String requireActivityName(Long activityId) {

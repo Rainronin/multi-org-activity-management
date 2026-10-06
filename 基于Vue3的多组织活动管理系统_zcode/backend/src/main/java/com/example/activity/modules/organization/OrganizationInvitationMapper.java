@@ -12,6 +12,8 @@ public interface OrganizationInvitationMapper {
 
     OrganizationInvitation findById(@Param("id") Long id);
 
+    OrganizationInvitation findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
     OrganizationInvitation findActiveByCodeHash(@Param("codeHash") String codeHash);
 
     List<OrganizationInvitation> listActiveByOrgId(@Param("orgId") Long orgId);

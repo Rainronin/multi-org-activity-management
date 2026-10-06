@@ -23,6 +23,15 @@
         WHERE id = #{id}
     </select>
 
+    <select id="findByIdForUpdate" resultType="com.example.activity.modules.ai.AiGeneration">
+        SELECT <include refid="baseColumns" /> FROM ai_generation WHERE id = #{id} FOR UPDATE
+    </select>
+
+    <select id="listStaleRunning" resultType="com.example.activity.modules.ai.AiGeneration">
+        SELECT <include refid="baseColumns" /> FROM ai_generation
+        WHERE org_id = #{orgId} AND status = 'RUNNING' AND created_at &lt; #{before} ORDER BY id
+    </select>
+
     <select id="findByRequestKey" resultType="com.example.activity.modules.ai.AiGeneration">
         SELECT <include refid="baseColumns" />
         FROM ai_generation
@@ -56,15 +65,6 @@
         WHERE org_id = #{orgId}
           AND created_at &gt;= #{since}
     </select>
-
-    <update id="failStaleRunning">
-        UPDATE ai_generation
-        SET status = 'FAILED',
-            error_code = #{errorCode}
-        WHERE org_id = #{orgId}
-          AND status = 'RUNNING'
-          AND created_at &lt; #{before}
-    </update>
 
     <select id="listRecent" resultType="com.example.activity.modules.ai.AiGeneration">
         SELECT <include refid="baseColumns" />

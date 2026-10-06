@@ -114,4 +114,13 @@ public interface ActivityMapper {
         @Param("id") Long id, @Param("orgId") Long orgId,
         @Param("accountId") Long accountId, @Param("sourceHash") String sourceHash,
         @Param("version") Long version);
+
+    /** 在已更新的确认状态下追加正文快照，与业务确认同事务。 */
+    int insertConfirmation(@Param("activityId") Long activityId, @Param("kind") String kind,
+        @Param("sourceHash") String sourceHash);
+
+    List<ActivityService.ConfirmationItem> listConfirmations(@Param("activityId") Long activityId,
+        @Param("offset") long offset, @Param("limit") int limit);
+
+    long countConfirmations(@Param("activityId") Long activityId);
 }

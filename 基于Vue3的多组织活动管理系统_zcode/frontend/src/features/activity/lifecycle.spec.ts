@@ -74,6 +74,7 @@ describe('P6 反馈汇总口径', () => {
       mineSubmitted: false,
       myRating: null,
       myComment: null,
+      myVersion: null,
       canSubmit: false,
       submitBlockedReason: null,
       ...overrides,

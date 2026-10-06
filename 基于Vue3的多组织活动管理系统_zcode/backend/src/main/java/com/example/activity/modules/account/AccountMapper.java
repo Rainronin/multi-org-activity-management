@@ -14,6 +14,10 @@ public interface AccountMapper {
 
     Account findById(@Param("id") Long id);
 
+    Account findByIdForUpdate(@Param("id") Long id);
+
+    Account findByUsernameForUpdate(@Param("username") String username);
+
     Long selectAuthVersionById(@Param("id") Long id);
 
     int updatePasswordAndBumpVersion(@Param("id") Long id, @Param("passwordHash") String passwordHash);

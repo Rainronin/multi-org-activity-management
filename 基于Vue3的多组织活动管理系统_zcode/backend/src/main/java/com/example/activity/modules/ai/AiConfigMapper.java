@@ -11,7 +11,7 @@ public interface AiConfigMapper {
     int insert(AiConfig config);
 
     /** 保存配置：仅当版本未变化；connection_revision 由服务层判定是否递增。 */
-    int update(AiConfig config);
+    int update(@Param("config") AiConfig config, @Param("clearApiKey") boolean clearApiKey);
 
     /** 记录当前配置版本的成功测试；配置版本已变化时不写入（旧测试响应不得标记新配置）。 */
     int markTested(

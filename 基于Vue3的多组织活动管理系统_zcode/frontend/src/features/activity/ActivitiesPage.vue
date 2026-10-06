@@ -21,7 +21,7 @@ import {
 } from 'element-plus'
 import { Calendar, Tickets } from '@element-plus/icons-vue'
 import ListPage from '../../shared/components/ListPage.vue'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { createActivity, fetchActivities, fetchOwnerCandidates } from './api'
@@ -55,6 +55,8 @@ const createError = ref('')
 /** F06：当前创建意图的防重键；重试沿用，成功后清空。 */
 let createKey = ''
 const pendingCreate = ref<CreateActivityInput | null>(null)
+const createUnverifiable = ref(false)
+watch(pendingCreate, value => { if (!value) createUnverifiable.value = false })
 const createdActivity = ref<ActivityItem | null>(null)
 const createFormRef = ref<FormInstance>()
 let initialForm = ''
@@ -217,9 +219,7 @@ async function loadActivities(): Promise<void> {
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '活动列表加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '活动列表加载失败，请重试。')
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -330,6 +330,7 @@ onMounted(() => {
 })
 
 async function submitCreate() {
+  if (createUnverifiable.value) return
   if (!amOwner.value || createSubmitting.value || candidatesLoading.value || candidatesError.value) return
   createSubmitting.value = true
   const targetOrgId = orgId.value
@@ -365,6 +366,7 @@ async function submitCreate() {
     if (targetOrgId !== orgId.value || gen !== session.generation) return
     if (session.observeUnauthorized(error, gen)) return
     if (error instanceof ApiError && !error.isTransportError) {
+      if (error.code === 'IDEMPOTENCY_RESULT_UNVERIFIABLE') createUnverifiable.value = true
       // 明确拒绝的请求未产生草稿，可修改后以新意图提交；409／5xx 保留原请求待核对。
       if ([400, 403, 404, 422, 429].includes(error.status)) {
         pendingCreate.value = null
@@ -614,7 +616,7 @@ async function submitCreate() {
     >
       <p>{{ createError }}</p>
       <p v-if="pendingCreate">
-        为避免重复创建，当前内容暂不可修改；核对成功后可进入详情编辑。
+        {{ createUnverifiable ? '旧请求结果无法确认，请先核对活动列表，不要更换请求键再次创建。' : '为避免重复创建，当前内容暂不可修改；核对成功后可进入详情编辑。' }}
       </p>
     </div>
     <ElForm
@@ -790,10 +792,10 @@ async function submitCreate() {
       <ElButton
         type="primary"
         :loading="createSubmitting"
-        :disabled="candidatesLoading || Boolean(candidatesError)"
+        :disabled="candidatesLoading || Boolean(candidatesError) || createUnverifiable"
         @click="submitCreate"
       >
-        {{ pendingCreate && !createSubmitting ? '核对保存结果' : '保存草稿' }}
+        {{ createUnverifiable ? '请先核对活动列表' : pendingCreate && !createSubmitting ? '核对保存结果' : '保存草稿' }}
       </ElButton>
     </template>
   </ElDialog>

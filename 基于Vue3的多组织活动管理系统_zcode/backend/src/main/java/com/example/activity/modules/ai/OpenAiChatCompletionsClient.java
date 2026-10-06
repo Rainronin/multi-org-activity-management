@@ -46,6 +46,10 @@ public class OpenAiChatCompletionsClient implements AiProtocolClient {
         user.put("role", "user");
         user.put("content", request.userPrompt());
         body.put("stream", false);
+        // DeepSeek 默认启用思考模式，连接测试的 64 tokens 会耗在推理上；文稿草稿也无需推理块。
+        if ("api.deepseek.com".equalsIgnoreCase(request.uri().getHost())) {
+            body.putObject("thinking").put("type", "disabled");
+        }
         String limitField = AiConfig.LIMIT_MAX_COMPLETION_TOKENS.equals(request.outputLimitField())
             ? "max_completion_tokens" : "max_tokens";
         body.put(limitField, request.maxOutputTokens());

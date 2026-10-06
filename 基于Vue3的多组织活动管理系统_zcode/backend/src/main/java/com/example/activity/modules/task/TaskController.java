@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /** 任务端点（P3.2）：创建/编辑/状态流转/本人任务。 */
@@ -29,7 +30,7 @@ public class TaskController {
     }
 
     public record TaskResponse(
-        String taskId, Long activityId, String title, String description, String assigneeMemberId,
+        String taskId, String activityId, String title, String description, String assigneeMemberId,
         String assigneeUsername, String priority, OffsetDateTime dueAt, String status,
         OffsetDateTime completedAt, boolean overdue, Long version) {
     }
@@ -52,7 +53,7 @@ public class TaskController {
     }
 
     private TaskResponse toResponse(TaskService.TaskItem item) {
-        return new TaskResponse(String.valueOf(item.taskId()), item.activityId(), item.title(),
+        return new TaskResponse(String.valueOf(item.taskId()), String.valueOf(item.activityId()), item.title(),
             item.description(), item.assigneeMemberId(), item.assigneeUsername(), item.priority(),
             item.dueAt(), item.status(), item.completedAt(), item.overdue(), item.version());
     }
@@ -62,6 +63,7 @@ public class TaskController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody CreateTaskRequest request) {
         Task draft = new Task();
         draft.setTitle(request.title().trim());
@@ -71,7 +73,7 @@ public class TaskController {
         draft.setPriority(request.priority());
         draft.setDueAt(request.dueAt());
         return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
-            .body(toResponse(taskService.create(principal.getAccountId(), orgId, activityId, draft)));
+            .body(toResponse(taskService.create(principal.getAccountId(), orgId, activityId, draft, requestKey)));
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/tasks")

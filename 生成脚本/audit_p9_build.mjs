@@ -95,6 +95,14 @@ try {
   const publicBody = await page.locator('body').innerText()
   const apiProxied = await (await fetch(`${base}/api/health`)).json()
 
+  assert.ok(deepHtml.includes('<div id="app">'), '公开深链接应返回应用入口')
+  assert.ok(guardUrl.includes('/login'), '未登录访问内部路由应进入登录页')
+  assert.ok(/登录|进入工作区/.test(body), '登录表单应正常渲染')
+  assert.ok(publicBody.includes('公开活动'), '公开活动列表应正常渲染')
+  assert.equal(apiProxied.status, 'UP')
+  assert.equal(apiProxied.database, 'UP')
+  assert.deepEqual(errors, [], '不应出现页面脚本错误')
+
   console.log(JSON.stringify({
     check: 'P9.3 生产构建与嵌套路由刷新核对（最小静态服务器 + /api 反向代理）',
     build: {

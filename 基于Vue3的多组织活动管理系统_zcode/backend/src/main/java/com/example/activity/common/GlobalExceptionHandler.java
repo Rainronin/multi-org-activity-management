@@ -2,8 +2,6 @@ package com.example.activity.common;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -24,8 +22,6 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-
-    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(ApiException.class)
     public ProblemDetail handleApiException(ApiException ex) {
@@ -127,7 +123,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
     public ProblemDetail handleUploadTooLarge(
         org.springframework.web.multipart.MaxUploadSizeExceededException ex) {
-        log.warn("上传体积超限: {}", ex.getMessage());
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.PAYLOAD_TOO_LARGE);
         problem.setTitle("文件过大");
         problem.setDetail("单个文件不超过 20MB、单次请求不超过 22MB；请压缩或拆分后重试。");
@@ -137,7 +132,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception ex) {
-        log.error("未预期异常", ex);
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
+            attributes.getRequest().setAttribute(RequestIdFilter.FAILURE_ATTRIBUTE, ex);
+        }
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problem.setTitle("服务内部错误");
         problem.setDetail("服务暂时不可用，请稍后重试。");
@@ -146,6 +143,9 @@ public class GlobalExceptionHandler {
     }
 
     private ProblemDetail enrich(ProblemDetail problem) {
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
+            attributes.getRequest().setAttribute(RequestIdFilter.ERROR_CODE_ATTRIBUTE, problem.getProperties().get("code"));
+        }
         problem.setProperty("requestId", currentRequestId());
         return problem;
     }

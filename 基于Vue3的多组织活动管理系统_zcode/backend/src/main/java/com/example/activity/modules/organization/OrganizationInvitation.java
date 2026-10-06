@@ -12,6 +12,8 @@ public class OrganizationInvitation {
     private Long orgId;
     private String codeHash;
     private Long createdBy;
+    private String requestKey;
+    private String requestFingerprint;
     private OffsetDateTime expiresAt;
     private Integer maxUses;
     private Integer usedCount;
@@ -48,6 +50,22 @@ public class OrganizationInvitation {
 
     public void setCreatedBy(Long createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public OffsetDateTime getExpiresAt() {

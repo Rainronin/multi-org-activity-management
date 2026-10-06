@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onBeforeUnmount, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElForm, ElFormItem, ElInput, type FormInstance, type FormRules } from 'element-plus'
 import { ApiError } from '../../shared/http/error'
@@ -15,6 +15,8 @@ const submitting = ref(false)
 const errorMessage = ref('')
 const fields = reactive({ username: '', password: '', confirmPassword: '' })
 const codeDialogVisible = ref(false)
+let alive = true
+onBeforeUnmount(() => { alive = false })
 const issuedRecoveryCode = ref('')
 
 const rules: FormRules = {
@@ -42,30 +44,31 @@ const rules: FormRules = {
 }
 
 async function submit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) {
-    return
-  }
+  if (submitting.value || codeDialogVisible.value) return
   submitting.value = true
   errorMessage.value = ''
   try {
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid || !alive) return
     const result = await register({ username: fields.username, password: fields.password })
+    if (!alive) return
     issuedRecoveryCode.value = result.recoveryCode
     codeDialogVisible.value = true
   } catch (error) {
-    if (error instanceof ApiError && !error.isTransportError) {
+    if (!alive) return
+    if (error instanceof ApiError && !error.isTransportError && (error.status ?? 0) < 500) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
         errorMessage.value = '安全校验已过期，请重新提交。'
       } else if (error.code === 'USERNAME_TAKEN') {
-        errorMessage.value = '该用户名已被注册，请换一个。'
+        errorMessage.value = '该用户名已被注册。若刚才注册结果尚未确认，请先用本次账号和密码登录核对；否则请换一个。'
       } else if (error.code === 'RATE_LIMITED') {
         errorMessage.value = '注册尝试过于频繁，请稍后再试。'
       } else {
         errorMessage.value = error.detail || '注册失败，请检查输入后重试。'
       }
     } else {
-      errorMessage.value = '网络连接失败，请检查网络后重试。'
+      errorMessage.value = '注册结果尚未确认。请先用本次账号和密码登录核对；登录成功后可重签恢复码。'
     }
   } finally {
     submitting.value = false
@@ -101,6 +104,7 @@ function finishRegistration() {
       ref="formRef"
       :model="fields"
       :rules="rules"
+      :disabled="submitting || codeDialogVisible"
       label-position="top"
       @submit.prevent="submit"
     >
@@ -156,6 +160,7 @@ function finishRegistration() {
 
     <RecoveryCodeDialog
       v-model="codeDialogVisible"
+      :submitting="submitting"
       :code="issuedRecoveryCode"
       confirm-target="恢复码"
       @confirmed="finishRegistration"

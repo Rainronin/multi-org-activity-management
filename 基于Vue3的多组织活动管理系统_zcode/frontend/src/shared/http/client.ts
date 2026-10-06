@@ -67,6 +67,9 @@ export async function request<T = unknown>(path: string, options: ClientRequest 
   }
 
   const headers = await resolveHeaders(options, method)
+  if (options.signal?.aborted) {
+    throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。' })
+  }
 
   const timeoutController = new AbortController()
   let timedOut = false
@@ -81,30 +84,21 @@ export async function request<T = unknown>(path: string, options: ClientRequest 
   options.signal?.addEventListener('abort', onExternalAbort)
 
   // 超时与取消保护覆盖响应体的完整读取：头到达即解除监听会让正文读取脱离保护（R08 审核项）。
+  let requestId: string | undefined
   try {
-    let response: Response
-    try {
-      response = await fetch(options.query ? `${path}?${options.query.toString()}` : path, {
-        method,
-        headers,
-        body: options.json !== undefined ? JSON.stringify(options.json) : options.form ?? options.blob ?? null,
-        signal: timeoutController.signal,
-        credentials: 'same-origin',
-      })
-    } catch (cause) {
-      if (timedOut) {
-        throw new ApiError({ kind: 'transport', code: 'REQUEST_TIMEOUT', detail: '请求超时，请稍后重试。', cause })
-      }
-      if (options.signal?.aborted) {
-        throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。', cause })
-      }
-      throw new ApiError({ kind: 'transport', code: 'NETWORK_ERROR', detail: '网络连接失败，请检查网络后重试。', cause })
-    }
+    const response = await fetch(options.query ? `${path}?${options.query.toString()}` : path, {
+      method,
+      headers,
+      body: options.json !== undefined ? JSON.stringify(options.json) : options.form ?? options.blob ?? null,
+      signal: timeoutController.signal,
+      credentials: 'same-origin',
+    })
 
-    const requestId = response.headers.get('X-Request-Id') ?? undefined
+    requestId = response.headers.get('X-Request-Id') ?? undefined
 
     if (!response.ok) {
-      const problem = toProblemDetail(await parseJsonBody(response))
+      const problem = toProblemDetail(await response.json())
+      if (!problem) throw new SyntaxError('Invalid ProblemDetail')
       throw new ApiError({
         kind: 'server',
         status: response.status,
@@ -135,22 +129,21 @@ export async function request<T = unknown>(path: string, options: ClientRequest 
     }
     const data = (await response.json()) as T
     return { status: response.status, headers: response.headers, data }
+  } catch (cause) {
+    if (cause instanceof ApiError) throw cause
+    if (timedOut) {
+      throw new ApiError({ kind: 'transport', code: 'REQUEST_TIMEOUT', detail: '请求超时，请稍后重试。', requestId, cause })
+    }
+    if (options.signal?.aborted) {
+      throw new ApiError({ kind: 'transport', code: 'REQUEST_ABORTED', detail: '请求已取消。', requestId, cause })
+    }
+    throw new ApiError(cause instanceof SyntaxError
+      ? { kind: 'transport', code: 'INVALID_RESPONSE', detail: '响应内容无法读取，请核对操作结果后重试。', requestId, cause }
+      : { kind: 'transport', code: 'NETWORK_ERROR', detail: '网络连接失败，请检查网络后重试。', requestId, cause })
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId)
     }
     options.signal?.removeEventListener('abort', onExternalAbort)
-  }
-}
-
-async function parseJsonBody(response: Response): Promise<unknown> {
-  const text = await response.text()
-  if (!text) {
-    return null
-  }
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
   }
 }

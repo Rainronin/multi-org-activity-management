@@ -52,13 +52,13 @@ public class FeedbackService {
 
     public record FeedbackItem(
         Long feedbackId, Long accountId, String accountUsername, Integer rating, String comment,
-        OffsetDateTime createdAt, OffsetDateTime updatedAt, String source) {
+        OffsetDateTime createdAt, OffsetDateTime updatedAt, String source, Long version) {
     }
 
     /** 反馈汇总：份数与平均分；无反馈时平均分为 null，界面显示“暂无反馈”与“—”。 */
     public record FeedbackSummary(
         long count, String averageRating, List<FeedbackItem> items, boolean mineSubmitted,
-        Integer myRating, String myComment, boolean canSubmit, String submitBlockedReason) {
+        Integer myRating, String myComment, boolean canSubmit, String submitBlockedReason, Long myVersion) {
     }
 
     private record Context(OrganizationMember actor, Activity activity, boolean orgOwner, boolean activityOwner) {
@@ -68,23 +68,31 @@ public class FeedbackService {
 
     /** 执行开始：固定当时的已批准报名者账号（公开活动的外部参与者按外部身份保留）。 */
     @Transactional
-    public void snapshotApprovedRegistrants(Long activityId) {
+    public void snapshotApprovedRegistrants(Long activityId, Long actorAccountId) {
         for (Long accountId : registrationMapper.listApprovedAccountIds(activityId)) {
-            feedbackMapper.insertEligibility(activityId, accountId, Feedback.SOURCE_REGISTRATION_APPROVED);
+            captureEligibility(actorAccountId, activityId, accountId, Feedback.SOURCE_REGISTRATION_APPROVED);
         }
     }
 
     /** 执行结束：固定活动负责人与截至结束时未取消任务的承担者。 */
     @Transactional
-    public void snapshotExecutionRoles(Long activityId, Long ownerAccountId, List<Long> assigneeAccountIds) {
+    public void snapshotExecutionRoles(Long activityId, Long ownerAccountId, List<Long> assigneeAccountIds, Long actorAccountId) {
         if (ownerAccountId != null) {
-            feedbackMapper.insertEligibility(activityId, ownerAccountId, Feedback.SOURCE_ACTIVITY_OWNER);
+            captureEligibility(actorAccountId, activityId, ownerAccountId, Feedback.SOURCE_ACTIVITY_OWNER);
         }
         for (Long accountId : assigneeAccountIds) {
             if (accountId != null) {
-                feedbackMapper.insertEligibility(activityId, accountId, Feedback.SOURCE_TASK_ASSIGNEE);
+                captureEligibility(actorAccountId, activityId, accountId, Feedback.SOURCE_TASK_ASSIGNEE);
             }
         }
+    }
+
+    private void captureEligibility(Long actorAccountId, Long activityId, Long accountId, String source) {
+        if (feedbackMapper.insertEligibility(activityId, accountId, source) != 1) return;
+        auditService.recordChange(actorAccountId, "FEEDBACK", "FEEDBACK_ELIGIBILITY_CAPTURED",
+            "feedback-eligibility:" + activityId + ":" + accountId + ":" + source, null,
+            java.util.Map.of("orgId", activityMapper.findById(activityId).getOrgId(), "activityId", activityId), null,
+            java.util.Map.of("accountId", accountId, "source", source));
     }
 
     // ---------- 提交与查看 ----------
@@ -94,7 +102,7 @@ public class FeedbackService {
      */
     @Transactional
     public FeedbackItem submit(
-        Long accountId, Long orgId, Long activityId, Integer rating, String comment) {
+        Long accountId, Long orgId, Long activityId, Integer rating, String comment, Long version) {
         organizationMapper.lockOrganizationShared(orgId);
         activityMapper.lockActivityShared(activityId);
         Activity activity = requireVisibleActivity(accountId, orgId, activityId);
@@ -113,6 +121,7 @@ public class FeedbackService {
         requireEligible(accountId, orgId, activity);
         Feedback existing = feedbackMapper.findByActivityAndAccount(activityId, accountId);
         if (existing == null) {
+            if (version != null && version != 0L) throw editConflict();
             Feedback feedback = new Feedback();
             feedback.setOrgId(orgId);
             feedback.setActivityId(activityId);
@@ -124,14 +133,16 @@ public class FeedbackService {
             } catch (org.springframework.dao.DuplicateKeyException duplicate) {
                 throw conflict("FEEDBACK_CONFLICT", "反馈已由另一请求提交", "请刷新查看已保存的反馈，再决定是否修改。");
             }
-            auditService.record(accountId, "ACTIVITY", "FEEDBACK_SUBMITTED", "activity:" + activityId,
-                null, Map.of("rating", rating));
-            return toItem(feedbackMapper.findByActivityAndAccount(activityId, accountId));
+            Feedback created = feedbackMapper.findByActivityAndAccount(activityId, accountId);
+            recordChange(accountId, "FEEDBACK_SUBMITTED", null, created);
+            return toItem(created);
         }
-        feedbackMapper.update(existing.getId(), rating, trimToNull(comment));
-        auditService.record(accountId, "ACTIVITY", "FEEDBACK_UPDATED", "activity:" + activityId,
-            null, Map.of("rating", rating));
-        return toItem(feedbackMapper.findByActivityAndAccount(activityId, accountId));
+        if (version == null) throw fieldError("version", "修改反馈必须携带读取时的版本号");
+        if (!version.equals(existing.getVersion())
+            || feedbackMapper.update(existing.getId(), rating, trimToNull(comment), version) != 1) throw editConflict();
+        Feedback updated = feedbackMapper.findByActivityAndAccount(activityId, accountId);
+        recordChange(accountId, "FEEDBACK_UPDATED", existing, updated);
+        return toItem(updated);
     }
 
     /** 反馈汇总与明细：管理者看全部，其他账号只看自己的一份。 */
@@ -169,16 +180,16 @@ public class FeedbackService {
             feedbackMapper.countByActivity(activityId),
             average == null ? null : average.setScale(1, RoundingMode.HALF_UP).toPlainString(),
             items, mine != null, mine == null ? null : mine.getRating(),
-            mine == null ? null : mine.getComment(), canSubmit, blockedReason);
+            mine == null ? null : mine.getComment(), canSubmit, blockedReason, mine == null ? null : mine.getVersion());
     }
 
     // ---------- 内部 ----------
 
-    /** P6.4：总结来源摘要中的反馈投影（份数与平均分，固定两位小数）。 */
+    /** P6.4：反馈正文也属于总结来源；同分更改建议不能绕过重新核对。 */
     public String summarySourcePart(Long activityId) {
-        BigDecimal average = feedbackMapper.averageRating(activityId);
-        return feedbackMapper.countByActivity(activityId) + ":"
-            + (average == null ? "-" : average.setScale(2, RoundingMode.HALF_UP).toPlainString());
+        return com.example.activity.common.RequestFingerprint.of(feedbackMapper.listByActivity(activityId).stream()
+            .map(item -> com.example.activity.common.RequestFingerprint.of(
+                item.getId(), item.getRating(), item.getComment())).toArray());
     }
 
     /** P8.2：总结输入投影中的反馈要点：份数、平均分与有限条文字，不含反馈人身份。 */
@@ -250,7 +261,23 @@ public class FeedbackService {
     private FeedbackItem toItem(Feedback feedback) {
         return new FeedbackItem(
             feedback.getId(), feedback.getAccountId(), resolveUsername(feedback.getAccountId()),
-            feedback.getRating(), feedback.getComment(), feedback.getCreatedAt(), feedback.getUpdatedAt(), null);
+            feedback.getRating(), feedback.getComment(), feedback.getCreatedAt(), feedback.getUpdatedAt(), null,
+            feedback.getVersion());
+    }
+
+    private ApiException editConflict() {
+        return conflict("EDIT_CONFLICT", "反馈已被修改", "反馈已由其他操作保存，请核对当前结果后再决定是否修改。");
+    }
+
+    private void recordChange(Long accountId, String action, Feedback before, Feedback after) {
+        auditService.recordChange(accountId, "ACTIVITY", action, "activity:" + after.getActivityId(), null,
+            Map.of("orgId", after.getOrgId(), "activityId", after.getActivityId(), "feedbackId", after.getId()),
+            auditState(before), auditState(after));
+    }
+
+    private Map<String, Object> auditState(Feedback feedback) {
+        if (feedback == null) return null;
+        return Map.of("accountId", feedback.getAccountId(), "rating", feedback.getRating(), "version", feedback.getVersion());
     }
 
     private String resolveUsername(Long accountId) {

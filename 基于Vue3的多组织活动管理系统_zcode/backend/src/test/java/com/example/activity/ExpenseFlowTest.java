@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.activity.support.FlowTestSupport;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -25,6 +27,234 @@ import org.springframework.test.web.servlet.MvcResult;
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
 class ExpenseFlowTest extends FlowTestSupport {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"actor", "activity"})
+    void creationKeyCannotReplayExpenseFromAnotherScope(String scope) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession otherOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, otherOwner, orgId);
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/"
+                + memberIdOf(orgId, otherOwner.username()) + "/promote-owner")
+                .with(csrf()).session(owner.session())).andExpect(status().isOk());
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        Long otherActivityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-11T14:00:00+08:00", "100.00");
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"原费用意图\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\"}";
+        MvcResult first = mockMvc.perform(post(expensesPath(orgId, activityId)).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        mockMvc.perform(post(expensesPath(orgId, activityId)).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.expenseId").value(readField(first, "$.expenseId")));
+        mockMvc.perform(post(expensesPath(orgId, "activity".equals(scope) ? otherActivityId : activityId))
+                .with(csrf()).session("actor".equals(scope) ? otherOwner.session() : owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE org_id = ?", Integer.class, orgId))
+            .isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"create:ARCHIVED", "create:PENDING_APPROVAL", "correction:ARCHIVED", "correction:PENDING_APPROVAL"})
+    void existingCreationKeyCanBeCheckedAfterActivityBecomesReadOnly(String scenario) throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        String activityPath = "/api/organizations/" + orgId + "/activities/" + activityId;
+        String target = expensesPath(orgId, activityId);
+        boolean correction = scenario.startsWith("correction:");
+        if (correction) {
+            String originalId = createExpense(owner, orgId, activityId, "原费用", "10.00", "无票说明");
+            submitExpense(owner, orgId, activityId, originalId);
+            confirmExpense(owner, orgId, activityId, originalId, null, 200);
+            mockMvc.perform(post(target + "/" + originalId + "/void").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"version\":" + versionOf(Long.parseLong(originalId)) + ",\"reason\":\"更正原费用\"}"))
+                .andExpect(status().isOk());
+            target += "/" + originalId + "/correction";
+        }
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"待核对费用\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\"}";
+        MvcResult first = mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        if (scenario.endsWith("ARCHIVED")) {
+            for (String action : new String[] {"start-execution", "finish-execution"}) {
+                mockMvc.perform(post(activityPath + "/" + action).with(csrf()).session(owner.session())
+                        .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+                    .andExpect(status().isOk());
+            }
+            mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(activityPath + "/summary")
+                    .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                    .content(versioned(activityId, "{\"summary\":\"活动结束，费用以实际确认记录为准。\"}")))
+                .andExpect(status().isOk());
+            for (String action : new String[] {"summary/confirm", "archive"}) {
+                mockMvc.perform(post(activityPath + "/" + action).with(csrf()).session(owner.session())
+                        .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{}")))
+                    .andExpect(status().isOk());
+            }
+        } else {
+            mockMvc.perform(post(activityPath + "/withdraw-approval").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId, "{\"reason\":\"调整安排\"}")))
+                .andExpect(status().isOk());
+            mockMvc.perform(post(activityPath + "/submit").with(csrf()).session(owner.session()))
+                .andExpect(status().isOk());
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM activity WHERE id = ?", String.class, activityId))
+            .isEqualTo(scenario.substring(scenario.indexOf(':') + 1));
+        mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.expenseId").value(readField(first, "$.expenseId")));
+        mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", newIdempotencyKey()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ACTIVITY_STATE_CONFLICT"));
+        mockMvc.perform(post(target).with(csrf()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isUnauthorized());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE activity_id = ?", Integer.class, activityId))
+            .isEqualTo(correction ? 2 : 1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"create", "correction"})
+    void concurrentCreationKeyCanBeCheckedWithoutInternalErrors(String kind) throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        String target = expensesPath(orgId, activityId);
+        boolean correction = "correction".equals(kind);
+        if (correction) {
+            String originalId = createExpense(owner, orgId, activityId, "原费用", "10.00", "无票说明");
+            submitExpense(owner, orgId, activityId, originalId);
+            confirmExpense(owner, orgId, activityId, originalId, null, 200);
+            mockMvc.perform(post(target + "/" + originalId + "/void").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"version\":" + versionOf(Long.parseLong(originalId)) + ",\"reason\":\"更正原费用\"}"))
+                .andExpect(status().isOk());
+            target += "/" + originalId + "/correction";
+        }
+        String endpoint = target;
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"并发费用\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\"}";
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var results = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+        var responses = new java.util.ArrayList<MvcResult>();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            for (int i = 0; i < 8; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return mockMvc.perform(post(endpoint).with(csrf()).session(owner.session())
+                            .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andReturn();
+                }));
+            }
+            start.countDown();
+            for (var result : results) responses.add(result.get(20, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        for (var response : responses) {
+            assertThat(response.getResponse().getStatus()).isIn(201, 409);
+            if (response.getResponse().getStatus() == 409) {
+                assertThat(readField(response, "$.code")).isEqualTo("REQUEST_IN_PROGRESS");
+            }
+        }
+        MvcResult replay = mockMvc.perform(post(endpoint).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        for (var response : responses) {
+            if (response.getResponse().getStatus() == 201) {
+                assertThat(readField(response, "$.expenseId")).isEqualTo(readField(replay, "$.expenseId"));
+            }
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE activity_id = ?", Integer.class, activityId))
+            .isEqualTo(correction ? 2 : 1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ? AND action = ?",
+            Integer.class, "expense:" + readField(replay, "$.expenseId"),
+            correction ? "EXPENSE_CORRECTION_CREATED" : "EXPENSE_DRAFT_CREATED")).isEqualTo(1);
+    }
+
+    @Test
+    void creationKeyDistinguishesNotesContainingTheLegacyDelimiter() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        String target = expensesPath(orgId, activityId);
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"原费用\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\","
+            + "\"handledNote\":\"A\\u001fB\",\"noReceiptNote\":\"C\"}";
+        mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated());
+        mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content(body.replace("A\\u001fB", "A").replace("\"C\"", "\"B\\u001fC\"")))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE activity_id = ?",
+            Integer.class, activityId)).isEqualTo(1);
+    }
+
+    @Test
+    void ambiguousLegacyCreationKeyRequiresManualVerification() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        String path = expensesPath(orgId, activityId);
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"旧歧义费用\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\","
+            + "\"handledNote\":\"A\\u001fB\",\"noReceiptNote\":\"C\"}";
+        MvcResult created = mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        String id = readField(created, "$.expenseId");
+        String legacy = com.example.activity.common.SecureCodes.hash(
+            "旧歧义费用\u001f10.00\u001f2027-07-01\u001fOTHER\u001fA\u001fB\u001fC\u001fnull");
+        jdbcTemplate.update("UPDATE expense SET request_fingerprint = ? WHERE id = ?", legacy, id);
+        for (String request : new String[] {body, body.replace("A\\u001fB", "A").replace("\"C\"", "\"B\\u001fC\"")}) {
+            mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                    .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_RESULT_UNVERIFIABLE"));
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE activity_id = ?",
+            Integer.class, activityId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT request_fingerprint FROM expense WHERE id = ?",
+            String.class, id)).isEqualTo(legacy);
+    }
+
+    @Test
+    void legacyCreationKeyStillReplaysOriginalInputAfterEditing() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-10T14:00:00+08:00", "100.00");
+        String target = expensesPath(orgId, activityId);
+        String key = newIdempotencyKey();
+        String body = "{\"purpose\":\"旧费用\",\"amount\":\"10.00\",\"incurredOn\":\"2027-07-01\",\"category\":\"OTHER\","
+            + "\"handledNote\":\"经手\",\"noReceiptNote\":\"无票\"}";
+        MvcResult created = mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andReturn();
+        String id = readField(created, "$.expenseId");
+        String legacy = com.example.activity.common.SecureCodes.hash(
+            "旧费用\u001f10.00\u001f2027-07-01\u001fOTHER\u001f经手\u001f无票\u001fnull");
+        jdbcTemplate.update("UPDATE expense SET request_fingerprint = ? WHERE id = ?", legacy, id);
+        mockMvc.perform(post(target + "/" + id + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body.replace("旧费用", "已编辑费用").replace("}", ",\"version\":1}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(post(target).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.expenseId").value(id))
+            .andExpect(jsonPath("$.purpose").value("已编辑费用"));
+        assertThat(jdbcTemplate.queryForObject("SELECT request_fingerprint FROM expense WHERE id = ?",
+            String.class, id)).isEqualTo(legacy);
+    }
 
     private static final byte[] PNG = new byte[] {
         (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4};
@@ -249,6 +479,17 @@ class ExpenseFlowTest extends FlowTestSupport {
         confirmExpense(owner, orgId, activityId, expenseId, null, 200);
         assertSummary(orgId, activityId, owner, "300.00", "0.00", "120.00", "180.00");
 
+        // 未作废的已确认记录不能另建更正，否则两笔确认后会重复计入有效支出。
+        mockMvc.perform(post(expensesPath(orgId, activityId) + "/" + expenseId + "/correction")
+                .header("Idempotency-Key", newIdempotencyKey())
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"purpose\":\"交通费（更正）\",\"amount\":100.00,\"incurredOn\":\"2027-07-14\","
+                    + "\"category\":\"TRANSPORT\",\"noReceiptNote\":\"无票说明\"}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("EXPENSE_STATE_CONFLICT"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM expense WHERE activity_id = ?",
+            Integer.class, activityId)).isEqualTo(1);
+
         mockMvc.perform(post(expensesPath(orgId, activityId) + "/" + expenseId + "/void")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -352,6 +593,67 @@ class ExpenseFlowTest extends FlowTestSupport {
                 .content("{\"version\":1}"))
             .andExpect(status().isConflict())
             .andExpect(jsonPath("$.code").value("EDIT_CONFLICT"));
+    }
+
+    @Test
+    void voucherReplayCannotChangeExpenseTarget() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-07-15T14:00:00+08:00", "100.00");
+        String firstExpense = createExpense(owner, orgId, activityId, "第一笔支出", "10.00", null);
+        String otherExpense = createExpense(owner, orgId, activityId, "第二笔支出", "10.00", null);
+        String key = newIdempotencyKey();
+        String firstPath = expensesPath(orgId, activityId) + "/" + firstExpense + "/attachments";
+        MvcResult first = mockMvc.perform(multipart(firstPath)
+                .file(new MockMultipartFile("file", "凭证.png", "image/png", PNG))
+                .header("Idempotency-Key", key).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated()).andReturn();
+        String attachmentId = readField(first, "$.attachmentId");
+        String originalFingerprint = jdbcTemplate.queryForObject(
+            "SELECT request_fingerprint FROM attachment WHERE id = ?", String.class, attachmentId);
+
+        // 同文件、同键不能从第一笔费用重放到第二笔费用。
+        mockMvc.perform(multipart(expensesPath(orgId, activityId) + "/" + otherExpense + "/attachments")
+                .file(new MockMultipartFile("file", "凭证.png", "image/png", PNG))
+                .header("Idempotency-Key", key).with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        MvcResult replay = mockMvc.perform(multipart(firstPath)
+                .file(new MockMultipartFile("file", "凭证.png", "image/png", PNG))
+                .header("Idempotency-Key", key).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated()).andReturn();
+        assertThat(readField(replay, "$.attachmentId")).isEqualTo(attachmentId);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM attachment WHERE expense_id = ?",
+            Integer.class, otherExpense)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM attachment WHERE request_key = ?",
+            Integer.class, key)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT request_fingerprint FROM attachment WHERE id = ?",
+            String.class, attachmentId)).isEqualTo(originalFingerprint);
+    }
+
+    @Test
+    void voucherReplayRequiresOriginalUploader() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession activityOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, activityOwner, orgId);
+        Long activityId = createApprovedActivityWithBudget(owner, orgId,
+            memberIdOf(orgId, activityOwner.username()), "2027-07-15T14:00:00+08:00", "100.00");
+        String expenseId = createExpense(owner, orgId, activityId, "操作者核对", "10.00", null);
+        String uploadPath = expensesPath(orgId, activityId) + "/" + expenseId + "/attachments";
+        String key = newIdempotencyKey();
+        mockMvc.perform(multipart(uploadPath)
+                .file(new MockMultipartFile("file", "凭证.png", "image/png", PNG))
+                .header("Idempotency-Key", key).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated());
+
+        // 两个账号均有票据权限，防重意图仍只属于原上传账号。
+        mockMvc.perform(multipart(uploadPath)
+                .file(new MockMultipartFile("file", "凭证.png", "image/png", PNG))
+                .header("Idempotency-Key", key).with(csrf()).session(activityOwner.session()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM attachment WHERE request_key = ?",
+            Integer.class, key)).isEqualTo(1);
     }
 
     @Test

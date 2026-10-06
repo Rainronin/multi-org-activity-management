@@ -101,7 +101,7 @@ try {
     return readList()
   })()
   assert.equal(ready.heading, '活动管理')
-  assert.equal(ready.panelHeading, '活动明细 3', `面板标题应为“活动明细 3”，实际 ${ready.panelHeading}`)
+  assert.equal(ready.panelHeading, `活动明细 ${activities.length}`, '面板活动计数应与当前真实接口一致')
   assert.equal(ready.rows, activities.length, '活动列表行数应与接口一致')
   assert.ok(ready.rowHeights.every((h) => h < 96), `活动行高应保持紧凑，实际 ${ready.rowHeights.join('/')}`)
   assert.ok(ready.headerHeight <= 48, `表头高度应克制，实际 ${ready.headerHeight}`)
@@ -372,10 +372,16 @@ try {
       assert.equal(state.overflow, 0, `${name} ${width} 出现整页横向溢出`)
       assert.ok(state.heading.length > 0 && state.panelHeading.length > 0, `${name} ${width} 标题应可读`)
       if (width <= 390) {
+        // 当前手机导航默认收起；先展开，再核对真实可见的菜单文字。
+        await page.getByRole('button', { name: '展开导航', exact: true }).click()
+        await page.getByRole('link', { name: '成员管理', exact: true }).waitFor({ state: 'visible' })
         const labels = await page.evaluate(() => [...document.querySelectorAll('.u-item .u-label')]
           .map((e) => ({ text: e.textContent.trim(), display: getComputedStyle(e).display, width: Math.round(e.getBoundingClientRect().width) })))
+        assert.ok(labels.length > 0, `${name} ${width} 展开菜单后应存在导航文字`)
         const hidden = labels.filter((x) => x.display === 'none' || x.width === 0)
         assert.deepEqual(hidden, [], `${name} ${width} 手机导航文字应保留`)
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${name} ${width} 展开菜单不应横向溢出`)
+        await page.getByRole('button', { name: '收起导航', exact: true }).click()
         assert.ok(state.tableScroll || state.rows === 0, `${name} ${width} 宽表应在区段内横向滚动`)
       }
       results.widths.push({ page: name, width, overflow: state.overflow, rows: state.rows, tableScroll: state.tableScroll })

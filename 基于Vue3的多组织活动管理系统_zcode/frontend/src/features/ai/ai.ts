@@ -32,7 +32,7 @@ export interface AiConfig {
   testedRevision: number | null
   testedForCurrentRevision: boolean
   testedAt: string | null
-  testedBy: number | null
+  testedBy: string | null
 }
 
 export interface SaveAiConfigPayload {
@@ -90,7 +90,7 @@ export interface AiGeneration {
   sourceChanged: boolean
   createdAt: string
   adoptedAt: string | null
-  adoptedBy: number | null
+  adoptedBy: string | null
   requestId: string | null
 }
 
@@ -164,10 +164,18 @@ export async function saveAiConfig(orgId: string, payload: SaveAiConfigPayload):
   return response.data
 }
 
-export async function testAiConfig(orgId: string, version: number): Promise<AiConnectionTestResult> {
+export async function testAiConfig(orgId: string, version: number, requestKey = newIdempotencyKey()): Promise<AiConnectionTestResult> {
   const response = await request<AiConnectionTestResult>(
     `/api/organizations/${encodeURIComponent(orgId)}/ai/config/test`,
-    { method: 'POST', json: { version } },
+    { method: 'POST', json: { version }, headers: { 'Idempotency-Key': requestKey } },
+  )
+  return response.data
+}
+
+export async function fetchAiConfigTestByRequestKey(orgId: string, requestKey: string): Promise<AiConnectionTestResult> {
+  const query = new URLSearchParams({ requestKey })
+  const response = await request<AiConnectionTestResult>(
+    `/api/organizations/${encodeURIComponent(orgId)}/ai/config/test/by-request-key?${query}`,
   )
   return response.data
 }
@@ -214,6 +222,18 @@ export async function generateAiDraft(
       headers: { 'Idempotency-Key': requestKey ?? newIdempotencyKey() },
       json: type === 'ACTIVITY_PLAN' ? { type, conditions: toPlanConditions(conditions ?? {}) } : { type },
     },
+  )
+  return response.data
+}
+
+/** 原请求结果未知时按键只读核对，不重新调用模型。 */
+export async function getAiGenerationByRequestKey(
+  orgId: string,
+  activityId: string,
+  requestKey: string,
+): Promise<AiGeneration> {
+  const response = await request<AiGeneration>(
+    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/ai/generations/by-request-key?key=${encodeURIComponent(requestKey)}`,
   )
   return response.data
 }

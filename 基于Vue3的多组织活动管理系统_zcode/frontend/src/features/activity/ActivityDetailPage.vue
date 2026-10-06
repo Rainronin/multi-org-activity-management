@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
   ElButton,
+  ElAlert,
   ElDialog,
   ElForm,
   ElFormItem,
@@ -35,6 +36,7 @@ import RegistrationPanel from './RegistrationPanel.vue'
 import ExpenseSection from '../expense/ExpenseSection.vue'
 import ActivityLifecyclePanel from './ActivityLifecyclePanel.vue'
 import AiDraftPanel from '../ai/AiDraftPanel.vue'
+import { confirmDraftSave } from './confirmDraftSave'
 
 const props = defineProps<{ orgDetail: { id: string; role?: 'OWNER' | 'MEMBER' } | null }>()
 
@@ -82,7 +84,7 @@ const allowedTabs = computed(() => {
   if (status === 'APPROVED') {
     tabs.push('registration')
   }
-  if (status !== 'DRAFT' && status !== 'PENDING_APPROVAL') {
+  if ((status !== 'DRAFT' && status !== 'PENDING_APPROVAL') || orgRole.value === 'OWNER') {
     tabs.push('lifecycle')
   }
   return tabs
@@ -90,10 +92,16 @@ const allowedTabs = computed(() => {
 
 const proposalDraft = ref('')
 const proposalDirty = ref(false)
+let proposalVersion = 0
 const proposalSaving = ref(false)
 
 const editVisible = ref(false)
 const editSubmitting = ref(false)
+const p3Panel = ref<InstanceType<typeof ActivityP3Sections> | null>(null)
+const lifecyclePanel = ref<InstanceType<typeof ActivityLifecyclePanel> | null>(null)
+const registrationPanel = ref<InstanceType<typeof RegistrationPanel> | null>(null)
+const expensePanel = ref<InstanceType<typeof ExpenseSection> | null>(null)
+const planAiPanel = ref<InstanceType<typeof AiDraftPanel> | null>(null)
 const editFormRef = ref<FormInstance>()
 const editRules: FormRules = {
   name: [{ required: true, whitespace: true, message: '请输入活动主题', trigger: 'blur' }, { max: 128, message: '活动主题不能超过 128 字', trigger: 'blur' }],
@@ -109,9 +117,13 @@ const editForm = reactive({
   location: '',
   budget: '0.00',
 })
+let initialEditForm = ''
+let editVersion = 0
+const editDirty = computed(() => editVisible.value && JSON.stringify(editForm) !== initialEditForm)
 
 const rejectVisible = ref(false)
 const rejectReason = ref('')
+let rejectVersion = 0
 const rejectSubmitting = ref(false)
 
 const acting = ref(false)
@@ -122,6 +134,18 @@ const statusLabel = computed(() => {
 })
 
 let requestSeq = 0
+let alive = true
+const permissionGeneration = ref(0)
+
+function clearManagementDrafts(): void {
+  proposalDraft.value = ''
+  proposalDirty.value = false
+  editVisible.value = false
+  Object.assign(editForm, { name: '', description: '', startTime: '', endTime: '', location: '', budget: '0.00' })
+  rejectVisible.value = false
+  rejectReason.value = ''
+  permissionGeneration.value++
+}
 
 /** F05：编辑与审批必须携带当前版本；活动未加载时不发起写请求。 */
 function currentVersion(): number {
@@ -142,8 +166,15 @@ async function loadActivity(): Promise<void> {
     if (seq !== requestSeq || targetId !== activityId.value || gen !== session.generation) {
       return
     }
+    if (activity.value && !isOrgOwner.value && activity.value.ownerUsername === session.account?.username
+      && activity.value.ownerMemberId !== detail.ownerMemberId) {
+      clearManagementDrafts()
+    }
     activity.value = detail
-    if (!proposalDirty.value) proposalDraft.value = detail.proposal ?? ''
+    if (!proposalDirty.value) {
+      proposalDraft.value = detail.proposal ?? ''
+      proposalVersion = detail.version
+    }
     // R02：工作台 AI 卡等入口可指定页签；状态或权限不允许时回到概览，不静默停在无关页签
     const requestedTab = String(route.query.tab ?? '')
     if (requestedTab && !allowedTabs.value.includes(requestedTab)) {
@@ -153,13 +184,18 @@ async function loadActivity(): Promise<void> {
     if (seq !== requestSeq || targetId !== activityId.value || gen !== session.generation) {
       return
     }
-    activity.value = null
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    loadError.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '活动不存在或无权访问。'
+    if (error instanceof ApiError && !error.isTransportError && [403, 404].includes(error.status)) {
+      activity.value = null
+      clearManagementDrafts()
+      loadError.value = '活动不存在或无权访问。'
+    } else {
+      loadError.value = activity.value
+        ? '活动权限核对失败，请重试。'
+        : '活动信息加载失败，请检查网络后重试。'
+    }
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -169,14 +205,22 @@ async function loadActivity(): Promise<void> {
 
 watch([orgId, activityId], () => {
   activity.value = null
-  proposalDirty.value = false
+  clearManagementDrafts()
   void loadActivity()
 })
 // 页签间保留已挂载编辑器；离开活动时才会丢失编辑内容。
 async function confirmLeave(): Promise<boolean> {
-  if (!proposalDirty.value && !editVisible.value) return true
+  if (editSubmitting.value || proposalSaving.value || rejectSubmitting.value || p3Panel.value?.isSubmitting() || expensePanel.value?.isSubmitting() || lifecyclePanel.value?.isSummarySubmitting()
+    || planAiPanel.value?.isGenerating() || registrationPanel.value?.isSubmitting()
+    || lifecyclePanel.value?.isFeedbackSubmitting() || lifecyclePanel.value?.isRecordSubmitting()) return false
+  if (!proposalDirty.value && !editDirty.value && !p3Panel.value?.hasUnsavedForm() && !expensePanel.value?.hasUnsavedForm()
+    && !planAiPanel.value?.hasPendingGeneration() && !registrationPanel.value?.hasUnsavedForm()
+    && !lifecyclePanel.value?.hasUnsavedSummary() && !lifecyclePanel.value?.hasUnsavedFeedback()
+    && !lifecyclePanel.value?.hasUnsavedRecord()) return true
   try {
-    await ElMessageBox.confirm('有尚未保存的编辑内容，确定离开当前活动？', '未保存的修改', {
+    await ElMessageBox.confirm(lifecyclePanel.value?.hasPendingRecord()
+      ? '记录结果尚未确认。离开后请先核对执行记录列表，避免重复追加。确定离开？'
+      : '有尚未保存的编辑内容，确定离开当前活动？', '未保存的修改', {
       confirmButtonText: '离开', cancelButtonText: '继续编辑', type: 'warning',
     })
     return true
@@ -185,21 +229,53 @@ async function confirmLeave(): Promise<boolean> {
 onBeforeRouteLeave(confirmLeave)
 onBeforeRouteUpdate((to, from) => to.path === from.path ? true : confirmLeave())
 function beforeUnload(event: BeforeUnloadEvent) {
-  if (proposalDirty.value || editVisible.value) { event.preventDefault(); event.returnValue = '' }
+  if (proposalDirty.value || proposalSaving.value || editDirty.value || editSubmitting.value || rejectSubmitting.value
+    || planAiPanel.value?.hasPendingGeneration() || planAiPanel.value?.isGenerating()
+    || registrationPanel.value?.hasUnsavedForm() || registrationPanel.value?.isSubmitting()
+    || p3Panel.value?.hasUnsavedForm() || p3Panel.value?.isSubmitting()
+    || expensePanel.value?.hasUnsavedForm() || expensePanel.value?.isSubmitting()
+    || lifecyclePanel.value?.hasUnsavedSummary() || lifecyclePanel.value?.isSummarySubmitting()
+    || lifecyclePanel.value?.hasUnsavedFeedback() || lifecyclePanel.value?.isFeedbackSubmitting()
+    || lifecyclePanel.value?.hasUnsavedRecord() || lifecyclePanel.value?.isRecordSubmitting()) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
 }
-onMounted(() => window.addEventListener('beforeunload', beforeUnload))
-onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+function checkActivityPermissions(): void {
+  if (!document.hidden && session.status === 'authenticated') void loadActivity()
+}
+onMounted(() => {
+  window.addEventListener('beforeunload', beforeUnload)
+  document.addEventListener('visibilitychange', checkActivityPermissions)
+})
+onBeforeUnmount(() => {
+  alive = false
+  window.removeEventListener('beforeunload', beforeUnload)
+  document.removeEventListener('visibilitychange', checkActivityPermissions)
+  requestSeq++
+})
 onMounted(loadActivity)
 
-async function guard(fn: () => Promise<void>): Promise<void> {
+function captureAction() {
+  return { orgId: orgId.value, activityId: activityId.value, generation: session.capture(), permissions: permissionGeneration.value, version: currentVersion() }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.orgId === orgId.value && context.activityId === activityId.value
+    && context.generation === session.generation && context.permissions === permissionGeneration.value
+}
+
+async function guard(fn: () => Promise<void>, context = captureAction()): Promise<void> {
+  if (!isActionCurrent(context)) return
   actionError.value = ''
   acting.value = true
   try {
     await fn()
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
+    if (session.observeUnauthorized(error, context.generation)) {
       return
     }
+    if (!isActionCurrent(context)) return
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
@@ -230,14 +306,23 @@ function applyProposalDraft(draft: string) {
 }
 
 async function saveProposalDraft() {
+  if (proposalSaving.value) return
+  proposalSaving.value = true
+  const version = await confirmDraftSave(proposalVersion, currentVersion())
+  if (version === null) {
+    proposalSaving.value = false
+    return
+  }
   await guard(async () => {
-    await saveProposal(orgId.value, activityId.value, proposalDraft.value, currentVersion())
+    await saveProposal(orgId.value, activityId.value, proposalDraft.value, version)
     proposalDirty.value = false
     await loadActivity()
   })
+  proposalSaving.value = false
 }
 
 async function submitForApproval() {
+  const context = captureAction()
   try {
     await ElMessageBox.confirm('提交后活动将进入待确认状态，确认前可撤回。', '提交确认', {
       confirmButtonText: '提交',
@@ -248,12 +333,13 @@ async function submitForApproval() {
     return
   }
   await guard(async () => {
-    await submitActivity(orgId.value, activityId.value)
+    await submitActivity(context.orgId, context.activityId)
     await loadActivity()
-  })
+  }, context)
 }
 
 async function withdrawSubmission() {
+  const context = captureAction()
   try {
     await ElMessageBox.confirm('撤回后活动回到草稿状态。', '撤回提交', {
       confirmButtonText: '撤回',
@@ -264,9 +350,9 @@ async function withdrawSubmission() {
     return
   }
   await guard(async () => {
-    await withdrawActivity(orgId.value, activityId.value)
+    await withdrawActivity(context.orgId, context.activityId)
     await loadActivity()
-  })
+  }, context)
 }
 
 async function approve() {
@@ -277,6 +363,8 @@ async function approve() {
 }
 
 function openReject() {
+  actionError.value = ''
+  rejectVersion = currentVersion()
   rejectReason.value = ''
   rejectVisible.value = true
 }
@@ -287,7 +375,7 @@ async function confirmReject() {
   }
   rejectSubmitting.value = true
   await guard(async () => {
-    await rejectActivity(orgId.value, activityId.value, rejectReason.value.trim(), currentVersion())
+    await rejectActivity(orgId.value, activityId.value, rejectReason.value.trim(), rejectVersion)
     rejectVisible.value = false
     await loadActivity()
   })
@@ -298,13 +386,28 @@ function openEdit() {
   if (!activity.value) {
     return
   }
+  actionError.value = ''
   editForm.name = activity.value.name
   editForm.description = activity.value.description ?? ''
   editForm.startTime = toLocalInput(activity.value.startTime)
   editForm.endTime = toLocalInput(activity.value.endTime)
   editForm.location = activity.value.location ?? ''
   editForm.budget = activity.value.budget
+  initialEditForm = JSON.stringify(editForm)
+  editVersion = currentVersion()
   editVisible.value = true
+}
+
+async function closeEdit(done: () => void = () => { editVisible.value = false }) {
+  if (editSubmitting.value) return
+  if (editDirty.value) {
+    try {
+      await ElMessageBox.confirm('编辑内容还未保存，确定放弃吗？', '未保存的修改', {
+        confirmButtonText: '放弃修改', cancelButtonText: '继续编辑', type: 'warning',
+      })
+    } catch { return }
+  }
+  done()
 }
 
 function toLocalInput(value: string | null): string {
@@ -326,9 +429,15 @@ function toIso(local: string): string {
 
 async function submitEdit() {
   if (!(await editFormRef.value?.validate().catch(() => false))) return
+  if (editSubmitting.value) return
   editSubmitting.value = true
+  const version = await confirmDraftSave(editVersion, currentVersion())
+  if (version === null) {
+    editSubmitting.value = false
+    return
+  }
   await guard(async () => {
-    await updateActivity(orgId.value, activityId.value, currentVersion(), {
+    await updateActivity(orgId.value, activityId.value, version, {
       name: editForm.name.trim(),
       description: editForm.description.trim() || undefined,
       startTime: toIso(editForm.startTime) || undefined,
@@ -343,6 +452,7 @@ async function submitEdit() {
 }
 
 async function withdrawConfirmed() {
+  const context = captureAction()
   try {
     await ElMessageBox.confirm(
       '撤回后活动回到草稿状态，可修改关键内容后重新提交确认。', '撤回确认',
@@ -352,12 +462,13 @@ async function withdrawConfirmed() {
     return
   }
   await guard(async () => {
-    await withdrawApproval(orgId.value, activityId.value, currentVersion(), '关键内容变更')
+    await withdrawApproval(context.orgId, context.activityId, context.version, '关键内容变更')
     await loadActivity()
-  })
+  }, context)
 }
 
 async function confirmDelete() {
+  const context = captureAction()
   const targetId = activityId.value
   try {
     await ElMessageBox.confirm('确定删除该草稿？删除后不可恢复。', '删除草稿', {
@@ -372,9 +483,9 @@ async function confirmDelete() {
     if (activityId.value !== targetId) {
       return
     }
-    await deleteActivityDraft(orgId.value, targetId)
-    await router.replace(`/org/${orgId.value}/activities`)
-  })
+    await deleteActivityDraft(context.orgId, targetId)
+    await router.replace(`/org/${context.orgId}/activities`)
+  }, context)
 }
 </script>
 
@@ -482,8 +593,19 @@ async function confirmDelete() {
     </section>
     <section
       v-else-if="activity"
+      :key="permissionGeneration"
       class="detail-body"
     >
+      <ElAlert
+        v-if="loadError"
+        type="warning"
+        :title="loadError"
+        :closable="false"
+      >
+        <ElButton @click="loadActivity()">
+          重新核对活动权限
+        </ElButton>
+      </ElAlert>
       <p
         v-if="actionError"
         class="detail-error"
@@ -596,6 +718,7 @@ async function confirmDelete() {
               v-model="proposalDraft"
               type="textarea"
               :rows="10"
+              :disabled="proposalSaving"
               @input="onProposalInput"
             />
             <p
@@ -608,9 +731,11 @@ async function confirmDelete() {
             <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
             <AiDraftPanel
               v-if="activity.status === 'DRAFT'"
+              ref="planAiPanel"
               :org-id="orgId"
               :activity-id="activityId"
               type="ACTIVITY_PLAN"
+              :disabled="proposalSaving"
               @apply="applyProposalDraft"
             />
           </section>
@@ -623,6 +748,7 @@ async function confirmDelete() {
           name="tasks"
         >
           <ActivityP3Sections
+            ref="p3Panel"
             :org-detail="activity"
             :org-role="orgRole"
             @changed="loadActivity"
@@ -636,6 +762,7 @@ async function confirmDelete() {
           name="registration"
         >
           <RegistrationPanel
+            ref="registrationPanel"
             :org-detail="activity"
             :org-role="orgRole"
             @changed="loadActivity"
@@ -649,6 +776,7 @@ async function confirmDelete() {
           name="expense"
         >
           <ExpenseSection
+            ref="expensePanel"
             :org-detail="activity"
             :org-role="orgRole"
             @changed="loadActivity"
@@ -656,13 +784,14 @@ async function confirmDelete() {
         </ElTabPane>
 
         <ElTabPane
-          v-if="activity.status !== 'DRAFT' && activity.status !== 'PENDING_APPROVAL'"
+          v-if="allowedTabs.includes('lifecycle')"
           lazy
           label="执行与复盘"
           name="lifecycle"
         >
           <!-- P6：执行、取消、执行记录、反馈、总结与归档；P8.2 总结生成在总结区块内 -->
           <ActivityLifecyclePanel
+            ref="lifecyclePanel"
             :org-detail="activity"
             :org-role="orgRole"
             @changed="loadActivity"
@@ -675,18 +804,29 @@ async function confirmDelete() {
       class="detail-note"
       role="alert"
     >
-      {{ loadError }}
+      <span>{{ loadError }}</span>
+      <ElButton @click="loadActivity()">
+        重新加载
+      </ElButton>
     </p>
 
     <ElDialog
       v-model="editVisible"
       title="编辑活动信息"
       width="min(100%, var(--ui-drawer-width))"
+      :before-close="closeEdit"
     >
+      <ElAlert
+        v-if="actionError"
+        :title="actionError"
+        type="error"
+        :closable="false"
+      />
       <ElForm
         ref="editFormRef"
         :model="editForm"
         :rules="editRules"
+        :disabled="editSubmitting"
         label-position="top"
       >
         <ElFormItem
@@ -729,7 +869,7 @@ async function confirmDelete() {
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="editVisible = false">
+        <ElButton @click="closeEdit()">
           取消
         </ElButton>
         <ElButton
@@ -747,6 +887,12 @@ async function confirmDelete() {
       title="驳回活动"
       width="var(--ui-dialog-width)"
     >
+      <ElAlert
+        v-if="actionError"
+        :title="`${actionError} 请关闭弹窗，复核最新方案后重新打开。`"
+        type="error"
+        :closable="false"
+      />
       <ElForm
         label-position="top"
         @submit.prevent="confirmReject"

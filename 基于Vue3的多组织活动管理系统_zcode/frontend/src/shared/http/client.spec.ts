@@ -65,10 +65,45 @@ describe('request', () => {
     expect(apiError.fieldErrors[0]?.field).toBe('amount')
   })
 
-  it('非 JSON 的失败响应回退到 HTTP 状态码错误', async () => {
+  it('非 JSON 的失败响应返回本地传输错误，不冒充业务错误', async () => {
     fetchMock.mockResolvedValue(new Response('oops', { status: 502 }))
     const error = (await request('/api/ai/generate').catch((e: unknown) => e)) as ApiError
-    expect(error.code).toBe('HTTP_502')
+    expect(error.isTransportError).toBe(true)
+    expect(error.code).toBe('INVALID_RESPONSE')
+  })
+
+  it('格式损坏的成功 JSON 返回安全的本地错误与请求标识', async () => {
+    fetchMock.mockResolvedValue(new Response('{"secret":"broken', { headers: { 'Content-Type': 'application/json', 'X-Request-Id': 'req-body' } }))
+    await expect(request('/api/data')).rejects.toMatchObject({ kind: 'transport', code: 'INVALID_RESPONSE', requestId: 'req-body' })
+  })
+
+  it.each([['json', 200], ['blob', 200], ['json', 503]] as const)('%s 正文中断（%s）也转换为传输错误', async (mode, status) => {
+    const response = jsonResponse({ status, code: 'UNAVAILABLE' }, { status })
+    vi.spyOn(response, mode).mockRejectedValue(new TypeError('body interrupted'))
+    fetchMock.mockResolvedValue(response)
+    await expect(request('/api/data', { response: mode })).rejects.toMatchObject({ kind: 'transport', code: 'NETWORK_ERROR' })
+  })
+
+  it('响应头已到而正文超时仍返回 REQUEST_TIMEOUT', async () => {
+    fetchMock.mockImplementation(async (_path, options) => {
+      const response = jsonResponse({ ok: true })
+      vi.spyOn(response, 'json').mockImplementation(() => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DOMException('body aborted', 'AbortError')), { once: true })
+      }))
+      return response
+    })
+    await expect(request('/api/data', { timeoutMs: 5 })).rejects.toMatchObject({ kind: 'transport', code: 'REQUEST_TIMEOUT' })
+  })
+
+  it('响应正文读取中主动取消仍返回 REQUEST_ABORTED', async () => {
+    const controller = new AbortController()
+    const response = jsonResponse({ ok: true })
+    vi.spyOn(response, 'json').mockImplementation(async () => {
+      controller.abort()
+      throw new DOMException('body aborted', 'AbortError')
+    })
+    fetchMock.mockResolvedValue(response)
+    await expect(request('/api/data', { signal: controller.signal })).rejects.toMatchObject({ kind: 'transport', code: 'REQUEST_ABORTED' })
   })
 
   it('网络失败返回传输错误而非业务错误', async () => {
@@ -113,6 +148,18 @@ describe('request', () => {
     await request('/api/health')
     const getHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers
     expect(getHeaders.get('X-CSRF-TOKEN')).toBeNull()
+  })
+
+  it('等待 CSRF 凭据期间取消，不发出写请求', async () => {
+    const controller = new AbortController()
+    let resolve!: (headers: Record<string, string>) => void
+    setCsrfHeaderProvider(() => new Promise<Record<string, string>>(r => { resolve = r }))
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    const pending = request('/api/things', { method: 'POST', signal: controller.signal, response: 'none' })
+    controller.abort()
+    resolve({ 'X-CSRF-TOKEN': 'fresh-token' })
+    await expect(pending).rejects.toMatchObject({ kind: 'transport', code: 'REQUEST_ABORTED' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('blob 响应模式返回 Blob', async () => {

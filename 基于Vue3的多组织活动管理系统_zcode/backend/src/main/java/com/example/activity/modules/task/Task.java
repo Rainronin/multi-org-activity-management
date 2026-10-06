@@ -23,6 +23,8 @@ public class Task {
     private Long version;
     private OffsetDateTime completedAt;
     private Long createdBy;
+    private String requestKey;
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
 
@@ -112,6 +114,22 @@ public class Task {
 
     public void setCreatedBy(Long createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public Long getVersion() {

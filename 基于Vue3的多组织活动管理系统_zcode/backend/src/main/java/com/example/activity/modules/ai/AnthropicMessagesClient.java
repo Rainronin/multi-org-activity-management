@@ -47,6 +47,10 @@ public class AnthropicMessagesClient implements AiProtocolClient {
         user.put("role", "user");
         user.put("content", request.userPrompt());
         body.put("stream", false);
+        // 与 OpenAI 适配一致：DeepSeek 默认思考会占用文稿输出上限，草稿只需最终正文。
+        if ("api.deepseek.com".equalsIgnoreCase(request.uri().getHost())) {
+            body.putObject("thinking").put("type", "disabled");
+        }
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(request.uri())
             .timeout(Duration.ofSeconds(request.timeoutSeconds()))

@@ -25,6 +25,9 @@ try {
   async function currentVersion(activityId) {
     return (await json(owner, 'GET', `${path}/${activityId}`)).version
   }
+  async function myRegistration(ctx, activityId) {
+    return (await json(ctx, 'GET', '/api/me/registrations')).items.find(x => x.activityId === activityId)
+  }
   // F06：上传必须携带 Idempotency-Key，每次上传生成唯一键
   let keySeq = 0
   const nextKey = () => `audit${Date.now()}-${++keySeq}`
@@ -61,15 +64,18 @@ try {
   const cancelTask = await call(member, 'POST', `${aPath}/tasks/${task.taskId}/advance`, { toStatus: 'CANCELLED' })
   console.log(JSON.stringify({ check: '普通成员通过 advance 取消本人任务', status: cancelTask.status(), state: (await cancelTask.json()).status }))
 
-  const foreignApply = await call(outsider, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '外部账号' })
+  const foreignApply = await call(outsider, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '外部账号', version: 0 })
   const foreignRegistration = await foreignApply.json()
-  const registration = await json(member, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '本人成员' })
+  const registration = await json(member, 'POST', `/api/activities/${activity.id}/registrations`, { displayName: '本人成员', version: 0 })
   const leaked = await call(outsider, 'GET', `/api/organizations/${foreignOrg.id}/activities/${activity.id}/registrations`)
   console.log(JSON.stringify({ check: '报名资格与跨组织读取', outsiderInternalApply: foreignApply.status(), foreignOrgList: leaked.status(), leakedRows: (await leaked.json()).items?.length }))
-  const delegatedApproval = await call(member, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
+  const delegatedApproval = await call(member, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`,
+    { version: registration.version })
   console.log(JSON.stringify({ check: '指定活动负责人审核', status: delegatedApproval.status() }))
-  await json(owner, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`)
-  const selfCancel = await call(member, 'POST', `/api/activities/${activity.id}/registrations/cancel-self`)
+  await json(owner, 'POST', `${aPath}/registrations/${registration.registrationId}/approve`,
+    { version: (await myRegistration(member, activity.id)).version })
+  const selfCancel = await call(member, 'POST', `/api/activities/${activity.id}/registrations/cancel-self`,
+    { version: (await myRegistration(member, activity.id)).version })
   const afterCancel = (await json(member, 'GET', '/api/me/registrations')).items.find(x => x.activityId === activity.id)
   console.log(JSON.stringify({ check: '取消已批准报名', httpStatus: selfCancel.status(), actualState: afterCancel.status }))
 
@@ -82,7 +88,9 @@ try {
   console.log(JSON.stringify({ check: 'P3 页面渲染', browserErrors, unresolvedComponents: warnings.filter(x => x.includes('Failed to resolve component')).map(x => x.split('\n')[0]), hasTaskText: (await page.locator('body').innerText()).includes('本人任务') }))
 
   await json(owner, 'POST', `${aPath}/withdraw-approval`, { reason: '调整安排', version: await currentVersion(activity.id) })
-  const approvedWhileDraft = await call(owner, 'POST', `${aPath}/registrations/${foreignRegistration.registrationId}/approve`)
+  const draftRegistration = foreignRegistration.registrationId ? foreignRegistration : await myRegistration(member, activity.id)
+  const approvedWhileDraft = await call(owner, 'POST', `${aPath}/registrations/${draftRegistration.registrationId}/approve`,
+    { version: draftRegistration.version })
   const patch = await call(owner, 'PATCH', aPath, { capacity: 1, registrationScope: 'PUBLIC', version: await currentVersion(activity.id) })
   const taskWhileDraft = await call(owner, 'POST', `${aPath}/tasks`, { title: '调整期新增任务', assigneeMemberId: ownerMember })
   console.log(JSON.stringify({ check: '关键变更冻结', changeScopeWithRegistrations: patch.status(), createTaskInWithdrawnDraft: taskWhileDraft.status(), approveRegistrationInDraft: approvedWhileDraft.status() }))

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElButton, ElForm, ElFormItem, ElInput, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { ApiError } from '../../shared/http/error'
@@ -15,6 +15,7 @@ const formRef = ref<FormInstance>()
 const submitting = ref(false)
 const errorMessage = ref('')
 const fields = reactive({ username: '', password: '' })
+onBeforeRouteLeave(() => !submitting.value)
 
 const rules: FormRules = {
   username: [{ required: true, whitespace: true, message: '请输入用户名', trigger: 'blur' }],
@@ -31,17 +32,17 @@ function safeNext(): string {
 }
 
 async function submit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) {
-    return
-  }
+  if (submitting.value) return
   submitting.value = true
   errorMessage.value = ''
   try {
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid) return
+    const next = safeNext()
     await session.login(fields.username, fields.password)
-    await router.replace(safeNext())
+    await router.replace(next)
   } catch (error) {
-    if (error instanceof ApiError && !error.isTransportError) {
+    if (error instanceof ApiError && !error.isTransportError && (error.status ?? 0) < 500) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
         errorMessage.value = '安全校验已过期，请重新提交。'
@@ -51,7 +52,7 @@ async function submit() {
         errorMessage.value = '账号或密码不正确。'
       }
     } else {
-      errorMessage.value = '网络连接失败，请检查网络后重试。'
+      errorMessage.value = '登录结果尚未确认，请检查网络后重新登录。'
     }
   } finally {
     submitting.value = false
@@ -83,6 +84,7 @@ async function submit() {
       ref="formRef"
       :model="fields"
       :rules="rules"
+      :disabled="submitting"
       label-position="top"
       @submit.prevent="submit"
     >

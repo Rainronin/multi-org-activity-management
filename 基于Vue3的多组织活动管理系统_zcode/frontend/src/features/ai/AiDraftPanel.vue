@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElAlert, ElButton, ElInput, ElInputNumber, ElTag } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
+import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { useSessionStore } from '../../stores/session'
 import {
   adoptAiGeneration,
   canAdoptGeneration,
   fetchAiInputPreview,
   generateAiDraft,
+  getAiGenerationByRequestKey,
   generationStatusText,
   planConditionsReady,
+  toPlanConditions,
   type AiGeneration,
   type AiGenerationType,
   type AiInputPreview,
@@ -40,12 +43,16 @@ const emit = defineEmits<{
 const session = useSessionStore()
 const preview = ref<AiInputPreview | null>(null)
 const loadingPreview = ref(false)
+const previewFailed = ref(false)
+let previewRequestSeq = 0
 const generating = ref(false)
 const adopting = ref(false)
 const errorText = ref('')
 const noticeText = ref('')
 const generation = ref<AiGeneration | null>(null)
+const pendingGeneration = ref<{ key: string; conditions: AiPlanConditions } | null>(null)
 const draft = ref('')
+const draftBaseline = ref('')
 const showScope = ref(false)
 const localConditions = ref<AiPlanConditions>({
   topic: '',
@@ -60,7 +67,7 @@ const localConditions = ref<AiPlanConditions>({
 const isPlan = computed(() => props.type === 'ACTIVITY_PLAN')
 const effectiveConditions = computed<AiPlanConditions>(() => props.conditions ?? localConditions.value)
 const ready = computed(() => !isPlan.value || planConditionsReady(effectiveConditions.value))
-const canGenerate = computed(() => !props.disabled && ready.value && Boolean(preview.value?.available))
+const canGenerate = computed(() => !props.disabled && (Boolean(pendingGeneration.value) || (ready.value && Boolean(preview.value?.available))))
 const statusText = computed(() => (generation.value ? generationStatusText(generation.value) : ''))
 const adoptable = computed(() => canAdoptGeneration(generation.value))
 
@@ -75,39 +82,64 @@ async function loadPreview(): Promise<void> {
   if (!props.orgId || !props.activityId) {
     return
   }
+  const seq = ++previewRequestSeq
   const gen = session.capture()
   loadingPreview.value = true
+  previewFailed.value = false
   errorText.value = ''
   try {
-    preview.value = await fetchAiInputPreview(props.orgId, props.activityId, props.type)
+    const result = await fetchAiInputPreview(props.orgId, props.activityId, props.type)
+    if (seq !== previewRequestSeq || gen !== session.generation) return
+    preview.value = result
   } catch (error) {
+    if (session.observeUnauthorized(error, gen) || seq !== previewRequestSeq || gen !== session.generation) return
     preview.value = null
-    if (!(error instanceof ApiError && error.status === 403)) {
-      reportError(error, '输入范围加载失败，可继续手工编写。', gen)
-    }
+    previewFailed.value = true
+    errorText.value = readErrorMessage(error, '输入范围加载失败，可继续手工编写。')
   } finally {
-    loadingPreview.value = false
+    if (seq === previewRequestSeq) loadingPreview.value = false
   }
 }
 
-/** 生成：每次点击是一次新的用户意图，使用新的防重键；后端同键重放不会重复调用模型。 */
+/** 未知结果只按原键查询；确认结束后下一次点击才是新的生成意图。 */
 async function generate(): Promise<void> {
+  if (generating.value) return
   const gen = session.capture()
+  const checking = Boolean(pendingGeneration.value)
+  if (!pendingGeneration.value) pendingGeneration.value = {
+    key: newIdempotencyKey(), conditions: toPlanConditions(effectiveConditions.value),
+  }
+  const pending = pendingGeneration.value
   generating.value = true
   errorText.value = ''
   noticeText.value = ''
   try {
-    const result = await generateAiDraft(props.orgId, props.activityId, props.type, effectiveConditions.value)
+    const result = checking
+      ? await getAiGenerationByRequestKey(props.orgId, props.activityId, pending.key)
+      : await generateAiDraft(props.orgId, props.activityId, props.type, pending.conditions, pending.key)
+    if (pendingGeneration.value !== pending) return
+    await loadPreview()
+    if (pendingGeneration.value !== pending) return
     generation.value = result
+    if (result.status !== 'RUNNING') pendingGeneration.value = null
     if (result.status === 'SUCCEEDED' && result.output) {
       draft.value = result.output
+      draftBaseline.value = result.output
       noticeText.value = '草稿仅在本面板中显示，点“采用到编辑区”后可继续人工修改，再走原有保存与确认流程。'
     } else if (result.status === 'FAILED') {
       errorText.value = result.errorMessage ?? '本次生成失败，可继续手工编写。'
+    } else {
+      errorText.value = '生成仍在进行，请稍后核对原请求结果。'
     }
-    await loadPreview()
   } catch (error) {
-    reportError(error, '本次生成失败，可继续手工编写或稍后重试。', gen)
+    if (pendingGeneration.value !== pending) return
+    if (!checking && error instanceof ApiError && error.kind === 'server'
+      && error.status >= 400 && error.status < 500 && error.code !== 'REQUEST_IN_PROGRESS') {
+      pendingGeneration.value = null
+      reportError(error, '本次生成未被受理，可修改条件后重试。', gen)
+    } else if (!session.observeUnauthorized(error, gen)) {
+      errorText.value = '生成结果尚未确认，请点“核对生成结果”；核对不会再次调用模型。'
+    }
   } finally {
     generating.value = false
   }
@@ -116,34 +148,49 @@ async function generate(): Promise<void> {
 function applyDraft(): void {
   if (draft.value.trim()) {
     emit('apply', draft.value)
+    draftBaseline.value = draft.value
     noticeText.value = '草稿已放入编辑区，请人工修改后再保存。'
   }
 }
 
 /** 人工采用：只记录采用状态；真正生效仍以业务端点的保存与确认为准。 */
 async function adopt(): Promise<void> {
-  if (!generation.value) {
-    return
-  }
+  const target = generation.value
+  if (!target || adopting.value) return
   const gen = session.capture()
   adopting.value = true
   errorText.value = ''
   try {
-    generation.value = await adoptAiGeneration(props.orgId, props.activityId, generation.value.generationId)
+    const result = await adoptAiGeneration(props.orgId, props.activityId, target.generationId)
+    if (generation.value !== target || gen !== session.generation) return
+    generation.value = result
     noticeText.value = '已记录采用状态；保存后仍按各自流程校验权限与来源。'
   } catch (error) {
-    reportError(error, '采用状态记录失败，内容不受影响。', gen)
+    if (generation.value === target && gen === session.generation) {
+      reportError(error, '采用状态记录失败，内容不受影响。', gen)
+    } else {
+      session.observeUnauthorized(error, gen)
+    }
   } finally {
     adopting.value = false
   }
 }
 
 watch(() => [props.orgId, props.activityId, props.type], () => {
+  pendingGeneration.value = null
   generation.value = null
   draft.value = ''
+  draftBaseline.value = ''
+  preview.value = null
+  errorText.value = ''
   noticeText.value = ''
   void loadPreview()
 }, { immediate: true })
+
+defineExpose({
+  hasPendingGeneration: () => Boolean(pendingGeneration.value) || draft.value !== draftBaseline.value,
+  isGenerating: () => generating.value,
+})
 </script>
 
 <template>
@@ -163,7 +210,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
       </ElTag>
     </div>
     <p class="ai-draft__hint">
-      {{ preview?.availabilityHint ?? '正在读取模型可用状态……' }}；
+      {{ preview?.availabilityHint ?? (loadingPreview ? '正在读取模型可用状态……' : '模型可用状态读取失败，可继续手工编写') }}；
       生成的文字只是草稿，需人工编辑并保存，不会自动创建任务、改变预算或批准活动。
     </p>
 
@@ -177,6 +224,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-topic"
             v-model="localConditions.topic"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="topic"
             placeholder="例如 迎新晚会"
           />
@@ -189,6 +237,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-goal"
             v-model="localConditions.goal"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="goal"
             placeholder="例如 帮助新成员熟悉组织"
           />
@@ -201,6 +250,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-audience"
             v-model="localConditions.audience"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="audience"
             placeholder="例如 新成员与老成员"
           />
@@ -213,6 +263,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInputNumber
             id="ai-plan-participants"
             v-model="localConditions.expectedParticipants"
+            :disabled="Boolean(pendingGeneration)"
             :min="1"
             :max="100000"
             data-ai-field="expectedParticipants"
@@ -226,6 +277,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-budget"
             v-model="localConditions.budget"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="budget"
             placeholder="例如 不超过 3000 元"
           />
@@ -238,6 +290,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-time-place"
             v-model="localConditions.timePlace"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="timePlace"
             placeholder="例如 九月第一个周五晚上，礼堂"
           />
@@ -250,6 +303,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
           <ElInput
             id="ai-plan-constraints"
             v-model="localConditions.constraints"
+            :disabled="Boolean(pendingGeneration)"
             data-ai-field="constraints"
             placeholder="例如 不使用明火"
           />
@@ -268,6 +322,14 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
         @click="showScope = !showScope"
       >
         {{ showScope ? '收起输入范围' : '查看本次输入范围' }}
+      </ElButton>
+      <ElButton
+        v-if="previewFailed"
+        size="small"
+        :loading="loadingPreview"
+        @click="loadPreview"
+      >
+        重新读取
       </ElButton>
       <span
         v-if="loadingPreview"
@@ -302,7 +364,7 @@ watch(() => [props.orgId, props.activityId, props.type], () => {
         data-ai-action="generate"
         @click="generate"
       >
-        {{ generating ? '生成中……' : '生成草稿' }}
+        {{ generating ? '处理中……' : pendingGeneration ? '核对生成结果' : '生成草稿' }}
       </ElButton>
       <span
         v-if="disabled"

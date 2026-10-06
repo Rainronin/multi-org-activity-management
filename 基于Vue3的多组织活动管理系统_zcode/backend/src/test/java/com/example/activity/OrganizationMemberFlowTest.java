@@ -136,6 +136,95 @@ class OrganizationMemberFlowTest extends ActivityTestBase {
     }
 
     @Test
+    void invitationCreationReplayKeepsOneCodeAndCurrentAuthorization() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String path = "/api/organizations/" + orgId + "/invitations";
+        String key = "invite-" + System.nanoTime();
+        MvcResult created = mockMvc.perform(post(path).with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.code").isNotEmpty()).andReturn();
+        String first = created.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        String id = com.jayway.jsonpath.JsonPath.read(first, "$.invitationId");
+        String expiresAt = com.jayway.jsonpath.JsonPath.read(first, "$.expiresAt");
+        String code = com.jayway.jsonpath.JsonPath.read(first, "$.code");
+        acceptInvitation(member, code);
+        mockMvc.perform(post(path).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"expiresInDays\":7,\"maxUses\":10}"))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.invitationId").value(id))
+            .andExpect(jsonPath("$.expiresAt").value(expiresAt)).andExpect(jsonPath("$.code").doesNotExist());
+        mockMvc.perform(post(path).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"maxUses\":11}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        for (String invalidKey : java.util.List.of(" ", "x".repeat(65))) {
+            mockMvc.perform(post(path).with(csrf()).session(owner.session()).header("Idempotency-Key", invalidKey)
+                    .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+        }
+        mockMvc.perform(post(path).with(csrf()).session(member.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isForbidden());
+        Long memberId = memberIdOf(orgId, member.username());
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/" + memberId + "/promote-owner")
+                .with(csrf()).session(owner.session())).andExpect(status().isOk());
+        mockMvc.perform(post(path).with(csrf()).session(member.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        mockMvc.perform(post(path + "/" + id + "/revoke").with(csrf()).session(owner.session()))
+            .andExpect(status().isNoContent());
+        mockMvc.perform(post(path).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.invitationId").value(id))
+            .andExpect(jsonPath("$.code").doesNotExist());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM organization_invitation WHERE org_id = ?",
+            Integer.class, orgId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT used_count FROM organization_invitation WHERE id = ?",
+            Integer.class, id)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE action = 'INVITATION_CREATED' AND target = ?",
+            Integer.class, "organization:" + orgId)).isEqualTo(1);
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/" + memberIdOf(orgId, owner.username()) + "/revoke-owner")
+                .with(csrf()).session(member.session())).andExpect(status().isOk());
+        mockMvc.perform(post(path).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void concurrentInvitationCreationReturnsOneResourceWithoutRepeatingPlaintext() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String key = "concurrent-invite-" + System.nanoTime();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(6);
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+            for (int i = 0; i < 6; i++) futures.add(pool.submit(() -> {
+                gate.await();
+                return mockMvc.perform(post("/api/organizations/" + orgId + "/invitations").with(csrf())
+                    .session(owner.session()).header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn();
+            }));
+            gate.countDown();
+            var ids = new java.util.HashSet<String>();
+            int plaintextResponses = 0;
+            for (var future : futures) {
+                MvcResult response = future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                assertThat(response.getResponse().getStatus()).isEqualTo(201);
+                var json = com.jayway.jsonpath.JsonPath.parse(response.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+                ids.add(json.read("$.invitationId"));
+                if (json.read("$.code") != null) plaintextResponses++;
+            }
+            assertThat(ids).hasSize(1);
+            assertThat(plaintextResponses).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM organization_invitation WHERE org_id = ?",
+                Integer.class, orgId)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE action = 'INVITATION_CREATED' AND target = ?",
+                Integer.class, "organization:" + orgId)).isEqualTo(1);
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
     void maxUsesExhaustedBecomesInvalid() throws Exception {
         TestSession owner = registerAndLogin();
         TestSession a = registerAndLogin();

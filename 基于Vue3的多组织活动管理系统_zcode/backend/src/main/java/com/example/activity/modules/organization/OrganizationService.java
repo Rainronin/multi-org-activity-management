@@ -1,8 +1,11 @@
 package com.example.activity.modules.organization;
 
 import com.example.activity.common.ApiException;
+import com.example.activity.common.FieldErrorItem;
+import com.example.activity.common.RequestFingerprint;
 import com.example.activity.common.audit.AuditService;
 import java.util.List;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,7 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class OrganizationService {
 
-    public record OrganizationCreated(Long orgId, String name, String description, String role) {
+    public record OrganizationCreated(Long orgId, String name, String description, String role, java.time.OffsetDateTime joinedAt) {
     }
 
     public record OrganizationDirectoryItem(
@@ -39,12 +42,39 @@ public class OrganizationService {
     }
 
     @Transactional
-    public OrganizationCreated create(Long creatorAccountId, String name, String description) {
+    public OrganizationCreated create(Long creatorAccountId, String name, String description, String requestKey) {
+        String key = requestKey == null ? null : requestKey.trim();
+        if (key != null && (key.isEmpty() || key.length() > 64)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "请求参数不合法",
+                "Idempotency-Key 必须为 1～64 字符。", List.of(new FieldErrorItem("Idempotency-Key", "长度必须为 1～64 字符")));
+        }
+        String fingerprint = key == null ? null : RequestFingerprint.of(name, description);
+        if (key != null) {
+            Organization existing = organizationMapper.findByRequestKey(creatorAccountId, key);
+            if (existing != null) {
+                organizationMapper.lockOrganizationShared(existing.getId());
+                OrganizationMember member = memberMapper.findActive(existing.getId(), creatorAccountId);
+                if (member == null || !"ACTIVE".equals(existing.getStatus())) {
+                    throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "组织不存在或无权访问。");
+                }
+                if (!fingerprint.equals(existing.getRequestFingerprint())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", "重复的防重键", "该请求键已用于不同的组织创建内容。");
+                }
+                return new OrganizationCreated(existing.getId(), existing.getName(), existing.getDescription(), member.getRole(), member.getJoinedAt());
+            }
+        }
         Organization organization = new Organization();
         organization.setName(name);
         organization.setDescription(description);
         organization.setStatus("ACTIVE");
-        organizationMapper.insert(organization);
+        organization.setCreatedBy(creatorAccountId);
+        organization.setRequestKey(key);
+        organization.setRequestFingerprint(fingerprint);
+        try {
+            organizationMapper.insert(organization);
+        } catch (DuplicateKeyException duplicate) {
+            throw new ApiException(HttpStatus.CONFLICT, "REQUEST_IN_PROGRESS", "相同请求已被受理", "请保留原请求键核对创建结果。");
+        }
 
         OrganizationMember member = new OrganizationMember();
         member.setOrgId(organization.getId());
@@ -53,9 +83,11 @@ public class OrganizationService {
         member.setStatus(OrganizationMember.STATUS_ACTIVE);
         memberMapper.insert(member);
 
-        auditService.record(creatorAccountId, "ORGANIZATION", "ORGANIZATION_CREATED",
-            "organization:" + organization.getId(), null, java.util.Map.of("name", name));
-        return new OrganizationCreated(organization.getId(), name, description, OrganizationMember.ROLE_OWNER);
+        OrganizationMember createdMember = memberMapper.findActive(organization.getId(), creatorAccountId);
+        auditService.recordChange(creatorAccountId, "ORGANIZATION", "ORGANIZATION_CREATED",
+            "organization:" + organization.getId(), null, java.util.Map.of("name", name), null,
+            java.util.Map.of("status", "ACTIVE", "memberId", createdMember.getId(), "role", createdMember.getRole()));
+        return new OrganizationCreated(organization.getId(), name, description, createdMember.getRole(), createdMember.getJoinedAt());
     }
 
     public List<OrganizationDirectoryItem> listMine(Long accountId) {

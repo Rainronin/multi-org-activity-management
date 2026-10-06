@@ -59,25 +59,27 @@ public class AccountService {
 
         String recoveryCode = SecureCodes.generate();
         insertActiveCredential(account.getId(), recoveryCode);
-        auditService.record(account.getId(), "ACCOUNT", "ACCOUNT_REGISTERED", "account:" + account.getId(), null,
-            java.util.Map.of("username", username));
+        auditService.recordChange(account.getId(), "ACCOUNT", "ACCOUNT_REGISTERED", "account:" + account.getId(), null,
+            java.util.Map.of("username", username), null, auditState(account));
         return new RegistrationResult(account.getId(), username, recoveryCode);
     }
 
     @Transactional
     public RecoveryResult recover(String username, String recoveryCode, String newPassword) {
-        Account account = accountMapper.findByUsername(username);
+        Account account = accountMapper.findByUsernameForUpdate(username);
         RecoveryCredential credential = account == null ? null : recoveryCredentialMapper.findActiveByAccountId(account.getId());
         if (credential == null || !SecureCodes.hash(SecureCodes.normalize(recoveryCode)).equals(credential.getCodeHash())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_INVALID_CREDENTIALS", "恢复失败", UNIFIED_RECOVERY_FAILURE);
         }
+        AccountState before = auditState(account);
         // 并发消费保护：只有仍为 ACTIVE 的码能被消费。
         if (recoveryCredentialMapper.markConsumed(credential.getId()) != 1) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_INVALID_CREDENTIALS", "恢复失败", UNIFIED_RECOVERY_FAILURE);
         }
 
         String newCode = issueNewCodeAfterPasswordChange(account.getId(), newPassword);
-        auditService.record(account.getId(), "ACCOUNT", "ACCOUNT_RECOVERED", "account:" + account.getId(), null, null);
+        auditService.recordChange(account.getId(), "ACCOUNT", "ACCOUNT_RECOVERED", "account:" + account.getId(), null,
+            null, before, auditState(accountMapper.findById(account.getId())));
         return new RecoveryResult(newCode);
     }
 
@@ -87,10 +89,12 @@ public class AccountService {
         if (!passwordEncoder.matches(currentPassword, account.getPasswordHash())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_INVALID_CREDENTIALS", "验证失败", "当前密码不正确。");
         }
+        AccountState before = auditState(account);
         recoveryCredentialMapper.revokeActiveByAccountId(accountId);
         String recoveryCode = SecureCodes.generate();
         insertActiveCredential(accountId, recoveryCode);
-        auditService.record(accountId, "ACCOUNT", "RECOVERY_CODE_REISSUED", "account:" + accountId, null, null);
+        auditService.recordChange(accountId, "ACCOUNT", "RECOVERY_CODE_REISSUED", "account:" + accountId, null,
+            null, before, auditState(accountMapper.findById(accountId)));
         return new RecoveryResult(recoveryCode);
     }
 
@@ -103,7 +107,8 @@ public class AccountService {
         }
         accountMapper.updatePasswordAndBumpVersion(accountId, passwordEncoder.encode(newPassword));
         long newVersion = requireAccount(accountId).getAuthVersion();
-        auditService.record(accountId, "ACCOUNT", "PASSWORD_CHANGED", "account:" + accountId, null, null);
+        auditService.recordChange(accountId, "ACCOUNT", "PASSWORD_CHANGED", "account:" + accountId, null,
+            null, auditState(account), auditState(accountMapper.findById(accountId)));
         return newVersion;
     }
 
@@ -123,10 +128,17 @@ public class AccountService {
     }
 
     private Account requireAccount(Long accountId) {
-        Account account = accountMapper.findById(accountId);
+        Account account = accountMapper.findByIdForUpdate(accountId);
         if (account == null || !"ACTIVE".equals(account.getStatus())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_REQUIRED", "未登录或会话已失效", "请先登录后再访问该资源。");
         }
         return account;
+    }
+
+    private record AccountState(String status, Long authVersion, Long activeRecoveryCredentialId) { }
+
+    private AccountState auditState(Account account) {
+        RecoveryCredential active = recoveryCredentialMapper.findActiveByAccountId(account.getId());
+        return new AccountState(account.getStatus(), account.getAuthVersion(), active == null ? null : active.getId());
     }
 }

@@ -1,4 +1,4 @@
-import { createApp } from 'vue'
+import { createApp, nextTick } from 'vue'
 import { createPinia } from 'pinia'
 import { provideGlobalConfig } from 'element-plus'
 // 未显式配置时组件库回落到英文（Select 占位、Pagination 等内置文案）；统一为简体中文。
@@ -20,7 +20,17 @@ provideGlobalConfig({ locale: zhCn }, app, true)
 
 const session = useSessionStore()
 session.bindRedirect((target) => {
-  void router.push(target)
+  const current = router.currentRoute.value
+  const generation = session.capture()
+  const destination = target === '/login' && current.path !== '/login'
+    ? { path: target, query: { next: current.fullPath } }
+    : target
+  // 先卸载旧会话页面及草稿守卫，再引导登录；迟到引导不能打断新会话。
+  void nextTick(() => {
+    if (generation === session.generation && session.status === 'guest') {
+      return router.push(destination)
+    }
+  })
 })
 
 // 切回标签页时重新验证会话（开发规范 2.4 / 审核 R02）。

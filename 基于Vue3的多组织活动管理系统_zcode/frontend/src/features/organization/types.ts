@@ -30,7 +30,7 @@ export interface MemberItem {
 
 export interface InvitationItem {
   invitationId: string
-  createdBy: number
+  createdBy: string
   createdAt: string
   expiresAt: string
   maxUses: number
@@ -40,7 +40,7 @@ export interface InvitationItem {
 
 export interface InvitationCreated {
   invitationId: string
-  code: string
+  code: string | null
   expiresAt: string
   maxUses: number
 }

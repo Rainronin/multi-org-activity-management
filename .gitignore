@@ -7,7 +7,12 @@ playwright-report/
 test-results/
 __pycache__/
 *.py[cod]
+*.tsbuildinfo
+*.class
+*.jar
+!**/.mvn/wrapper/maven-wrapper.jar
 *.log
+logs/
 
 # 本机配置与敏感数据；仅提交无凭据示例
 .env
@@ -18,14 +23,35 @@ application-local.yml
 application-local.yaml
 application-test-local.yml
 application-test-local.yaml
+application-prod.yml
+application-prod.yaml
+application-private.yml
+application-private.yaml
 /.local/
 /runtime/
+/基于Vue3的多组织活动管理系统_zcode/backend/config/
 # 上传目录：按目录名忽略任意层级，避免源码树内残留附件进入版本库
 uploads/
 /backups/
+/历史参考/
+*.dump
+*.dmp
+*.sql
+!**/src/main/resources/db/migration/*.sql
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
 
 # 本机 IDE 元数据；不忽略锁文件、Wrapper 或图示成果
 .idea/
+.vscode/
 *.iml
 .DS_Store
 Thumbs.db

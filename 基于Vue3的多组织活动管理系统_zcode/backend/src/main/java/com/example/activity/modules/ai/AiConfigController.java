@@ -31,7 +31,7 @@ public class AiConfigController {
         String protocol, String model, String endpoint, String authScheme, Integer maxOutputTokens,
         String outputLimitField, Integer timeoutSeconds, boolean hasApiKey, boolean enabled, Long version,
         Integer connectionRevision, Integer testedRevision, boolean testedForCurrentRevision,
-        OffsetDateTime testedAt, Long testedBy) {
+        OffsetDateTime testedAt, String testedBy) {
     }
 
     public record SaveConfigRequest(
@@ -54,7 +54,7 @@ public class AiConfigController {
     }
 
     public record ConnectionTestResponse(
-        String status, String message, Integer testedRevision, String requestId, OffsetDateTime testedAt) {
+        String status, String message, Integer testedRevision, String requestId, OffsetDateTime testedAt, String errorCode) {
     }
 
     private final AiConfigService configService;
@@ -70,7 +70,7 @@ public class AiConfigController {
             view.protocol(), view.model(), view.endpoint(), view.authScheme(), view.maxOutputTokens(),
             view.outputLimitField(), view.timeoutSeconds(), view.hasApiKey(), view.enabled(), view.version(),
             view.connectionRevision(), view.testedRevision(), view.testedForCurrentRevision(),
-            view.testedAt(), view.testedBy());
+            view.testedAt(), view.testedBy() == null ? null : String.valueOf(view.testedBy()));
     }
 
     @GetMapping("/api/organizations/{orgId}/ai/config")
@@ -96,12 +96,23 @@ public class AiConfigController {
     public ResponseEntity<ConnectionTestResponse> test(
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
+        @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody VersionRequest request) {
         AiGenerationService.ConnectionTestResult result =
-            generationService.testConnection(principal.getAccountId(), orgId, request.version());
+            generationService.testConnection(principal.getAccountId(), orgId, request.version(), requestKey);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new ConnectionTestResponse(result.status(), result.message(), result.testedRevision(),
-                result.requestId(), result.testedAt()));
+                result.requestId(), result.testedAt(), result.errorCode()));
+    }
+
+    @GetMapping("/api/organizations/{orgId}/ai/config/test/by-request-key")
+    public ResponseEntity<ConnectionTestResponse> testResult(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @org.springframework.web.bind.annotation.RequestParam("requestKey") String requestKey) {
+        var result = generationService.getConnectionTestByRequestKey(principal.getAccountId(), orgId, requestKey);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new ConnectionTestResponse(
+            result.status(), result.message(), result.testedRevision(), result.requestId(), result.testedAt(), result.errorCode()));
     }
 
     @PostMapping("/api/organizations/{orgId}/ai/config/enable")

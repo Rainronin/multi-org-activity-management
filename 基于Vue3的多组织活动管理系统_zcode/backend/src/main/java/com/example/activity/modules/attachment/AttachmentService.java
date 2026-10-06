@@ -177,6 +177,16 @@ public class AttachmentService {
         return attachmentMapper.listActiveByActivity(activityId).stream().map(this::toItem).toList();
     }
 
+    /** 核对原上传只读返回；改派或活动只读不要求仍具有上传权限。 */
+    public AttachmentItem getByRequestKey(Long accountId, Long orgId, Long activityId, String requestKey) {
+        Context ctx = requireContext(accountId, orgId, activityId);
+        Attachment row = attachmentMapper.findByRequestKey(orgId, requireIdempotencyKey(requestKey));
+        if (row == null || !row.getActivityId().equals(activityId) || !row.getUploadedBy().equals(accountId)) throw notFound();
+        if (Attachment.PURPOSE_EXPENSE_VOUCHER.equals(row.getPurpose()) && !ctx.canManage()) throw notFound();
+        if (row.getDeletedAt() != null) throw new ApiException(HttpStatus.GONE, "ATTACHMENT_DELETED", "资料已删除", "原上传已完成，但资料随后被删除；不能用原请求键重新上传。");
+        return toItem(row);
+    }
+
     /** S10：任务资料列表；任务归属与活动可见性先校验，权限与活动级资料一致。 */
     public List<AttachmentItem> listByTask(Long accountId, Long orgId, Long activityId, Long taskId) {
         requireContext(accountId, orgId, activityId);
@@ -209,7 +219,7 @@ public class AttachmentService {
         String fingerprint = uploadFingerprint(staged, owner, activityId);
         Attachment replay = attachmentMapper.findByRequestKey(orgId, requestKey);
         if (replay != null) {
-            requireSameUpload(replay, fingerprint);
+            requireSameUpload(replay, fingerprint, accountId, activityId, owner);
             return toItem(replay);
         }
         // F07：任务资料先按锁协议取任务行共享锁，再按当前任务重新判断承担者
@@ -242,11 +252,11 @@ public class AttachmentService {
             if (committed == null) {
                 throw duplicate;
             }
-            requireSameUpload(committed, fingerprint);
+            requireSameUpload(committed, fingerprint, accountId, activityId, owner);
             return toItem(committed);
         }
-        auditService.record(accountId, "ACTIVITY", "ATTACHMENT_UPLOADED", "attachment:" + attachment.getId(),
-            null, Map.of("activityId", activityId, "size", staged.sizeBytes(), "purpose", owner.purpose()));
+        auditService.recordChange(accountId, "ACTIVITY", "ATTACHMENT_UPLOADED", "attachment:" + attachment.getId(),
+            null, Map.of("activityId", activityId, "size", staged.sizeBytes(), "purpose", owner.purpose()), null, auditState(attachmentMapper.findActiveById(attachment.getId())));
         return toItem(attachmentMapper.findActiveById(attachment.getId()));
     }
 
@@ -281,10 +291,16 @@ public class AttachmentService {
     }
 
     /** F06：同键重放只接受与首次上传相同的内容与归属；已删除的附件不因重放复活。 */
-    private void requireSameUpload(Attachment stored, String fingerprint) {
-        if (stored.getDeletedAt() != null || !fingerprint.equals(stored.getRequestFingerprint())) {
+    private void requireSameUpload(
+        Attachment stored, String fingerprint, Long accountId, Long activityId, AttachmentOwner owner) {
+        // 保留已落库摘要算法，独立核对原操作者及完整归属，兼容历史请求键。
+        if (!stored.getUploadedBy().equals(accountId) || !stored.getActivityId().equals(activityId)
+            || !java.util.Objects.equals(stored.getTaskId(), taskIdOf(owner))
+            || !java.util.Objects.equals(stored.getExpenseId(), expenseIdOf(owner))
+            || !stored.getPurpose().equals(owner.purpose())
+            || stored.getDeletedAt() != null || !fingerprint.equals(stored.getRequestFingerprint())) {
             throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", "重复的防重键",
-                "该 Idempotency-Key 已用于内容或归属不同的上传，请使用新的键重试。");
+                "该 Idempotency-Key 已用于操作者、内容或归属不同的上传，请核对原请求。");
         }
     }
 
@@ -395,6 +411,12 @@ public class AttachmentService {
         }
     }
 
+    private record AttachmentState(Long attachmentId, String purpose, Long taskId, Long expenseId, long sizeBytes, boolean deleted) { }
+
+    private AttachmentState auditState(Attachment attachment) {
+        return new AttachmentState(attachment.getId(), attachment.getPurpose(), attachment.getTaskId(), attachment.getExpenseId(), attachment.getSizeBytes(), attachment.getDeletedAt() != null);
+    }
+
     public record Download(Attachment attachment, byte[] content) {
     }
 
@@ -450,8 +472,8 @@ public class AttachmentService {
         if (attachmentMapper.markDeleted(attachmentId) != 1) {
             throw notFound();
         }
-        auditService.record(accountId, "ACTIVITY", "ATTACHMENT_DELETED", "attachment:" + attachmentId,
-            null, Map.of("activityId", activityId));
+        auditService.recordChange(accountId, "ACTIVITY", "ATTACHMENT_DELETED", "attachment:" + attachmentId,
+            null, Map.of("activityId", activityId), auditState(attachment), auditState(attachmentMapper.findById(attachmentId)));
         Path path = storageDir.resolve(attachment.getStoredName()).normalize();
         // 磁盘清理安排在事务提交之后：提交前不删文件，避免回滚后文件已丢失
         if (TransactionSynchronizationManager.isSynchronizationActive()) {

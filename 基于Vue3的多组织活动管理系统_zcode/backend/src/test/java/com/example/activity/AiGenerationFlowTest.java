@@ -20,6 +20,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -38,6 +40,15 @@ import org.springframework.test.web.servlet.MvcResult;
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
 class AiGenerationFlowTest extends FlowTestSupport {
+
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.example.activity.modules.organization.OrganizationMapper organizationMapper;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.mybatis.spring.SqlSessionTemplate sqlSession;
 
     private static final String API_KEY = "sk-test-secret-abcdef";
     private static final String MASTER_KEY = Base64.getEncoder()
@@ -163,6 +174,142 @@ class AiGenerationFlowTest extends FlowTestSupport {
 
     // ---------- 用例 ----------
 
+    @ParameterizedTest
+    @ValueSource(strings = {"CONFIG_CHANGED", "OWNER_REVOKED"})
+    void connectionTestReadsStateAfterWaitingForOrganizationLock(String change) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession secondOwner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, secondOwner, orgId);
+        mockMvc.perform(post("/api/organizations/" + orgId + "/members/"
+                + memberIdOf(orgId, secondOwner.username()) + "/promote-owner")
+                .with(csrf()).session(owner.session())).andExpect(status().isOk());
+        configureAndEnable(owner, orgId, "OPENAI_CHAT_COMPLETIONS", stub.baseUrl() + "/v1/chat/completions", 10);
+        String key = newIdempotencyKey();
+        String body = "{\"version\":" + configVersion(orgId) + "}";
+        var sharedLockAttempt = new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            sharedLockAttempt.countDown();
+            return sqlSession.selectOne("com.example.activity.modules.organization.OrganizationMapper.lockOrganizationShared",
+                Map.of("orgId", orgId));
+        }).when(organizationMapper).lockOrganizationShared(orgId);
+
+        var response = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future<MvcResult>>();
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        try (var pool = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            transaction.executeWithoutResult(transactionStatus -> {
+                jdbcTemplate.queryForObject("SELECT id FROM organization WHERE id = ? FOR UPDATE", Long.class, orgId);
+                response.set(pool.submit(() -> mockMvc.perform(post(configPath(orgId) + "/test")
+                    .with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON).content(body)).andReturn()));
+                try {
+                    assertThat(sharedLockAttempt.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("等待连接测试取锁时被中断", interrupted);
+                }
+                if ("CONFIG_CHANGED".equals(change)) {
+                    jdbcTemplate.update("UPDATE ai_config SET model = 'revised-stub-model', version = version + 1, "
+                        + "connection_revision = connection_revision + 1, tested_revision = NULL, tested_at = NULL, "
+                        + "tested_by = NULL, enabled = 0 WHERE org_id = ?", orgId);
+                } else {
+                    jdbcTemplate.update("UPDATE organization_member SET role = 'MEMBER' WHERE org_id = ? AND account_id = "
+                        + "(SELECT id FROM account WHERE username = ?)", orgId, owner.username());
+                }
+            });
+            MvcResult result = response.get().get(15, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(stub.callCount()).isZero();
+            assertThat(result.getResponse().getStatus()).isEqualTo("CONFIG_CHANGED".equals(change) ? 409 : 403);
+            assertThat(field(result, "$.code")).isEqualTo("CONFIG_CHANGED".equals(change) ? "EDIT_CONFLICT" : "FORBIDDEN");
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_generation WHERE org_id = ? AND request_key = ?",
+            Integer.class, orgId, key)).isZero();
+    }
+
+    @Test
+    void connectionTestOriginalKeyDoesNotCallModelAgain() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        configureAndEnable(owner, orgId, "OPENAI_CHAT_COMPLETIONS", stub.baseUrl() + "/v1/chat/completions", 10);
+        String key = newIdempotencyKey();
+        String body = "{\"version\":" + configVersion(orgId) + "}";
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                    .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        }
+        assertThat(stub.callCount()).isEqualTo(1);
+        mockMvc.perform(get(configPath(orgId) + "/test/by-request-key").session(owner.session()).param("requestKey", key))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("SUCCEEDED"));
+        mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + (configVersion(orgId) + 1) + "}"))
+            .andExpect(status().isConflict());
+        mockMvc.perform(post(configPath(orgId) + "/disable").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("SUCCEEDED"));
+        assertThat(stub.callCount()).isEqualTo(1);
+        TestSession member = registerAndLogin();
+        inviteAndAccept(owner, member, orgId);
+        mockMvc.perform(get(configPath(orgId) + "/test/by-request-key").session(member.session()).param("requestKey", key))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(get(configPath(orgId) + "/test/by-request-key").session(owner.session()).param("requestKey", "missing-key"))
+            .andExpect(status().isNotFound());
+        for (String detail : jdbcTemplate.queryForList("SELECT detail FROM audit_log WHERE scope = 'AI' AND (target = ? OR JSON_EXTRACT(detail, '$.orgId') = ?)",
+                String.class, "org:" + orgId, orgId)) {
+            var state = new com.fasterxml.jackson.databind.ObjectMapper().readTree(detail);
+            assertThat(state.has("before")).isTrue();
+            assertThat(state.hasNonNull("after")).isTrue();
+            assertThat(detail).doesNotContain(API_KEY, "apiKeyCiphertext", "outputText", "passwordHash");
+        }
+    }
+
+    @Test
+    void timedOutConnectionTestOnlyChecksOriginalKey() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        configureAndEnable(owner, orgId, "OPENAI_CHAT_COMPLETIONS", stub.baseUrl() + "/v1/chat/completions", 10);
+        String key = newIdempotencyKey();
+        String body = "{\"version\":" + configVersion(orgId) + "}";
+        stub.setDelayMillis(3500);
+        mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isGatewayTimeout());
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(get(configPath(orgId) + "/test/by-request-key").session(owner.session()).param("requestKey", key))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        }
+        mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        assertThat(stub.callCount()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentConnectionTestKeepsOneExternalCall() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        configureAndEnable(owner, orgId, "OPENAI_CHAT_COMPLETIONS", stub.baseUrl() + "/v1/chat/completions", 10);
+        String key = newIdempotencyKey();
+        String body = "{\"version\":" + configVersion(orgId) + "}";
+        stub.setDelayMillis(500);
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var responses = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+            for (int i = 0; i < 2; i++) responses.add(pool.submit(() -> {
+                gate.await();
+                return mockMvc.perform(post(configPath(orgId) + "/test").with(csrf()).session(owner.session())
+                    .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
+            }));
+            gate.countDown();
+            for (var response : responses) assertThat(response.get().getResponse().getStatus()).isIn(200, 409);
+        }
+        assertThat(stub.callCount()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_generation WHERE org_id = ? AND request_key = ?", Integer.class, orgId, key)).isEqualTo(1);
+    }
+
     @Test
     void concurrentSameKeyGenerationCallsModelOnlyOnce() throws Exception {
         TestSession owner = registerAndLogin();
@@ -239,6 +386,11 @@ class AiGenerationFlowTest extends FlowTestSupport {
         assertThat(replay.getResponse().getStatus()).isEqualTo(201);
         assertThat(field(replay, "$.generationId")).isEqualTo(String.valueOf(generationId));
         assertThat(stub.callCount()).isEqualTo(1);
+        mockMvc.perform(get(generatePath(orgId, activityId) + "/by-request-key")
+                .param("key", generationColumn(generationId, "request_key")).session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.generationId").value(String.valueOf(generationId)));
+        assertThat(stub.callCount()).isEqualTo(1);
 
         // 人工采用：只记录采用状态与时间
         mockMvc.perform(post(generatePath(orgId, activityId) + "/" + generationId + "/adopt")
@@ -273,6 +425,37 @@ class AiGenerationFlowTest extends FlowTestSupport {
         assertThat(jdbcTemplate.queryForObject(
             "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'ai_generation' "
                 + "AND column_name LIKE '%api%key%'", Long.class)).isZero();
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "api.deepseek.com,true", "API.DEEPSEEK.COM,true",
+        "api.anthropic.com,false", "api.deepseek.com.evil.invalid,false"
+    })
+    void anthropicDisablesDefaultThinkingOnlyForDeepSeek(String host, boolean expectedDisabled) throws Exception {
+        var transport = org.mockito.Mockito.mock(java.net.http.HttpClient.class);
+        org.mockito.Mockito.when(transport.send(org.mockito.ArgumentMatchers.any(java.net.http.HttpRequest.class),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+                    java.net.http.HttpRequest original = invocation.getArgument(0);
+                    var forwarded = java.net.http.HttpRequest.newBuilder(java.net.URI.create(stub.baseUrl() + "/v1/messages"))
+                        .POST(original.bodyPublisher().orElseThrow()).build();
+                    return java.net.http.HttpClient.newHttpClient()
+                        .send(forwarded, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+                });
+        stub.setShape("anthropic");
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var client = new com.example.activity.modules.ai.AnthropicMessagesClient(mapper, transport,
+            new com.example.activity.modules.ai.AiProperties());
+        client.call(new com.example.activity.modules.ai.AiProtocolClient.Request(
+            java.net.URI.create("https://" + host + "/anthropic/v1/messages"), host, "deepseek-flash", API_KEY,
+            "X_API_KEY", 60, 2048, "MAX_TOKENS", "生成简短草稿", "迎新活动"));
+        var sent = mapper.readTree(stub.lastRequest().body());
+        if (expectedDisabled) {
+            assertThat(sent.path("thinking").path("type").asText()).isEqualTo("disabled");
+        } else {
+            assertThat(sent.has("thinking")).isFalse();
+        }
+        assertThat(sent.path("max_tokens").asInt()).isEqualTo(2048);
     }
 
     @Test
@@ -439,9 +622,17 @@ class AiGenerationFlowTest extends FlowTestSupport {
         Long generationId = latestGenerationId(activityId);
         String requestKey = generationColumn(generationId, "request_key");
 
+        // 同一活动的其他有权管理者也不能按原操作者的请求键获取结果。
+        mockMvc.perform(get(generatePath(orgId, activityId) + "/by-request-key")
+                .param("key", requestKey).session(owner.session()))
+            .andExpect(status().isNotFound());
+
         // 生成时活动负责人可用；撤权后不能再读草稿或重新生成
         jdbcTemplate.update("UPDATE activity SET owner_member_id = ? WHERE id = ?", ownerMemberId, activityId);
         mockMvc.perform(get(generatePath(orgId, activityId) + "/" + generationId).session(member.session()))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(get(generatePath(orgId, activityId) + "/by-request-key")
+                .param("key", requestKey).session(member.session()))
             .andExpect(status().isForbidden());
         mockMvc.perform(post(generatePath(orgId, activityId)).header("Idempotency-Key", newIdempotencyKey())
                 .with(csrf()).session(member.session()).contentType(MediaType.APPLICATION_JSON)
@@ -499,7 +690,8 @@ class AiGenerationFlowTest extends FlowTestSupport {
         String registrationId = jdbcTemplate.queryForObject(
             "SELECT id FROM registration WHERE activity_id = ?", String.class, activityId);
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
-                + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session()))
+                + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
         lifecycleStep(owner, orgId, activityId, "start-execution");
         lifecycleStep(owner, orgId, activityId, "finish-execution");

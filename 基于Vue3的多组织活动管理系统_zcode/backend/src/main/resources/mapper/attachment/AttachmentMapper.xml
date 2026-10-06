@@ -21,6 +21,10 @@
           AND deleted_at IS NULL
     </select>
 
+    <select id="findById" resultType="com.example.activity.modules.attachment.Attachment">
+        SELECT <include refid="baseColumns" /> FROM attachment WHERE id = #{id}
+    </select>
+
     <!-- F06：防重键按组织唯一；不排除软删除记录，避免同键重放复活已删除附件 -->
     <select id="findByRequestKey" resultType="com.example.activity.modules.attachment.Attachment">
         SELECT <include refid="baseColumns" />

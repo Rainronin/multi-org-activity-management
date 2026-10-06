@@ -54,6 +54,38 @@ public abstract class ActivityTestBase {
         return taskVersioned(Long.parseLong(taskId), body);
     }
 
+    /** 报名审批／取消绑定当前报名版本，重新申请不能沿用上一轮审批。 */
+    protected String registrationVersioned(Long registrationId, String body) {
+        return withVersion(jdbcTemplate.queryForObject(
+            "SELECT version FROM registration WHERE id = ?", Long.class, registrationId), body);
+    }
+
+    protected String registrationVersioned(String registrationId, String body) {
+        return registrationVersioned(Long.parseLong(registrationId), body);
+    }
+
+    protected String registrationForAccountVersioned(Long activityId, Long accountId, String body) {
+        var versions = jdbcTemplate.queryForList("SELECT version FROM registration WHERE activity_id = ? AND account_id = ?",
+            Long.class, activityId, accountId);
+        return withVersion(versions.isEmpty() ? 0L : versions.getFirst(), body);
+    }
+
+    protected String registrationForAccountVersioned(Long activityId, String username, String body) {
+        return registrationForAccountVersioned(activityId, jdbcTemplate.queryForObject(
+            "SELECT id FROM account WHERE username = ?", Long.class, username), body);
+    }
+
+    protected String feedbackVersioned(Long activityId, Long accountId, String body) {
+        var versions = jdbcTemplate.queryForList("SELECT version FROM feedback WHERE activity_id = ? AND account_id = ?",
+            Long.class, activityId, accountId);
+        return withVersion(versions.isEmpty() ? 0L : versions.getFirst(), body);
+    }
+
+    protected String feedbackVersioned(Long activityId, String username, String body) {
+        return feedbackVersioned(activityId, jdbcTemplate.queryForObject(
+            "SELECT id FROM account WHERE username = ?", Long.class, username), body);
+    }
+
     private String withVersion(long version, String body) {
         String trimmed = body.trim();
         String inner = trimmed.substring(1, trimmed.length() - 1).trim();
@@ -88,8 +120,13 @@ public abstract class ActivityTestBase {
 
     @DynamicPropertySource
     static void forceTestDatabase(DynamicPropertyRegistry registry) {
+        int port = Integer.parseInt(System.getProperty("activity.test-db-port", "3306"));
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("测试数据库端口必须在 1—65535 之间");
+        }
         registry.add("spring.datasource.url",
-            () -> "jdbc:mysql://127.0.0.1:3306/activity_test?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true");
+            () -> "jdbc:mysql://127.0.0.1:" + port
+                + "/activity_test?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true");
         registry.add("app.upload.dir", () -> UPLOAD_DIR.toString());
     }
 }

@@ -4,20 +4,29 @@
 
     <sql id="baseColumns">
         id, org_id, activity_id, title, description, assignee_member_id, priority,
-        due_at, status, version, completed_at, created_by, created_at, updated_at
+        due_at, status, version, completed_at, created_by, request_key, request_fingerprint, created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
         INSERT INTO task (org_id, activity_id, title, description, assignee_member_id,
-                          priority, due_at, status, created_by)
+                          priority, due_at, status, created_by, request_key, request_fingerprint)
         VALUES (#{orgId}, #{activityId}, #{title}, #{description}, #{assigneeMemberId},
-                #{priority}, #{dueAt}, #{status}, #{createdBy})
+                #{priority}, #{dueAt}, #{status}, #{createdBy}, #{requestKey}, #{requestFingerprint})
     </insert>
 
     <select id="findById" resultType="com.example.activity.modules.task.Task">
         SELECT <include refid="baseColumns" />
         FROM task
         WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.task.Task">
+        SELECT <include refid="baseColumns" /> FROM task
+        WHERE org_id = #{orgId} AND request_key = #{requestKey}
+    </select>
+
+    <select id="findByIdForUpdate" resultType="com.example.activity.modules.task.Task">
+        SELECT <include refid="baseColumns" /> FROM task WHERE id = #{id} FOR UPDATE
     </select>
 
     <!-- S08／F07：任务行共享锁，与任务改派的 UPDATE 互斥 -->

@@ -20,6 +20,7 @@ public final class ProblemResponses {
         HttpServletResponse response, ObjectMapper objectMapper, HttpServletRequest request,
         int status, String code, String title, String detail) throws IOException {
         response.setStatus(status);
+        request.setAttribute(RequestIdFilter.ERROR_CODE_ATTRIBUTE, code);
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader("Cache-Control", "no-store");

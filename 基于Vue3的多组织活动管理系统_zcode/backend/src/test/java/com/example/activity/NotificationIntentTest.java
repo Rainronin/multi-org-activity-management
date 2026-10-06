@@ -7,6 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.activity.support.FlowTestSupport;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -21,6 +23,56 @@ import org.springframework.test.web.servlet.MvcResult;
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
 class NotificationIntentTest extends FlowTestSupport {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void activityCancellationNotifiesTaskAssigneesOnceEvenWithoutRegistration(boolean registered) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        TestSession completedMember = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        inviteAndAccept(owner, completedMember, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()), "2027-05-02T14:00:00+08:00");
+        String endpoint = "/api/organizations/" + orgId + "/activities/" + activityId;
+        for (int i = 0; i < 3; i++) {
+            Long assignee = memberIdOf(orgId, i == 2 ? completedMember.username() : member.username());
+            String taskId = readField(mockMvc.perform(post(endpoint + "/tasks").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"取消通知核对\",\"assigneeMemberId\":" + assignee + "}"))
+                .andExpect(status().isCreated()).andReturn(), "$.taskId");
+            if (i != 0) {
+                mockMvc.perform(post(endpoint + "/tasks/" + taskId + "/transition").with(csrf()).session(owner.session())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"toStatus\":\"" + (i == 1 ? "IN_PROGRESS" : "COMPLETED") + "\"}"))
+                    .andExpect(status().isOk());
+            }
+        }
+        if (registered) {
+            openRegistration(owner, orgId, activityId);
+            apply(member, activityId);
+        }
+        var originalVersions = jdbcTemplate.queryForList("SELECT id, version FROM task WHERE activity_id = ? AND status IN ('PENDING', 'IN_PROGRESS') ORDER BY id",
+            activityId);
+        String body = versioned(activityId, "{\"reason\":\"场地关闭\"}");
+        mockMvc.perform(post(endpoint + "/cancel").with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk());
+        assertThat(intentsOf(activityId, "ACTIVITY_CANCELLED", accountIdOf(orgId, member.username()))).isEqualTo(1);
+        assertThat(intentsOf(activityId, "ACTIVITY_CANCELLED", accountIdOf(orgId, completedMember.username()))).isZero();
+        for (var task : originalVersions) {
+            assertThat(jdbcTemplate.queryForObject("SELECT status FROM task WHERE id = ?", String.class, task.get("id"))).isEqualTo("CANCELLED");
+            assertThat(jdbcTemplate.queryForObject("SELECT version FROM task WHERE id = ?", Long.class, task.get("id")))
+                .isEqualTo(((Number) task.get("version")).longValue() + 1);
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT JSON_EXTRACT(detail, '$.registrations') FROM audit_log WHERE target = ? AND action = 'ACTIVITY_CANCELLED'",
+            Integer.class, "activity:" + activityId)).isEqualTo(registered ? 1 : 0);
+        assertThat(jdbcTemplate.queryForObject("SELECT payload FROM notification WHERE activity_id = ? AND type = 'ACTIVITY_CANCELLED'",
+            String.class, activityId)).contains("场地关闭");
+        mockMvc.perform(post(endpoint + "/cancel").with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk());
+        assertThat(intentsOf(activityId, "ACTIVITY_CANCELLED", accountIdOf(orgId, member.username()))).isEqualTo(1);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/me/notifications").session(member.session()))
+            .andExpect(status().isOk()).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                .jsonPath("$.items[?(@.type=='ACTIVITY_CANCELLED')]").value(org.hamcrest.Matchers.hasSize(1)));
+    }
 
     private long intentsOf(Long activityId, String type, Long recipientAccountId) {
         return jdbcTemplate.queryForObject(
@@ -39,7 +91,8 @@ class NotificationIntentTest extends FlowTestSupport {
         MvcResult created = mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
                 .with(csrf()).session(actor.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"%s\"}".formatted(actor.username())))
+                .content(registrationForAccountVersioned(activityId, actor.username(),
+                    "{\"displayName\":\"%s\"}".formatted(actor.username()))))
             .andExpect(status().isCreated())
             .andReturn();
         return readField(created, "$.registrationId");
@@ -64,7 +117,8 @@ class NotificationIntentTest extends FlowTestSupport {
         String approvedRegistration = apply(member, activityId);
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + approvedRegistration + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(approvedRegistration, "{}")))
             .andExpect(status().isOk());
         assertThat(intentsOf(activityId, "REGISTRATION_APPROVED", memberAccountId)).isEqualTo(1);
 
@@ -74,7 +128,7 @@ class NotificationIntentTest extends FlowTestSupport {
                 + "/registrations/" + rejectedRegistration + "/reject")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"名额安排不开\"}"))
+                .content(registrationVersioned(rejectedRegistration, "{\"reason\":\"名额安排不开\"}")))
             .andExpect(status().isOk());
         Long otherAccountId = accountIdOf(orgId, other.username());
         assertThat(intentsOf(activityId, "REGISTRATION_REJECTED", otherAccountId)).isEqualTo(1);
@@ -84,7 +138,8 @@ class NotificationIntentTest extends FlowTestSupport {
 
         // 本人取消 → 活动负责人收到变更意图
         mockMvc.perform(post("/api/activities/" + activityId + "/registrations/cancel-self")
-                .with(csrf()).session(member.session()))
+                .with(csrf()).session(member.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(approvedRegistration, "{}")))
             .andExpect(status().isNoContent());
         assertThat(intentsOf(activityId, "REGISTRATION_CANCELLED_SELF", ownerAccountId)).isEqualTo(1);
 
@@ -94,7 +149,7 @@ class NotificationIntentTest extends FlowTestSupport {
                 + "/registrations/" + cancelledRegistration + "/cancel-org")
                 .with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"reason\":\"活动缩减规模\"}"))
+                .content(registrationVersioned(cancelledRegistration, "{\"reason\":\"活动缩减规模\"}")))
             .andExpect(status().isOk());
         assertThat(intentsOf(activityId, "REGISTRATION_CANCELLED_ORG", otherAccountId)).isEqualTo(1);
 

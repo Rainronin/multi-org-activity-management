@@ -27,6 +27,52 @@ import org.springframework.test.web.servlet.MvcResult;
 @ActiveProfiles("local")
 class MemberLeaveLinkageTest extends FlowTestSupport {
 
+    @Test
+    void archivedActivityDoesNotBlockLeaveOrEraseHistoricalOwner() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long memberId = memberIdOf(orgId, member.username());
+        Long activityId = createApprovedActivity(owner, orgId, memberId, "2027-10-02T14:00:00+08:00");
+        // 定点构造终态，只验证退出边界；完整归档链路由 ActivityLifecycleTest 覆盖。
+        jdbcTemplate.update("UPDATE activity SET status = 'CANCELLED' WHERE id = ?", activityId);
+        leave(member, orgId, 409);
+        jdbcTemplate.update("UPDATE activity SET status = 'ARCHIVED' WHERE id = ?", activityId);
+        leave(member, orgId, 204);
+        assertThat(jdbcTemplate.queryForObject("SELECT owner_member_id FROM activity WHERE id = ?",
+            Long.class, activityId)).isEqualTo(memberId);
+    }
+
+    @Test
+    void oldSessionCannotReadActivityOrDownloadAttachmentAfterLeave() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
+            "2027-10-01T14:00:00+08:00");
+        String path = "/api/organizations/" + orgId + "/activities/" + activityId;
+        byte[] png = new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3};
+        MvcResult uploaded = mockMvc.perform(
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart(path + "/attachments")
+                    .file(new org.springframework.mock.web.MockMultipartFile("file", "交接资料.png", "image/png", png))
+                    .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session()))
+            .andExpect(status().isCreated()).andReturn();
+        String attachmentId = readField(uploaded, "$.attachmentId");
+        String download = path + "/attachments/" + attachmentId + "/download";
+        mockMvc.perform(get(download).session(member.session())).andExpect(status().isOk());
+
+        leave(member, orgId, 204);
+        // 沿用退出前的会话及地址；不是退出登录后重新建立匿名会话。
+        mockMvc.perform(get(path).session(member.session())).andExpect(status().isNotFound());
+        mockMvc.perform(get(path + "/attachments").session(member.session())).andExpect(status().isNotFound());
+        mockMvc.perform(get(download).session(member.session())).andExpect(status().isNotFound());
+        mockMvc.perform(get(download).session(owner.session())).andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM attachment WHERE id = ? AND deleted_at IS NULL",
+            Integer.class, attachmentId)).isEqualTo(1);
+    }
+
     private void leave(TestSession member, Long orgId, int expectedStatus) throws Exception {
         mockMvc.perform(delete("/api/organizations/" + orgId + "/members/me")
                 .with(csrf()).session(member.session()))
@@ -88,6 +134,108 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
     }
 
     @Test
+    void materialDutiesRequireHandoffOrReadyBeforeLeave() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId, "2027-10-03T14:00:00+08:00");
+        String path = "/api/organizations/" + orgId + "/activities/" + activityId;
+        for (boolean handoff : new boolean[] {true, false}) {
+            TestSession member = registerAndLogin();
+            inviteAndAccept(owner, member, orgId);
+            Long memberId = memberIdOf(orgId, member.username());
+            MvcResult created = mockMvc.perform(post(path + "/materials")
+                    .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(("{\"name\":\"待备物资\",\"quantity\":1,\"unit\":\"份\",\"assigneeMemberId\":%d}")
+                        .formatted(memberId)))
+                .andExpect(status().isCreated()).andReturn();
+            String materialId = readField(created, "$.materialId");
+            mockMvc.perform(delete("/api/organizations/" + orgId + "/members/me")
+                    .with(csrf()).session(member.session()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MEMBER_HAS_OPEN_DUTIES"));
+            assertThat(jdbcTemplate.queryForObject("SELECT status FROM organization_member WHERE id = ?",
+                String.class, memberId)).isEqualTo("ACTIVE");
+
+            if (handoff) {
+                mockMvc.perform(post(path + "/materials/" + materialId + "/update")
+                        .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                        .content(("{\"name\":\"待备物资\",\"quantity\":1,\"unit\":\"份\","
+                            + "\"assigneeMemberId\":%d,\"version\":1}").formatted(ownerMemberId)))
+                    .andExpect(status().isOk());
+            } else {
+                mockMvc.perform(post(path + "/materials/" + materialId + "/transition")
+                        .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"toStatus\":\"READY\"}"))
+                    .andExpect(status().isOk());
+            }
+            leave(member, orgId, 204);
+            assertThat(jdbcTemplate.queryForObject("SELECT assignee_member_id FROM material WHERE id = ?",
+                Long.class, materialId)).isEqualTo(handoff ? ownerMemberId : memberId);
+        }
+    }
+
+    @Test
+    void removalChecksActivityTaskAndMaterialDutiesBeforePreservingHistory() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long memberId = memberIdOf(orgId, member.username());
+        MvcResult draft = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(activityBody("待交接活动", memberId, "2027-10-04T14:00:00+08:00")))
+            .andExpect(status().isCreated()).andReturn();
+        String draftId = readField(draft, "$.id");
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId, "2027-10-05T14:00:00+08:00");
+        String path = "/api/organizations/" + orgId + "/activities/" + activityId;
+        String removePath = "/api/organizations/" + orgId + "/members/" + memberId;
+        MvcResult task = mockMvc.perform(post(path + "/tasks")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(("{\"title\":\"待交接任务\",\"assigneeMemberId\":%d}").formatted(memberId)))
+            .andExpect(status().isCreated()).andReturn();
+        String taskId = readField(task, "$.taskId");
+        MvcResult material = mockMvc.perform(post(path + "/materials")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(("{\"name\":\"待备物资\",\"quantity\":1,\"unit\":\"份\",\"assigneeMemberId\":%d}")
+                    .formatted(memberId)))
+            .andExpect(status().isCreated()).andReturn();
+        String materialId = readField(material, "$.materialId");
+
+        mockMvc.perform(delete(removePath).with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MEMBER_HAS_ACTIVITY_DUTIES"));
+        mockMvc.perform(patch("/api/organizations/" + orgId + "/activities/" + draftId)
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(draftId, ("{\"ownerMemberId\":%d}").formatted(ownerMemberId))))
+            .andExpect(status().isOk());
+        mockMvc.perform(delete(removePath).with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MEMBER_HAS_OPEN_DUTIES"));
+        mockMvc.perform(post(path + "/tasks/" + taskId + "/transition")
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"toStatus\":\"CANCELLED\"}"))
+            .andExpect(status().isOk());
+        // 任务已合法结束，剩余物资责任仍阻止管理员移除。
+        mockMvc.perform(delete(removePath).with(csrf()).session(owner.session()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MEMBER_HAS_OPEN_DUTIES"));
+        mockMvc.perform(post(path + "/materials/" + materialId + "/transition")
+                .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"toStatus\":\"READY\"}"))
+            .andExpect(status().isOk());
+        mockMvc.perform(delete(removePath).with(csrf()).session(owner.session())).andExpect(status().isNoContent());
+        mockMvc.perform(get(path).session(member.session())).andExpect(status().isNotFound());
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM organization_member WHERE id = ?",
+            String.class, memberId)).isEqualTo("REMOVED");
+        assertThat(jdbcTemplate.queryForObject("SELECT assignee_member_id FROM task WHERE id = ?",
+            Long.class, taskId)).isEqualTo(memberId);
+        assertThat(jdbcTemplate.queryForObject("SELECT assignee_member_id FROM material WHERE id = ?",
+            Long.class, materialId)).isEqualTo(memberId);
+    }
+
+    @Test
     void leaveCancelsInternalRegistrationsAndReleasesCapacity() throws Exception {
         TestSession owner = registerAndLogin();
         TestSession member = registerAndLogin();
@@ -112,7 +260,8 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         Long registrationId = Long.parseLong(readField(applied, "$.registrationId"));
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
         assertThat(jdbcTemplate.queryForObject(
             "SELECT COUNT(*) FROM registration WHERE activity_id = ? AND status = 'APPROVED'",
@@ -162,9 +311,15 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
             .andExpect(status().isCreated())
             .andReturn();
         Long internalRegistrationId = Long.parseLong(readField(internalApply, "$.registrationId"));
-        jdbcTemplate.update("UPDATE activity SET start_time = ?, end_time = ? WHERE id = ?",
-            java.time.OffsetDateTime.now().minusHours(2), java.time.OffsetDateTime.now().minusHours(1),
-            internalId);
+        // 实际提前启动执行；计划开始时间仍在未来，不能仅凭日期判断是否已开始。
+        String internalPath = "/api/organizations/" + orgId + "/activities/" + internalId;
+        mockMvc.perform(post(internalPath + "/registrations/" + internalRegistrationId + "/approve")
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(internalRegistrationId, "{}")))
+            .andExpect(status().isOk());
+        mockMvc.perform(post(internalPath + "/start-execution").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(internalId, "{}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"));
 
         // 公开活动：报名按外部身份保留
         Long publicId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()),
@@ -191,7 +346,7 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         leave(member, orgId, 204);
 
         // 已开始：保留原状态；未开始的内部活动：取消；公开活动报名按外部身份保留
-        assertThat(statusOf(internalRegistrationId)).isEqualTo("PENDING");
+        assertThat(statusOf(internalRegistrationId)).isEqualTo("APPROVED");
         assertThat(statusOf(publicRegistrationId)).isEqualTo("PENDING");
         // 本人报名记录仍可查看（不因退出删除业务历史）
         mockMvc.perform(get("/api/me/registrations").session(member.session()))
@@ -226,7 +381,8 @@ class MemberLeaveLinkageTest extends FlowTestSupport {
         Long registrationId = Long.parseLong(readField(applied, "$.registrationId"));
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
 
         // F03 原缺陷：活动撤回到草稿后，退出不再取消内部报名（SQL 限 APPROVED）

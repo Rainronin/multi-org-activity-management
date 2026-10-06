@@ -74,6 +74,7 @@ export interface PublicFeedbackSummary {
   mineSubmitted: boolean
   myRating: number | null
   myComment: string | null
+  myVersion: number | null
   canSubmit: boolean
   submitBlockedReason: string | null
 }
@@ -89,9 +90,11 @@ export async function submitPublicFeedback(
   activityId: string,
   rating: number,
   comment?: string,
-): Promise<void> {
-  await request(`/api/public/activities/${encodeURIComponent(activityId)}/feedback`, {
+  version?: number,
+): Promise<{ version: number }> {
+  const response = await request<{ version: number }>(`/api/public/activities/${encodeURIComponent(activityId)}/feedback`, {
     method: 'POST',
-    json: { rating, comment: comment && comment.trim() ? comment.trim() : null },
+    json: { rating, comment: comment && comment.trim() ? comment.trim() : null, version },
   })
+  return response.data
 }

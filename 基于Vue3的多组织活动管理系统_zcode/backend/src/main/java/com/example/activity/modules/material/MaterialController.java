@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /** 物资端点（P3.3）。 */
@@ -29,7 +30,7 @@ public class MaterialController {
     }
 
     public record MaterialResponse(
-        String materialId, Long activityId, String name, Integer quantity, String unit,
+        String materialId, String activityId, String name, Integer quantity, String unit,
         String assigneeMemberId, String assigneeUsername, String status, String note, Long version) {
     }
 
@@ -51,7 +52,7 @@ public class MaterialController {
     }
 
     private MaterialResponse toResponse(MaterialService.MaterialItem item) {
-        return new MaterialResponse(String.valueOf(item.materialId()), item.activityId(), item.name(),
+        return new MaterialResponse(String.valueOf(item.materialId()), String.valueOf(item.activityId()), item.name(),
             item.quantity(), item.unit(), item.assigneeMemberId(), item.assigneeUsername(),
             item.status(), item.note(), item.version());
     }
@@ -71,6 +72,7 @@ public class MaterialController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody SaveMaterialRequest request) {
         Material draft = new Material();
         draft.setName(request.name().trim());
@@ -79,7 +81,7 @@ public class MaterialController {
         draft.setAssigneeMemberId(request.assigneeMemberId());
         draft.setNote(request.note() == null || request.note().isBlank() ? null : request.note().trim());
         return ResponseEntity.status(201).cacheControl(CacheControl.noStore())
-            .body(toResponse(materialService.create(principal.getAccountId(), orgId, activityId, draft)));
+            .body(toResponse(materialService.create(principal.getAccountId(), orgId, activityId, draft, requestKey)));
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/materials/{materialId}/update")

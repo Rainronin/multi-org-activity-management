@@ -9,6 +9,9 @@ public class Organization {
     private String name;
     private String description;
     private String status;
+    private Long createdBy;
+    private String requestKey;
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
 
     public Long getId() {
@@ -45,6 +48,30 @@ public class Organization {
 
     public OffsetDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    public Long getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(Long createdBy) {
+        this.createdBy = createdBy;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public void setCreatedAt(OffsetDateTime createdAt) {

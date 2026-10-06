@@ -3,7 +3,7 @@ import { request } from '../../shared/http/client'
 
 export interface TaskItem {
   taskId: string
-  activityId: number
+  activityId: string
   title: string
   description: string | null
   assigneeMemberId: string
@@ -41,10 +41,10 @@ export async function fetchMyTasks(orgId: string): Promise<TaskItem[]> {
   return response.data.items
 }
 
-export async function createTask(orgId: string, activityId: string, input: SaveTaskInput): Promise<TaskItem> {
+export async function createTask(orgId: string, activityId: string, input: SaveTaskInput, requestKey: string): Promise<TaskItem> {
   const response = await request<TaskItem>(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/tasks`,
-    { method: 'POST', json: input },
+    { method: 'POST', json: input, headers: { 'Idempotency-Key': requestKey } },
   )
   return response.data
 }
@@ -79,7 +79,7 @@ export async function transitionTask(
 
 export interface MaterialItem {
   materialId: string
-  activityId: number
+  activityId: string
   name: string
   quantity: number
   unit: string
@@ -108,10 +108,10 @@ export async function fetchMaterials(orgId: string, activityId: string): Promise
   return response.data.items
 }
 
-export async function createMaterial(orgId: string, activityId: string, input: SaveMaterialInput): Promise<void> {
+export async function createMaterial(orgId: string, activityId: string, input: SaveMaterialInput, requestKey: string): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/materials`,
-    { method: 'POST', json: input, response: 'none' },
+    { method: 'POST', json: input, headers: { 'Idempotency-Key': requestKey }, response: 'none' },
   )
 }
 
@@ -196,6 +196,15 @@ export async function uploadAttachment(
   )
 }
 
+/** 上传结果未知时只读原键，避免重新发送文件。 */
+export async function fetchAttachmentByRequestKey(orgId: string, activityId: string, requestKey: string): Promise<AttachmentItem> {
+  const query = new URLSearchParams({ requestKey })
+  const response = await request<AttachmentItem>(
+    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments/by-request-key?${query}`,
+  )
+  return response.data
+}
+
 export async function deleteAttachment(orgId: string, activityId: string, attachmentId: string): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(attachmentId)}`,
@@ -203,14 +212,19 @@ export async function deleteAttachment(orgId: string, activityId: string, attach
   )
 }
 
-export function downloadAttachment(orgId: string, activityId: string, attachmentId: string, name: string): void {
-  // 浏览器下载走受控端点（携带会话 Cookie）
+export async function downloadAttachment(orgId: string, activityId: string, attachmentId: string, name: string): Promise<void> {
+  const response = await request<Blob>(
+    `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+    { response: 'blob' },
+  )
+  const url = URL.createObjectURL(response.data)
   const a = document.createElement('a')
-  a.href = `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(attachmentId)}/download`
+  a.href = url
   a.download = name
   document.body.appendChild(a)
   a.click()
   a.remove()
+  URL.revokeObjectURL(url)
 }
 
 

@@ -167,14 +167,14 @@ public class AiConfigService {
                 target.setTestedAt(existing.getTestedAt());
                 target.setTestedBy(existing.getTestedBy());
             }
-            if (configMapper.update(target) != 1) {
+            if (configMapper.update(target, command.clearApiKey()) != 1) {
                 throw conflict("EDIT_CONFLICT", "配置已被他人修改", "配置版本已变化，请刷新后重试。");
             }
         }
-        auditService.record(accountId, "AI", "AI_CONFIG_SAVED", "org:" + orgId, null,
+        auditService.recordChange(accountId, "AI", "AI_CONFIG_SAVED", "org:" + orgId, null,
             Map.of("protocol", protocol, "model", model, "endpointHost", endpointHost,
                 "connectionRevision", target.getConnectionRevision(), "revisionChanged", revisionChanged,
-                "apiKeyConfigured", keyProvided || (existing != null && existing.hasApiKey() && !command.clearApiKey())));
+                "apiKeyConfigured", keyProvided || (existing != null && existing.hasApiKey() && !command.clearApiKey())), auditState(existing), auditState(configMapper.findByOrgId(orgId)));
         return view(configMapper.findByOrgId(orgId), true);
     }
 
@@ -195,8 +195,8 @@ public class AiConfigService {
         if (configMapper.setEnabled(orgId, true, accountId, version) != 1) {
             throw conflict("EDIT_CONFLICT", "配置已被他人修改", "配置版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "AI", "AI_CONFIG_ENABLED", "org:" + orgId, null,
-            Map.of("connectionRevision", config.getConnectionRevision()));
+        auditService.recordChange(accountId, "AI", "AI_CONFIG_ENABLED", "org:" + orgId, null,
+            Map.of("connectionRevision", config.getConnectionRevision()), auditState(config), auditState(configMapper.findByOrgId(orgId)));
         return view(requireConfig(orgId), true);
     }
 
@@ -210,7 +210,7 @@ public class AiConfigService {
         if (configMapper.setEnabled(orgId, false, accountId, version) != 1) {
             throw conflict("EDIT_CONFLICT", "配置已被他人修改", "配置版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "AI", "AI_CONFIG_DISABLED", "org:" + orgId, null, null);
+        auditService.recordChange(accountId, "AI", "AI_CONFIG_DISABLED", "org:" + orgId, null, null, auditState(config), auditState(configMapper.findByOrgId(orgId)));
         return view(requireConfig(orgId), true);
     }
 
@@ -224,7 +224,7 @@ public class AiConfigService {
         if (configMapper.clearKey(orgId, config.getConnectionRevision() + 1, accountId, version) != 1) {
             throw conflict("EDIT_CONFLICT", "配置已被他人修改", "配置版本已变化，请刷新后重试。");
         }
-        auditService.record(accountId, "AI", "AI_KEY_CLEARED", "org:" + orgId, null, null);
+        auditService.recordChange(accountId, "AI", "AI_KEY_CLEARED", "org:" + orgId, null, null, auditState(config), auditState(configMapper.findByOrgId(orgId)));
         return view(requireConfig(orgId), true);
     }
 
@@ -268,6 +268,12 @@ public class AiConfigService {
             throw conflict("AI_NOT_CONFIGURED", "尚未配置模型", "请先保存本组织的模型配置。");
         }
         return config;
+    }
+
+    static record ConfigState(Long version, Integer connectionRevision, Integer testedRevision, boolean enabled, boolean hasApiKey) { }
+
+    static ConfigState auditState(AiConfig config) {
+        return config == null ? null : new ConfigState(config.getVersion(), config.getConnectionRevision(), config.getTestedRevision(), config.isEnabled(), config.hasApiKey());
     }
 
     private AiConfigView view(AiConfig config, boolean owner) {

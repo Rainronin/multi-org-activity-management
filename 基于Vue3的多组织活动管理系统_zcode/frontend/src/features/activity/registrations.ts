@@ -6,11 +6,12 @@ export type RegistrationStatus =
 export interface RegistrationItem {
   registrationId: string
   activityId: string
-  accountId: number
+  accountId: string
   accountUsername: string
   displayName: string
   note: string | null
   status: RegistrationStatus
+  version: number
   cancelReason: string | null
   decidedAt: string | null
   createdAt: string
@@ -48,7 +49,7 @@ export async function fetchMyRegistrations(): Promise<RegistrationItem[]> {
 
 /** 报名/重新申请：活动已确认、报名开关开启且在窗口内（后端逐项校验）。 */
 export async function applyRegistration(
-  activityId: string, input: { displayName: string; note?: string },
+  activityId: string, input: { displayName: string; note?: string; version?: number },
 ): Promise<RegistrationItem> {
   const response = await request<RegistrationItem>(
     `/api/activities/${encodeURIComponent(activityId)}/registrations`,
@@ -66,10 +67,10 @@ export function isCancellable(item: RegistrationItem, now = new Date()): boolean
 }
 
 /** 本人取消：活动开始前且未进入执行；重复取消幂等。 */
-export async function cancelMyRegistration(activityId: string): Promise<void> {
+export async function cancelMyRegistration(activityId: string, version: number): Promise<void> {
   await request(
     `/api/activities/${encodeURIComponent(activityId)}/registrations/cancel-self`,
-    { method: 'POST', response: 'none' },
+    { method: 'POST', json: { version }, response: 'none' },
   )
 }
 
@@ -89,29 +90,29 @@ export async function fetchActivityRegistrations(
 }
 
 export async function approveRegistration(
-  orgId: string, activityId: string, registrationId: string,
+  orgId: string, activityId: string, registrationId: string, version: number,
 ): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/registrations/${encodeURIComponent(registrationId)}/approve`,
-    { method: 'POST', response: 'none' },
+    { method: 'POST', json: { version }, response: 'none' },
   )
 }
 
 export async function rejectRegistration(
-  orgId: string, activityId: string, registrationId: string, reason: string,
+  orgId: string, activityId: string, registrationId: string, reason: string, version: number,
 ): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/registrations/${encodeURIComponent(registrationId)}/reject`,
-    { method: 'POST', json: { reason }, response: 'none' },
+    { method: 'POST', json: { reason, version }, response: 'none' },
   )
 }
 
 export async function cancelRegistrationByManager(
-  orgId: string, activityId: string, registrationId: string, reason: string,
+  orgId: string, activityId: string, registrationId: string, reason: string, version: number,
 ): Promise<void> {
   await request(
     `/api/organizations/${encodeURIComponent(orgId)}/activities/${encodeURIComponent(activityId)}/registrations/${encodeURIComponent(registrationId)}/cancel-org`,
-    { method: 'POST', json: { reason }, response: 'none' },
+    { method: 'POST', json: { reason, version }, response: 'none' },
   )
 }
 

@@ -34,12 +34,12 @@ public class RegistrationController {
     }
 
     public record RegistrationResponse(
-        String registrationId, String activityId, Long accountId, String accountUsername,
+        String registrationId, String activityId, String accountId, String accountUsername,
         String displayName, String note, String status, String cancelReason,
         OffsetDateTime decidedAt, OffsetDateTime createdAt,
         String activityName, String organizationName, String location,
         OffsetDateTime startTime, OffsetDateTime endTime,
-        boolean registrationOpen, boolean adjusting) {
+        boolean registrationOpen, boolean adjusting, Long version) {
     }
 
     public record RegistrationsResponse(
@@ -48,22 +48,32 @@ public class RegistrationController {
 
     public record ApplyRequest(
         @NotBlank(message = "展示姓名不能为空") @Size(max = 64, message = "姓名不超过 64 字符") String displayName,
-        @Size(max = 500, message = "备注不超过 500 字符") String note) {
+        @Size(max = 500, message = "备注不超过 500 字符") String note,
+        @jakarta.validation.constraints.Min(value = 0, message = "版本不能为负数") Long version) {
     }
 
-    public record RejectRequest(@NotBlank(message = "驳回须说明原因") @Size(max = 500, message = "不超过 500 字符") String reason) {
+    public record VersionRequest(
+        @jakarta.validation.constraints.NotNull(message = "请携带当前报名版本号")
+        @jakarta.validation.constraints.Min(value = 1, message = "版本必须为正整数") Long version) {
     }
 
-    public record CancelOrgRequest(@NotBlank(message = "取消须说明原因") @Size(max = 500, message = "不超过 500 字符") String reason) {
+    public record RejectRequest(@NotBlank(message = "驳回须说明原因") @Size(max = 500, message = "不超过 500 字符") String reason,
+        @jakarta.validation.constraints.NotNull(message = "请携带当前报名版本号")
+        @jakarta.validation.constraints.Min(value = 1, message = "版本必须为正整数") Long version) {
+    }
+
+    public record CancelOrgRequest(@NotBlank(message = "取消须说明原因") @Size(max = 500, message = "不超过 500 字符") String reason,
+        @jakarta.validation.constraints.NotNull(message = "请携带当前报名版本号")
+        @jakarta.validation.constraints.Min(value = 1, message = "版本必须为正整数") Long version) {
     }
 
     private RegistrationResponse toResponse(RegistrationService.RegistrationItem item) {
         return new RegistrationResponse(
             String.valueOf(item.registrationId()), String.valueOf(item.activityId()),
-            item.accountId(), item.accountUsername(), item.displayName(), item.note(),
+            String.valueOf(item.accountId()), item.accountUsername(), item.displayName(), item.note(),
             item.status(), item.cancelReason(), item.decidedAt(), item.createdAt(),
             item.activityName(), item.organizationName(), item.location(),
-            item.startTime(), item.endTime(), item.registrationOpen(), item.adjusting());
+            item.startTime(), item.endTime(), item.registrationOpen(), item.adjusting(), item.version());
     }
 
     @PostMapping("/api/activities/{activityId}/registrations")
@@ -72,7 +82,7 @@ public class RegistrationController {
         @PathVariable("activityId") Long activityId,
         @Valid @RequestBody ApplyRequest request) {
         RegistrationService.RegistrationItem item = registrationService.apply(
-            principal.getAccountId(), activityId, request.displayName(), request.note());
+            principal.getAccountId(), activityId, request.displayName(), request.note(), request.version());
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
             .body(toResponse(item));
     }
@@ -82,10 +92,11 @@ public class RegistrationController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
-        @PathVariable("registrationId") Long registrationId) {
+        @PathVariable("registrationId") Long registrationId,
+        @Valid @RequestBody VersionRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(registrationService.approve(
-                principal.getAccountId(), orgId, activityId, registrationId)));
+                principal.getAccountId(), orgId, activityId, registrationId, request.version())));
     }
 
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/registrations/{registrationId}/reject")
@@ -97,14 +108,15 @@ public class RegistrationController {
         @Valid @RequestBody RejectRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(registrationService.reject(
-                principal.getAccountId(), orgId, activityId, registrationId, request.reason())));
+                principal.getAccountId(), orgId, activityId, registrationId, request.reason(), request.version())));
     }
 
     @PostMapping("/api/activities/{activityId}/registrations/cancel-self")
     public ResponseEntity<Void> cancelSelf(
         @AuthenticationPrincipal AccountUserDetails principal,
-        @PathVariable("activityId") Long activityId) {
-        registrationService.cancelSelf(principal.getAccountId(), activityId);
+        @PathVariable("activityId") Long activityId,
+        @Valid @RequestBody VersionRequest request) {
+        registrationService.cancelSelf(principal.getAccountId(), activityId, request.version());
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
@@ -117,7 +129,7 @@ public class RegistrationController {
         @Valid @RequestBody CancelOrgRequest request) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(toResponse(registrationService.cancelOrg(
-                principal.getAccountId(), orgId, activityId, registrationId, request.reason())));
+                principal.getAccountId(), orgId, activityId, registrationId, request.reason(), request.version())));
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/registrations")

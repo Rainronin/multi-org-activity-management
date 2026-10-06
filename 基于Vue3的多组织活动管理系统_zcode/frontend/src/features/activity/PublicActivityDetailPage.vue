@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElRate, ElSkeleton, ElTag } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import {
   applyBlockReason, fetchPublicActivity, fetchPublicFeedback, submitPublicFeedback,
@@ -24,14 +24,24 @@ const session = useSessionStore()
 const activityId = computed(() => String(route.params.activityId ?? ''))
 const item = ref<PublicActivityItem | null>(null)
 const mine = ref<RegistrationItem | null>(null)
-const loading = ref(false)
+const loading = ref(true)
 const errorText = ref('')
+const missing = ref(false)
+const mineLoading = ref(false)
+const mineError = ref('')
 const actionError = ref('')
 const acting = ref(false)
 
 const applyVisible = ref(false)
 const applySubmitting = ref(false)
 const applyForm = ref({ displayName: '', note: '' })
+const applyInitial = ref({ displayName: '', note: '' })
+let applyVersion = 0
+const applyError = ref('')
+const applyDirty = computed(() => applyVisible.value && (
+  applyForm.value.displayName !== applyInitial.value.displayName
+  || applyForm.value.note !== applyInitial.value.note
+))
 /** F10：报名表单失焦即校验，提交前再整体校验一次（与后端 1-64 字符规则一致）。 */
 const applyFormRef = ref<FormInstance | null>(null)
 const applyRules: FormRules = {
@@ -43,48 +53,163 @@ const applyRules: FormRules = {
 }
 
 let requestSeq = 0
+let alive = true
+let actionGeneration = 0
+watch([activityId, () => session.generation], () => {
+  actionGeneration++
+  acting.value = false
+  applySubmitting.value = false
+  feedbackSubmitting.value = false
+  applyVisible.value = false
+  mine.value = null
+  mineError.value = ''
+  feedback.value = null
+  feedbackReadError.value = ''
+  feedbackRating.value = 0
+  feedbackComment.value = ''
+}, { flush: 'sync' })
 
 // P9.1：外部参与者的本人反馈（复盘中可提交，不必加入组织）
 const feedback = ref<PublicFeedbackSummary | null>(null)
 const feedbackRating = ref(0)
+let feedbackVersion = 0
+const feedbackConflict = ref(false)
 const feedbackComment = ref('')
+const feedbackError = ref('')
+const feedbackReadError = ref('')
+const feedbackLoading = ref(false)
 const feedbackSubmitting = ref(false)
+const feedbackDirty = computed(() => Boolean(feedback.value && (
+  feedbackRating.value !== (feedback.value.myRating ?? 0)
+  || feedbackComment.value !== (feedback.value.myComment ?? '')
+)))
+
+async function confirmLeave(): Promise<boolean> {
+  if (feedbackSubmitting.value || applySubmitting.value || acting.value) return false
+  if (!feedbackDirty.value && !applyDirty.value) return true
+  try {
+    await ElMessageBox.confirm('有尚未保存的编辑内容，确定离开当前活动？', '未保存的修改', {
+      confirmButtonText: '离开', cancelButtonText: '继续编辑', type: 'warning',
+    })
+    return true
+  } catch { return false }
+}
+onBeforeRouteLeave((to) => to.path === '/login' && session.status !== 'authenticated' ? true : confirmLeave())
+onBeforeRouteUpdate((to, from) => to.path === from.path ? true : confirmLeave())
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (feedbackDirty.value || applyDirty.value || feedbackSubmitting.value || applySubmitting.value || acting.value) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => {
+  alive = false
+  requestSeq++
+  window.removeEventListener('beforeunload', beforeUnload)
+})
 
 async function loadFeedback(target: string, seq: number, gen: number): Promise<void> {
+  feedbackLoading.value = true
+  feedbackReadError.value = ''
   try {
     const summary = await fetchPublicFeedback(target)
     if (seq !== requestSeq || gen !== session.generation) {
       return
     }
+    const preserveDraft = feedbackDirty.value
     feedback.value = summary
-    feedbackRating.value = summary.myRating ?? 0
-    feedbackComment.value = summary.myComment ?? ''
-  } catch {
-    // 未到复盘期或没有资格依据时不展示该区块，不影响公开浏览
-    feedback.value = null
+    if (!preserveDraft) {
+      feedbackVersion = summary.myVersion ?? 0
+      feedbackRating.value = summary.myRating ?? 0
+      feedbackComment.value = summary.myComment ?? ''
+    }
+  } catch (error) {
+    if (seq !== requestSeq || gen !== session.generation) {
+      return
+    }
+    if (session.observeUnauthorized(error, gen)) {
+      return
+    }
+    // 失败时隐藏读取内容，但保留已加载的草稿基线，重试不覆盖未保存的输入。
+    feedbackReadError.value = readErrorMessage(error, '反馈加载失败，请重试。')
+  } finally {
+    if (seq === requestSeq && gen === session.generation) feedbackLoading.value = false
   }
+}
+
+function retryFeedback() {
+  if (feedbackLoading.value) return
+  void loadFeedback(activityId.value, requestSeq, session.capture())
+}
+
+async function loadMine(target: string, seq: number, gen: number) {
+  mineLoading.value = true
+  mineError.value = ''
+  try {
+    const items = await fetchMyRegistrations()
+    if (seq === requestSeq && gen === session.generation) {
+      mine.value = items.find(entry => entry.activityId === target) ?? null
+    }
+  } catch (error) {
+    if (seq !== requestSeq || gen !== session.generation) return
+    if (!session.observeUnauthorized(error, gen)) mineError.value = readErrorMessage(error, '本人报名加载失败，请重试。')
+  } finally {
+    if (seq === requestSeq && gen === session.generation) mineLoading.value = false
+  }
+}
+
+function retryMine() {
+  if (mineLoading.value) return
+  void loadMine(activityId.value, requestSeq, session.capture())
 }
 
 async function submitFeedback(): Promise<void> {
   if (feedbackRating.value < 1) {
-    actionError.value = '请先选择 1～5 分评分'
+    feedbackError.value = '请先选择 1～5 分评分'
     return
   }
-  const gen = session.capture()
+  const context = captureAction()
+  const rating = feedbackRating.value
+  const comment = feedbackComment.value
   feedbackSubmitting.value = true
-  actionError.value = ''
   try {
-    await submitPublicFeedback(activityId.value, feedbackRating.value, feedbackComment.value)
-    await loadFeedback(activityId.value, requestSeq, gen)
-  } catch (error) {
-    actionError.value = error instanceof ApiError ? error.detail : '反馈提交失败，请稍后重试。'
+    const failure = await guard(async () => {
+      const saved = await submitPublicFeedback(context.activityId, rating, comment, feedbackVersion)
+      if (isActionCurrent(context)) {
+        feedbackVersion = saved.version
+        feedback.value = { ...feedback.value!, mineSubmitted: true,
+          myRating: rating, myComment: comment.trim(), myVersion: saved.version }
+        feedbackComment.value = comment.trim()
+        await loadFeedback(context.activityId, requestSeq, context.generation)
+      }
+    }, feedbackError, context)
+    feedbackConflict.value = failure instanceof ApiError && failure.code === 'EDIT_CONFLICT'
   } finally {
-    feedbackSubmitting.value = false
+    if (isActionCurrent(context)) feedbackSubmitting.value = false
   }
 }
 
+async function reviewFeedbackVersion() {
+  const context = captureAction()
+  await guard(async () => {
+    const latest = await fetchPublicFeedback(context.activityId)
+    if (!isActionCurrent(context)) return
+    try {
+      await ElMessageBox.confirm(`已保存评分：${latest.myRating ?? '—'}；建议：${latest.myComment || '无'}。是否保留当前输入，改为基于此版本保存？`, '核对最新反馈', {
+        confirmButtonText: '保留输入并使用此版本', cancelButtonText: '继续核对', type: 'warning',
+      })
+    } catch { return }
+    if (!isActionCurrent(context)) return
+    feedback.value = latest
+    feedbackVersion = latest.myVersion ?? 0
+    feedbackConflict.value = false
+    feedbackError.value = '最新反馈已核对，输入仍保留；请再次保存。'
+  }, feedbackError, context)
+}
+
 async function load(): Promise<void> {
-  if (!activityId.value) {
+  if (!alive || !activityId.value) {
     return
   }
   const seq = ++requestSeq
@@ -92,26 +217,22 @@ async function load(): Promise<void> {
   const gen = session.capture()
   loading.value = true
   errorText.value = ''
+  missing.value = false
   try {
     const detail = await fetchPublicActivity(target)
     if (seq !== requestSeq || target !== activityId.value) {
       return
     }
     item.value = detail
-    // 本人报名只在登录后查询；失败不影响公开信息展示
+    loading.value = false
+    // 各读取独立处理失败，已成功读取的公开介绍仍可浏览。
     if (session.status === 'authenticated') {
-      const mineItems = await fetchMyRegistrations()
-      if (seq !== requestSeq || gen !== session.generation) {
-        return
-      }
-      mine.value = mineItems.find((entry) => entry.activityId === target) ?? null
+      await Promise.all([loadMine(target, seq, gen), loadFeedback(target, seq, gen)])
     } else {
       mine.value = null
-    }
-    if (session.status === 'authenticated') {
-      await loadFeedback(target, seq, gen)
-    } else {
       feedback.value = null
+      mineLoading.value = false
+      feedbackLoading.value = false
     }
   } catch (error) {
     if (seq !== requestSeq) {
@@ -121,9 +242,8 @@ async function load(): Promise<void> {
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '活动不存在或未公开。'
+    missing.value = error instanceof ApiError && !error.isTransportError && [403, 404].includes(error.status)
+    errorText.value = missing.value ? '活动不存在或未公开，或当前无权访问。' : '公开活动加载失败，请重新加载。'
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -161,31 +281,43 @@ function requireLogin(): boolean {
   return false
 }
 
-async function guard(fn: () => Promise<void>): Promise<void> {
-  actionError.value = ''
+function captureAction() {
+  return { activityId: activityId.value, generation: session.capture(), scope: actionGeneration }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.activityId === activityId.value && context.generation === session.generation
+    && context.scope === actionGeneration
+}
+
+async function guard(fn: () => Promise<void>, errorTarget = actionError, context = captureAction()): Promise<unknown> {
+  if (!isActionCurrent(context)) return
+  errorTarget.value = ''
   acting.value = true
   try {
     await fn()
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
-      return
+    if (session.observeUnauthorized(error, context.generation) || !isActionCurrent(context)) {
+      return error
     }
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
-        actionError.value = '安全校验已过期，请重试。'
+        errorTarget.value = '安全校验已过期，请重试。'
       } else {
-        actionError.value = error.detail || '操作失败，请重试。'
+        errorTarget.value = error.detail || '操作失败，请重试。'
       }
     } else {
-      actionError.value = '网络连接失败，请检查网络后重试。'
+      errorTarget.value = '网络连接失败，请检查网络后重试。'
     }
+    return error
   } finally {
-    acting.value = false
+    if (isActionCurrent(context)) acting.value = false
   }
 }
 
 function openApply() {
+  applyVersion = mine.value?.version ?? 0
   if (!requireLogin()) {
     return
   }
@@ -193,10 +325,27 @@ function openApply() {
     displayName: mine.value?.displayName ?? session.account?.username ?? '',
     note: mine.value?.note ?? '',
   }
+  applyInitial.value = { ...applyForm.value }
+  applyError.value = ''
   applyVisible.value = true
 }
 
+async function closeApply(done?: () => void): Promise<void> {
+  if (applySubmitting.value || acting.value) return
+  if (applyDirty.value) {
+    try {
+      await ElMessageBox.confirm('报名信息还未保存，确定放弃修改？', '未保存的修改', {
+        confirmButtonText: '放弃修改', cancelButtonText: '继续编辑', type: 'warning',
+      })
+    } catch { return }
+  }
+  if (done) done()
+  else applyVisible.value = false
+}
+
 async function submitApply() {
+  if (applySubmitting.value) return
+  const context = captureAction()
   const form = applyFormRef.value
   if (form) {
     const valid = await form.validate().catch(() => false)
@@ -204,29 +353,36 @@ async function submitApply() {
       return
     }
   }
+  if (!isActionCurrent(context)) return
   applySubmitting.value = true
   await guard(async () => {
-    await applyRegistration(activityId.value, {
+    await applyRegistration(context.activityId, {
       displayName: applyForm.value.displayName.trim(),
       note: applyForm.value.note.trim() || undefined,
+      version: applyVersion,
     })
+    if (!isActionCurrent(context)) return
     applyVisible.value = false
     await load()
-  })
-  applySubmitting.value = false
+  }, applyError, context)
+  if (isActionCurrent(context)) applySubmitting.value = false
 }
 
 function cancelMine() {
   if (!requireLogin()) {
     return
   }
+  const context = captureAction()
+  const version = mine.value?.version
+  if (version === undefined) return
   void ElMessageBox.confirm('确定取消本人报名？名额将立即释放。', '取消报名', {
     confirmButtonText: '取消报名', cancelButtonText: '返回', type: 'warning',
   })
     .then(() => guard(async () => {
-      await cancelMyRegistration(activityId.value)
+      await cancelMyRegistration(context.activityId, version)
+      if (!isActionCurrent(context)) return
       await load()
-    }))
+    }, actionError, context))
     .catch(() => undefined)
 }
 </script>
@@ -242,11 +398,11 @@ function cancelMine() {
       aria-label="正在加载公开活动"
     />
 
-    <!-- 失败与“活动不存在”是同一种终态：给出原因与返回公开列表的入口，不留空白页 -->
+    <!-- 读取失败与不存在分别说明；均保留重试及返回入口。 -->
     <div
       v-else-if="!item"
       class="public-empty"
-      data-public-detail-missing
+      :data-public-detail-missing="missing ? '' : undefined"
       role="alert"
     >
       <p>{{ errorText || '活动不存在或未公开。' }}</p>
@@ -304,7 +460,7 @@ function cancelMine() {
         <div class="public-apply__head">
           <h2>我的报名</h2>
           <ElTag
-            v-if="mine"
+            v-if="mine && !mineLoading && !mineError"
             size="small"
             :type="statusType"
           >
@@ -333,6 +489,22 @@ function cancelMine() {
           </ElButton>
         </template>
 
+        <p
+          v-else-if="mineLoading"
+          class="public-hint"
+          role="status"
+        >
+          正在读取本人报名…
+        </p>
+        <p
+          v-else-if="mineError"
+          class="public-error"
+          role="alert"
+        >
+          {{ mineError }} <ElButton @click="retryMine">
+            重新加载
+          </ElButton>
+        </p>
         <template v-else>
           <p
             v-if="mine && mine.adjusting"
@@ -383,47 +555,79 @@ function cancelMine() {
 
       <!-- P9.1：复盘期本人反馈；外部参与者不必加入组织，也不是到场核验 -->
       <section
-        v-if="feedback && (feedback.canSubmit || feedback.mineSubmitted || feedback.count > 0)"
+        v-if="session.status === 'authenticated' && (feedbackLoading || feedbackReadError || (feedback && (feedback.canSubmit || feedback.mineSubmitted || feedback.count > 0)))"
         class="public-feedback"
         data-public-feedback
       >
         <h2>活动反馈</h2>
-        <p class="public-hint">
-          当前 {{ feedback.count }} 份反馈
-          <template v-if="feedback.averageRating">
-            ，平均分 {{ feedback.averageRating }}
-          </template>
-          ；反馈是本人主动表达，不代表到场核验，每账号一份、归档前可修改。
+        <p
+          v-if="feedbackLoading"
+          class="public-hint"
+          role="status"
+        >
+          正在读取活动反馈…
         </p>
         <p
-          v-if="!feedback.canSubmit && feedback.submitBlockedReason"
-          class="public-hint"
-          data-public-feedback-blocked
+          v-else-if="feedbackReadError"
+          class="public-error"
+          role="alert"
         >
-          {{ feedback.submitBlockedReason }}
+          {{ feedbackReadError }} <ElButton @click="retryFeedback">
+            重新加载
+          </ElButton>
         </p>
-        <ElRate
-          v-model="feedbackRating"
-          :disabled="!feedback.canSubmit"
-          data-public-feedback-rating
-        />
-        <ElInput
-          v-model="feedbackComment"
-          type="textarea"
-          :rows="3"
-          :disabled="!feedback.canSubmit"
-          placeholder="文字建议（可选，不超过 2000 字符）"
-          data-public-feedback-comment
-        />
-        <ElButton
-          type="primary"
-          :disabled="!feedback.canSubmit || feedbackRating < 1"
-          :loading="feedbackSubmitting"
-          data-public-feedback-submit
-          @click="submitFeedback"
-        >
-          {{ feedback.mineSubmitted ? '更新反馈' : '提交反馈' }}
-        </ElButton>
+        <template v-if="feedback && !feedbackReadError && !feedbackLoading">
+          <p
+            v-if="feedbackError"
+            class="public-error"
+            role="alert"
+          >
+            {{ feedbackError }}
+          </p>
+          <p class="public-hint">
+            当前 {{ feedback.count }} 份反馈
+            <template v-if="feedback.averageRating">
+              ，平均分 {{ feedback.averageRating }}
+            </template>
+            ；反馈是本人主动表达，不代表到场核验，每账号一份、归档前可修改。
+          </p>
+          <p
+            v-if="!feedback.canSubmit && feedback.submitBlockedReason"
+            class="public-hint"
+            data-public-feedback-blocked
+          >
+            {{ feedback.submitBlockedReason }}
+          </p>
+          <ElRate
+            v-model="feedbackRating"
+            :disabled="!feedback.canSubmit || feedbackSubmitting || feedbackLoading || Boolean(feedbackReadError)"
+            data-public-feedback-rating
+          />
+          <ElInput
+            v-model="feedbackComment"
+            type="textarea"
+            :rows="3"
+            :disabled="!feedback.canSubmit || feedbackSubmitting || feedbackLoading || Boolean(feedbackReadError)"
+            placeholder="文字建议（可选，不超过 2000 字符）"
+            data-public-feedback-comment
+          />
+          <ElButton
+            type="primary"
+            :disabled="!feedback.canSubmit || feedbackRating < 1 || feedbackLoading || Boolean(feedbackReadError)"
+            :loading="feedbackSubmitting"
+            data-public-feedback-submit
+            @click="submitFeedback"
+          >
+            {{ feedback.mineSubmitted ? '更新反馈' : '提交反馈' }}
+          </ElButton>
+          <ElButton
+            v-if="feedbackConflict"
+            :disabled="feedbackSubmitting"
+            @click="reviewFeedbackVersion"
+          >
+            核对最新反馈
+          </ElButton>
+        </template>
       </section>
 
       <p class="public-note">
@@ -434,8 +638,16 @@ function cancelMine() {
     <ElDialog
       v-model="applyVisible"
       :title="mine ? '更新报名信息' : '报名'"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
+      :before-close="closeApply"
     >
+      <p
+        v-if="applyError"
+        class="public-error"
+        role="alert"
+      >
+        {{ applyError }}
+      </p>
       <ElForm
         ref="applyFormRef"
         :model="applyForm"
@@ -449,6 +661,7 @@ function cancelMine() {
         >
           <ElInput
             v-model="applyForm.displayName"
+            :disabled="applySubmitting"
             placeholder="报名姓名（1-64 字符）"
           />
         </ElFormItem>
@@ -457,12 +670,16 @@ function cancelMine() {
             v-model="applyForm.note"
             type="textarea"
             :rows="2"
+            :disabled="applySubmitting"
             placeholder="选填，例如联系方式用途说明"
           />
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="applyVisible = false">
+        <ElButton
+          :disabled="applySubmitting"
+          @click="closeApply()"
+        >
           取消
         </ElButton>
         <ElButton

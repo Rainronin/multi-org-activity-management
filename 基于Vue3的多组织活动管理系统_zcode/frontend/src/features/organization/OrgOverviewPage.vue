@@ -124,6 +124,12 @@ const isOwner = computed(() => props.orgDetail?.role === 'OWNER')
   gap: var(--ui-space-6);
 }
 
+.page-heading > div {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .page-heading__dot {
   color: var(--ui-color-accent);
 }

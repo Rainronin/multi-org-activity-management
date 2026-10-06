@@ -118,7 +118,8 @@ class ActivityChangeFreezeTest extends FlowTestSupport {
         String registrationId = readField(applied, "$.registrationId");
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
 
         // 撤回后调整容量：可调整到与已通过人数一致（容量下限规则：新容量不得小于现有有效报名人数）

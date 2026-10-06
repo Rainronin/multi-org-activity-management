@@ -49,7 +49,7 @@ public class ExpenseController {
     public record ExpenseResponse(
         String expenseId, String activityId, String purpose, String amount, LocalDate incurredOn,
         String category, String handledNote, String noReceiptNote, String status,
-        Long submittedBy, java.time.OffsetDateTime submittedAt, Long decidedBy, java.time.OffsetDateTime decidedAt,
+        String submittedBy, java.time.OffsetDateTime submittedAt, String decidedBy, java.time.OffsetDateTime decidedAt,
         String rejectReason, String overBudgetNote, String voidReason, java.time.OffsetDateTime voidedAt,
         String correctsExpenseId, String voucherCount, Long version) {
     }
@@ -99,7 +99,8 @@ public class ExpenseController {
         return new ExpenseResponse(
             String.valueOf(item.expenseId()), String.valueOf(item.activityId()), item.purpose(), item.amount(),
             item.incurredOn(), item.category(), item.handledNote(), item.noReceiptNote(), item.status(),
-            item.submittedBy(), item.submittedAt(), item.decidedBy(), item.decidedAt(), item.rejectReason(),
+            item.submittedBy() == null ? null : String.valueOf(item.submittedBy()), item.submittedAt(),
+            item.decidedBy() == null ? null : String.valueOf(item.decidedBy()), item.decidedAt(), item.rejectReason(),
             item.overBudgetNote(), item.voidReason(), item.voidedAt(),
             item.correctsExpenseId() == null ? null : String.valueOf(item.correctsExpenseId()),
             item.voucherCount(), item.version());
@@ -162,7 +163,7 @@ public class ExpenseController {
             .body(toResponse(created));
     }
 
-    /** 更正登记：原记录须为已确认或已作废，新记录关联原记录并重新提交确认。 */
+    /** 更正登记：原已确认记录须先作废，新记录关联原记录并重新提交确认。 */
     @PostMapping("/api/organizations/{orgId}/activities/{activityId}/expenses/{expenseId}/correction")
     public ResponseEntity<ExpenseResponse> createCorrection(
         @AuthenticationPrincipal AccountUserDetails principal,

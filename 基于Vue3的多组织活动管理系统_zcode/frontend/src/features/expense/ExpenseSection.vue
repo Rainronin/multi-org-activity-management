@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { readUiLength } from '../../shared/utils/readUiToken'
 import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElMessage, ElMessageBox, ElOption,
   ElPagination, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
+import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
-import { resolveMyMemberId } from '../activity/p3'
+import { downloadAttachment, fetchAttachmentByRequestKey, resolveMyMemberId } from '../activity/p3'
 import {
   confirmExpense, createExpense, createExpenseCorrection, expenseCategoryLabel, expenseStatusLabel,
   fetchExpenseSummary, fetchExpenses, fetchVouchers, rejectExpense, submitExpense, updateExpense,
-  uploadVoucher, voidExpense, voucherDownloadUrl,
-  type ExpenseCategory, type ExpenseItem, type ExpenseStatus, type ExpenseSummary, type VoucherItem,
+  uploadVoucher, voidExpense,
+  type ExpenseCategory, type ExpenseItem, type ExpenseStatus, type ExpenseSummary, type SaveExpenseInput, type VoucherItem,
 } from './expense'
 
 // P5 经费区块：预算与统计、支出明细与状态动作、凭证上传，按角色展示。
@@ -39,7 +40,7 @@ const PAGE_SIZE = 20
 const items = ref<ExpenseItem[]>([])
 const summary = ref<ExpenseSummary | null>(null)
 const loading = ref(false)
-/** 是否已完成一次成功读取；未完成时的空表格只能显示“正在加载”，不能显示“暂无”。 */
+/** 是否已完成一次成功读取；读取失败时不渲染空表格。 */
 const loaded = ref(false)
 /** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
 const skeleton = useLoadingSkeleton()
@@ -62,15 +63,29 @@ const form = ref({
   handledNote: '',
   noReceiptNote: '',
 })
+const formInitial = ref({ ...form.value })
+const pendingCreate = ref<SaveExpenseInput | null>(null)
+const createUnverifiable = ref(false)
+watch(pendingCreate, value => { if (!value) createUnverifiable.value = false })
+let createKey = ''
 
 const vouchers = ref<VoucherItem[]>([])
 const voucherUploading = ref(false)
+const voucherViewerVisible = ref(false)
 const voucherInput = ref<HTMLInputElement | null>(null)
+const pendingVoucher = ref<{ file: File; key: string; expenseId: string } | null>(null)
+const pendingCorrection = ref<{ item: ExpenseItem; input: SaveExpenseInput; key: string } | null>(null)
+const correctionSubmitting = ref(false)
+const formDirty = computed(() => dialogVisible.value
+  && (pendingCreate.value !== null || pendingVoucher.value !== null
+    || JSON.stringify(form.value) !== JSON.stringify(formInitial.value)))
 
 const rejectVisible = ref(false)
+const rejectSubmitting = ref(false)
 const rejectTarget = ref<ExpenseItem | null>(null)
 const rejectReason = ref('')
 const overBudgetVisible = ref(false)
+const overBudgetSubmitting = ref(false)
 const overBudgetTarget = ref<ExpenseItem | null>(null)
 const overBudgetNote = ref('')
 const overBudgetDetail = ref('')
@@ -80,6 +95,8 @@ const canRegister = computed(() => props.orgRole === 'OWNER'
   || (myMemberId.value !== null && myMemberId.value === props.orgDetail?.ownerMemberId))
 /** 确认、驳回与作废：仅组织负责人（活动负责人兼任时同样通过）。 */
 const canDecide = computed(() => props.orgRole === 'OWNER')
+const canWrite = computed(() => canRegister.value
+  && ['APPROVED', 'EXECUTING', 'REVIEWING', 'CANCELLED'].includes(props.orgDetail?.status ?? ''))
 
 const statusType: Record<ExpenseStatus, 'info' | 'warning' | 'success' | 'danger'> = {
   DRAFT: 'info',
@@ -90,6 +107,10 @@ const statusType: Record<ExpenseStatus, 'info' | 'warning' | 'success' | 'danger
 }
 
 let requestSeq = 0
+let alive = true
+let actionGeneration = 0
+watch([orgId, activityId], () => { actionGeneration++ }, { flush: 'sync' })
+onBeforeUnmount(() => { alive = false; requestSeq++ })
 
 async function loadAll(): Promise<void> {
   if (!orgId.value || !activityId.value) {
@@ -139,14 +160,12 @@ async function loadAll(): Promise<void> {
     }
     items.value = []
     summary.value = null
-    // 失败不冒充空态：表格继续显示“正在加载…”而不是“暂无”
+    // 失败仅展示错误与重试，不继续显示加载占位或空表格。
     loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '经费信息加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '经费信息加载失败，请重试。')
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -156,6 +175,13 @@ async function loadAll(): Promise<void> {
 }
 
 watch([orgId, activityId], () => {
+  pendingCreate.value = null
+  createKey = ''
+  pendingVoucher.value = null
+  pendingCorrection.value = null
+  voucherViewerVisible.value = false
+  dialogVisible.value = false
+  vouchers.value = []
   page.value = 1
   items.value = []
   summary.value = null
@@ -172,13 +198,24 @@ watch(page, () => {
 })
 onMounted(loadAll)
 
-async function guard(fn: () => Promise<void>): Promise<void> {
+function captureAction() {
+  return { orgId: orgId.value, activityId: activityId.value, generation: session.capture(), scope: actionGeneration }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.orgId === orgId.value && context.activityId === activityId.value
+    && context.generation === session.generation && context.scope === actionGeneration
+}
+
+async function guard(fn: (context: ReturnType<typeof captureAction>) => Promise<void>, context = captureAction()): Promise<unknown | null> {
+  if (!isActionCurrent(context)) return null
   actionError.value = ''
   try {
-    await fn()
+    await fn(context)
+    return null
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
-      return
+    if (session.observeUnauthorized(error, context.generation) || !isActionCurrent(context)) {
+      return error
     }
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
@@ -190,11 +227,16 @@ async function guard(fn: () => Promise<void>): Promise<void> {
     } else {
       actionError.value = '网络连接失败，请检查网络后重试。'
     }
+    return error
   }
 }
 
 function openCreate() {
   editing.value = null
+  pendingCreate.value = null
+  createKey = ''
+  pendingVoucher.value = null
+  actionError.value = ''
   form.value = {
     purpose: '',
     amount: 0,
@@ -203,12 +245,70 @@ function openCreate() {
     handledNote: '',
     noReceiptNote: '',
   }
+  formInitial.value = { ...form.value }
   vouchers.value = []
   dialogVisible.value = true
 }
 
+async function closeDialog(done?: () => void): Promise<void> {
+  if (dialogSubmitting.value || voucherUploading.value) return
+  const needsRecheck = pendingCreate.value !== null || pendingVoucher.value !== null
+  if (formDirty.value) {
+    try {
+      await ElMessageBox.confirm(pendingCreate.value
+        ? '上次保存结果尚未确认。离开后请先核对支出列表，避免重复登记。确定离开？'
+        : pendingVoucher.value
+          ? '上次上传结果尚未确认。离开后请先核对凭证列表，避免重复上传。确定离开？'
+          : '支出信息还未保存，确定放弃修改？', '未保存的修改', {
+        confirmButtonText: '放弃修改', cancelButtonText: '继续编辑', type: 'warning',
+      })
+    } catch { return }
+  }
+  pendingCreate.value = null
+  createKey = ''
+  pendingVoucher.value = null
+  if (done) done()
+  else dialogVisible.value = false
+  if (needsRecheck) void loadAll()
+}
+
+/** 票据查看不依赖支出是否仍可编辑，确认及归档后也可核对原件。 */
+async function openVouchers(item: ExpenseItem) {
+  voucherViewerTarget.value = item
+  voucherViewerVisible.value = true
+  await loadVoucherViewer()
+}
+
+const voucherViewerTarget = ref<ExpenseItem | null>(null)
+const voucherViewerError = ref('')
+const voucherViewerLoading = ref(false)
+const voucherSkeleton = useLoadingSkeleton()
+async function loadVoucherViewer() {
+  const item = voucherViewerTarget.value
+  if (!item || voucherViewerLoading.value) return
+  const context = captureAction()
+  acting.value = item.expenseId
+  vouchers.value = []
+  voucherViewerError.value = ''
+  voucherViewerLoading.value = true
+  voucherSkeleton.begin()
+  try {
+    const result = await fetchVouchers(context.orgId, context.activityId, item.expenseId)
+    if (!isActionCurrent(context)) return
+    vouchers.value = result
+  } catch (error) {
+    if (isActionCurrent(context) && !session.observeUnauthorized(error, context.generation)) voucherViewerError.value = readErrorMessage(error, '凭证加载失败，请重试。')
+  } finally {
+    voucherViewerLoading.value = false
+    voucherSkeleton.end()
+    acting.value = ''
+  }
+}
+
 async function openEdit(item: ExpenseItem) {
   editing.value = item
+  pendingVoucher.value = null
+  actionError.value = ''
   form.value = {
     purpose: item.purpose,
     amount: Number(item.amount),
@@ -217,10 +317,12 @@ async function openEdit(item: ExpenseItem) {
     handledNote: item.handledNote ?? '',
     noReceiptNote: item.noReceiptNote ?? '',
   }
+  formInitial.value = { ...form.value }
   vouchers.value = []
   dialogVisible.value = true
-  await guard(async () => {
-    vouchers.value = await fetchVouchers(orgId.value, activityId.value, item.expenseId)
+  await guard(async (context) => {
+    const result = await fetchVouchers(context.orgId, context.activityId, item.expenseId)
+    if (isActionCurrent(context) && editing.value?.expenseId === item.expenseId) vouchers.value = result
   })
 }
 
@@ -244,37 +346,64 @@ function validateForm(): string | null {
 }
 
 async function submitForm() {
-  const invalid = validateForm()
+  if (createUnverifiable.value) return
+  if (dialogSubmitting.value || voucherUploading.value || pendingVoucher.value) return
+  const invalid = pendingCreate.value ? null : validateForm()
   if (invalid) {
     actionError.value = invalid
     return
   }
   dialogSubmitting.value = true
-  await guard(async () => {
+  if (!editing.value && !pendingCreate.value) {
+    pendingCreate.value = inputOf()
+    createKey = newIdempotencyKey()
+  }
+  const failure = await guard(async (context) => {
     if (editing.value) {
-      await updateExpense(orgId.value, activityId.value, editing.value.expenseId,
+      await updateExpense(context.orgId, context.activityId, editing.value.expenseId,
         inputOf(), editing.value.version)
     } else {
-      await createExpense(orgId.value, activityId.value, inputOf())
+      await createExpense(context.orgId, context.activityId, pendingCreate.value!, createKey)
     }
+    if (!isActionCurrent(context)) return
+    pendingCreate.value = null
+    createKey = ''
     dialogVisible.value = false
     await loadAll()
-    emit('changed')
+    if (isActionCurrent(context)) emit('changed')
   })
+  if (failure instanceof ApiError && !failure.isTransportError
+    && [400, 403, 404, 422, 429].includes(failure.status)) {
+    pendingCreate.value = null
+    createKey = ''
+  }
+  if (pendingCreate.value && failure instanceof ApiError && failure.code === 'IDEMPOTENCY_RESULT_UNVERIFIABLE') createUnverifiable.value = true
   dialogSubmitting.value = false
 }
 
-async function uploadVoucherFile(file: File) {
+async function uploadVoucherFile(file?: File) {
+  const checking = pendingVoucher.value !== null
   const target = editing.value
-  if (!target) {
-    return
+  if (!target || voucherUploading.value) return
+  if (!pendingVoucher.value) {
+    if (!file) return
+    pendingVoucher.value = { file, key: newIdempotencyKey(), expenseId: target.expenseId }
   }
+  const pending = pendingVoucher.value
   voucherUploading.value = true
-  await guard(async () => {
-    await uploadVoucher(orgId.value, activityId.value, target.expenseId, file)
-    vouchers.value = await fetchVouchers(orgId.value, activityId.value, target.expenseId)
+  const failure = await guard(async (context) => {
+    if (checking) await fetchAttachmentByRequestKey(context.orgId, context.activityId, pending.key)
+    else await uploadVoucher(context.orgId, context.activityId, pending.expenseId, pending.file, pending.key)
+    if (!isActionCurrent(context)) return
+    const result = await fetchVouchers(context.orgId, context.activityId, target.expenseId)
+    if (!isActionCurrent(context)) return
+    vouchers.value = result
+    pendingVoucher.value = null
     await loadAll()
   })
+  if (failure instanceof ApiError && !failure.isTransportError
+    && ((!checking && [400, 403, 404, 413, 415, 422, 429].includes(failure.status)) || failure.status === 410)) pendingVoucher.value = null
+  if (checking && failure instanceof ApiError && failure.status === 404) actionError.value = '尚未找到上传结果，请稍后继续核对；原文件与请求仍保留。'
   voucherUploading.value = false
 }
 
@@ -289,10 +418,11 @@ function onVoucherChange(event: Event) {
 
 function submit(item: ExpenseItem) {
   acting.value = item.expenseId
-  void guard(async () => {
-    await submitExpense(orgId.value, activityId.value, item.expenseId, item.version)
+  void guard(async (context) => {
+    await submitExpense(context.orgId, context.activityId, item.expenseId, item.version)
+    if (!isActionCurrent(context)) return
     await loadAll()
-    emit('changed')
+    if (isActionCurrent(context)) emit('changed')
   }).finally(() => {
     acting.value = ''
   })
@@ -301,13 +431,15 @@ function submit(item: ExpenseItem) {
 /** 确认：超支时后端要求说明，界面弹框收集后再次确认（不静默失败）。 */
 function confirm(item: ExpenseItem) {
   acting.value = item.expenseId
-  void guard(async () => {
+  void guard(async (context) => {
     try {
-      await confirmExpense(orgId.value, activityId.value, item.expenseId, item.version)
+      await confirmExpense(context.orgId, context.activityId, item.expenseId, item.version)
+      if (!isActionCurrent(context)) return
       await loadAll()
-      emit('changed')
+      if (isActionCurrent(context)) emit('changed')
     } catch (error) {
       if (error instanceof ApiError && error.code === 'EXPENSE_OVER_BUDGET') {
+        if (!isActionCurrent(context)) return
         overBudgetTarget.value = item
         overBudgetNote.value = ''
         overBudgetDetail.value = error.detail
@@ -322,6 +454,7 @@ function confirm(item: ExpenseItem) {
 }
 
 async function confirmOverBudget() {
+  if (overBudgetSubmitting.value) return
   const target = overBudgetTarget.value
   if (!target) {
     return
@@ -330,13 +463,16 @@ async function confirmOverBudget() {
     actionError.value = '超出预算时必须填写超支说明'
     return
   }
-  await guard(async () => {
-    await confirmExpense(orgId.value, activityId.value, target.expenseId, target.version,
+  overBudgetSubmitting.value = true
+  await guard(async (context) => {
+    await confirmExpense(context.orgId, context.activityId, target.expenseId, target.version,
       overBudgetNote.value.trim())
+    if (!isActionCurrent(context)) return
     overBudgetVisible.value = false
     await loadAll()
-    emit('changed')
+    if (isActionCurrent(context)) emit('changed')
   })
+  overBudgetSubmitting.value = false
 }
 
 function openReject(item: ExpenseItem) {
@@ -346,75 +482,114 @@ function openReject(item: ExpenseItem) {
 }
 
 async function confirmReject() {
+  if (rejectSubmitting.value) return
   const target = rejectTarget.value
   if (!target || !rejectReason.value.trim()) {
     actionError.value = '驳回需要说明原因'
     return
   }
-  await guard(async () => {
-    await rejectExpense(orgId.value, activityId.value, target.expenseId, target.version,
+  rejectSubmitting.value = true
+  await guard(async (context) => {
+    await rejectExpense(context.orgId, context.activityId, target.expenseId, target.version,
       rejectReason.value.trim())
+    if (!isActionCurrent(context)) return
     rejectVisible.value = false
     await loadAll()
-    emit('changed')
+    if (isActionCurrent(context)) emit('changed')
   })
+  rejectSubmitting.value = false
 }
 
 function voidConfirmed(item: ExpenseItem) {
+  const context = captureAction()
   acting.value = item.expenseId
   void ElMessageBox.prompt('作废后不再计入统计；如需更正，请对原记录建立更正登记。', '作废支出', {
     confirmButtonText: '作废',
     cancelButtonText: '返回',
     inputPlaceholder: '作废原因',
     type: 'warning',
+    inputValidator: value => Boolean(value?.trim()) || '请填写作废原因',
+    beforeClose: async (action, instance, done) => {
+      if (instance.confirmButtonLoading) return
+      if (action !== 'confirm') { done(); return }
+      instance.confirmButtonLoading = true
+      const failure = await guard(async () => {
+        await voidExpense(context.orgId, context.activityId, item.expenseId, item.version, instance.inputValue.trim())
+        if (!isActionCurrent(context)) return
+        await loadAll()
+        if (isActionCurrent(context)) emit('changed')
+      }, context)
+      instance.confirmButtonLoading = false
+      if (!failure || !isActionCurrent(context)) done()
+      else instance.editorErrorMessage = actionError.value
+    },
   })
-    .then(({ value }) => guard(async () => {
-      await voidExpense(orgId.value, activityId.value, item.expenseId, item.version, value?.trim() || '作废')
-      await loadAll()
-      emit('changed')
-    }))
     .catch(() => undefined)
     .finally(() => {
       acting.value = ''
     })
 }
 
-/** 更正登记：以原记录为模板新建关联草稿，重新提交与确认。 */
-function correct(item: ExpenseItem) {
-  acting.value = item.expenseId
-  void ElMessageBox.confirm('将按原记录新建一条关联的更正登记，重新提交并确认；原记录不再计入统计。', '更正登记', {
-    confirmButtonText: '建立更正',
-    cancelButtonText: '返回',
-    type: 'info',
-  })
-    .then(() => guard(async () => {
-      await createExpenseCorrection(orgId.value, activityId.value, item.expenseId, {
+/** 更正登记：结果未知时沿用原请求核对，避免同一原记录出现两笔更正。 */
+async function correct(item: ExpenseItem) {
+  const context = captureAction()
+  if (acting.value || (pendingCorrection.value && pendingCorrection.value.item.expenseId !== item.expenseId)) return
+  if (!pendingCorrection.value) {
+    try {
+      await ElMessageBox.confirm('将按原记录新建一条关联的更正登记，重新提交并确认；原记录不再计入统计。', '更正登记', {
+        confirmButtonText: '建立更正', cancelButtonText: '返回', type: 'info',
+      })
+    } catch { return }
+    if (!isActionCurrent(context)) return
+    pendingCorrection.value = {
+      item,
+      key: newIdempotencyKey(),
+      input: {
         purpose: `${item.purpose}（更正）`,
         amount: item.amount,
         incurredOn: item.incurredOn,
         category: item.category,
         handledNote: item.handledNote ?? undefined,
         noReceiptNote: item.noReceiptNote ?? undefined,
-      })
-      ElMessage.success('已建立更正登记，请提交并确认')
-      await loadAll()
-      emit('changed')
-    }))
-    .catch(() => undefined)
-    .finally(() => {
-      acting.value = ''
-    })
+      },
+    }
+  }
+  const pending = pendingCorrection.value
+  acting.value = item.expenseId
+  correctionSubmitting.value = true
+  const failure = await guard(async () => {
+    await createExpenseCorrection(context.orgId, context.activityId, item.expenseId, pending.input, pending.key)
+    if (!isActionCurrent(context)) return
+    pendingCorrection.value = null
+    ElMessage.success('已建立更正登记，请提交并确认')
+    await loadAll()
+    if (isActionCurrent(context)) emit('changed')
+  }, context)
+  if (failure instanceof ApiError && !failure.isTransportError
+    && [400, 403, 404, 422, 429].includes(failure.status)) pendingCorrection.value = null
+  correctionSubmitting.value = false
+  acting.value = ''
 }
 
-function downloadVoucher(attachmentId: string) {
-  const link = document.createElement('a')
-  link.href = voucherDownloadUrl(orgId.value, activityId.value, attachmentId)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+const downloadingVoucherId = ref('')
+const voucherDownloadError = ref('')
+async function downloadVoucher(voucher: VoucherItem) {
+  if (downloadingVoucherId.value) return
+  const context = captureAction()
+  downloadingVoucherId.value = voucher.attachmentId
+  voucherDownloadError.value = ''
+  try {
+    await downloadAttachment(context.orgId, context.activityId, voucher.attachmentId, voucher.originalName)
+  } catch (error) {
+    if (!isActionCurrent(context) || session.observeUnauthorized(error, context.generation)) return
+    voucherDownloadError.value = readErrorMessage(error, '凭证下载失败，请重试。')
+  } finally {
+    downloadingVoucherId.value = ''
+  }
 }
 
-defineExpose({ reload: loadAll })
+defineExpose({ reload: loadAll, hasUnsavedForm: () => formDirty.value || pendingCorrection.value !== null,
+  isSubmitting: () => dialogSubmitting.value || voucherUploading.value || correctionSubmitting.value })
 </script>
 
 <template>
@@ -443,6 +618,7 @@ defineExpose({ reload: loadAll })
           />
         </ElSelect>
         <ElButton
+          v-if="canWrite"
           size="small"
           type="primary"
           plain
@@ -467,11 +643,25 @@ defineExpose({ reload: loadAll })
       </ElButton>
     </p>
     <p
-      v-if="actionError"
+      v-if="actionError && !dialogVisible"
       class="expense-section__error"
       role="alert"
     >
       {{ actionError }}
+    </p>
+    <p
+      v-if="pendingCorrection"
+      class="expense-note"
+    >
+      更正登记结果尚未确认，请用原请求核对，避免重复建立更正记录。
+      <ElButton
+        size="small"
+        link
+        :loading="acting === pendingCorrection.item.expenseId"
+        @click="correct(pendingCorrection.item)"
+      >
+        核对更正结果
+      </ElButton>
     </p>
 
     <dl
@@ -497,7 +687,7 @@ defineExpose({ reload: loadAll })
     </p>
 
     <ElSkeleton
-      v-if="skeleton.loading.value && items.length === 0"
+      v-if="(loading || loaded) && skeleton.loading.value && items.length === 0"
       :rows="4"
       animated
       data-expense-skeleton
@@ -505,7 +695,7 @@ defineExpose({ reload: loadAll })
       aria-label="正在加载经费明细"
     />
     <ElTable
-      v-else
+      v-else-if="loading || loaded"
       :data="items"
       class="expense-table"
     >
@@ -543,7 +733,16 @@ defineExpose({ reload: loadAll })
         :min-width="readUiLength('--ui-table-col-80')"
       >
         <template #default="{ row }">
-          {{ (row as ExpenseItem).voucherCount }}
+          <ElButton
+            v-if="Number((row as ExpenseItem).voucherCount) > 0"
+            size="small"
+            link
+            :loading="acting === (row as ExpenseItem).expenseId"
+            @click="openVouchers(row as ExpenseItem)"
+          >
+            查看凭证
+          </ElButton>
+          <span v-else>—</span>
         </template>
       </ElTableColumn>
       <ElTableColumn
@@ -578,7 +777,11 @@ defineExpose({ reload: loadAll })
         :min-width="readUiLength('--ui-table-col-260')"
       >
         <template #default="{ row }">
-          <template v-if="(row as ExpenseItem).status === 'DRAFT' || (row as ExpenseItem).status === 'REJECTED'">
+          <span
+            v-if="!canWrite"
+            class="expense-note"
+          >只读</span>
+          <template v-else-if="(row as ExpenseItem).status === 'DRAFT' || (row as ExpenseItem).status === 'REJECTED'">
             <ElButton
               size="small"
               @click="openEdit(row as ExpenseItem)"
@@ -627,20 +830,16 @@ defineExpose({ reload: loadAll })
             >
               作废
             </ElButton>
-            <ElButton
-              size="small"
-              @click="correct(row as ExpenseItem)"
-            >
-              更正登记
-            </ElButton>
           </template>
           <template v-else-if="(row as ExpenseItem).status === 'VOIDED'">
             <!-- 计划书 6.3：更正已确认费用时“先作废原记录，再建立关联新登记”，因此作废后仍可发起更正 -->
             <ElButton
               size="small"
+              :loading="acting === (row as ExpenseItem).expenseId"
+              :disabled="Boolean(pendingCorrection) && pendingCorrection?.item.expenseId !== (row as ExpenseItem).expenseId"
               @click="correct(row as ExpenseItem)"
             >
-              更正登记
+              {{ pendingCorrection?.item.expenseId === (row as ExpenseItem).expenseId ? '核对更正结果' : '更正登记' }}
             </ElButton>
           </template>
           <span
@@ -662,13 +861,87 @@ defineExpose({ reload: loadAll })
     />
 
     <ElDialog
+      v-model="voucherViewerVisible"
+      title="支出凭证"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
+    >
+      <p
+        v-if="voucherDownloadError"
+        class="expense-section__error"
+        role="alert"
+      >
+        {{ voucherDownloadError }}
+      </p>
+      <ElSkeleton
+        v-if="voucherSkeleton.loading.value"
+        :rows="3"
+        animated
+        aria-busy="true"
+        aria-label="正在加载支出凭证"
+      />
+      <p
+        v-else-if="voucherViewerError"
+        class="expense-section__error"
+        role="alert"
+      >
+        {{ voucherViewerError }} <ElButton @click="loadVoucherViewer">
+          重试
+        </ElButton>
+      </p>
+      <ul
+        v-else-if="vouchers.length"
+        class="expense-vouchers__list"
+      >
+        <li
+          v-for="voucher in vouchers"
+          :key="voucher.attachmentId"
+        >
+          <ElButton
+            link
+            :loading="downloadingVoucherId === voucher.attachmentId"
+            @click="downloadVoucher(voucher)"
+          >
+            {{ voucher.originalName }}
+          </ElButton>
+        </li>
+      </ul>
+      <p
+        v-else-if="!voucherViewerLoading"
+        class="expense-note"
+      >
+        暂无凭证。
+      </p>
+    </ElDialog>
+
+    <ElDialog
       v-model="dialogVisible"
       :title="editing ? '编辑支出' : '登记支出'"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
+      :before-close="closeDialog"
     >
+      <p
+        v-if="actionError"
+        class="expense-section__error"
+        role="alert"
+      >
+        {{ actionError }}
+      </p>
+      <p
+        v-if="pendingCreate"
+        class="expense-note"
+      >
+        {{ createUnverifiable ? '旧请求结果无法确认，请先核对支出列表，不要更换请求键再次创建。' : '保存结果尚未确认。当前内容暂不可修改；用原请求核对结果，或先查看支出列表。' }}
+      </p>
+      <p
+        v-if="pendingVoucher"
+        class="expense-note"
+      >
+        上传结果尚未确认。请用原文件核对结果，或先查看凭证列表。
+      </p>
       <ElForm
         :model="form"
         label-position="top"
+        :disabled="dialogSubmitting || voucherUploading || Boolean(pendingCreate)"
       >
         <ElFormItem
           label="支出用途"
@@ -729,6 +1002,13 @@ defineExpose({ reload: loadAll })
           label="凭证"
         >
           <div class="expense-vouchers">
+            <p
+              v-if="voucherDownloadError"
+              class="expense-section__error"
+              role="alert"
+            >
+              {{ voucherDownloadError }}
+            </p>
             <ul
               v-if="vouchers.length > 0"
               class="expense-vouchers__list"
@@ -740,7 +1020,8 @@ defineExpose({ reload: loadAll })
                 <ElButton
                   size="small"
                   link
-                  @click="downloadVoucher(voucher.attachmentId)"
+                  :loading="downloadingVoucherId === voucher.attachmentId"
+                  @click="downloadVoucher(voucher)"
                 >
                   {{ voucher.originalName }}
                 </ElButton>
@@ -755,28 +1036,33 @@ defineExpose({ reload: loadAll })
               type="file"
               class="expense-vouchers__input"
               accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.docx,.xlsx,.pptx,.zip"
+              :disabled="Boolean(pendingVoucher)"
               @change="onVoucherChange"
             >
             <ElButton
               size="small"
               :loading="voucherUploading"
-              @click="voucherInput?.click()"
+              @click="pendingVoucher ? uploadVoucherFile() : voucherInput?.click()"
             >
-              上传凭证
+              {{ pendingVoucher && !voucherUploading ? '核对上传结果' : '上传凭证' }}
             </ElButton>
           </div>
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="dialogVisible = false">
+        <ElButton
+          :disabled="dialogSubmitting || voucherUploading"
+          @click="closeDialog()"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
           :loading="dialogSubmitting"
+          :disabled="voucherUploading || Boolean(pendingVoucher) || createUnverifiable"
           @click="submitForm"
         >
-          保存
+          {{ createUnverifiable ? '请先核对支出列表' : pendingCreate && !dialogSubmitting ? '核对保存结果' : '保存' }}
         </ElButton>
       </template>
     </ElDialog>
@@ -784,20 +1070,32 @@ defineExpose({ reload: loadAll })
     <ElDialog
       v-model="rejectVisible"
       title="驳回支出"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
     >
+      <p
+        v-if="actionError"
+        class="expense-section__error"
+        role="alert"
+      >
+        {{ actionError }}
+      </p>
       <ElInput
         v-model="rejectReason"
+        :disabled="rejectSubmitting"
         type="textarea"
         :rows="2"
         placeholder="请说明驳回原因"
       />
       <template #footer>
-        <ElButton @click="rejectVisible = false">
+        <ElButton
+          :disabled="rejectSubmitting"
+          @click="rejectVisible = false"
+        >
           取消
         </ElButton>
         <ElButton
           type="danger"
+          :loading="rejectSubmitting"
           @click="confirmReject"
         >
           驳回
@@ -808,23 +1106,35 @@ defineExpose({ reload: loadAll })
     <ElDialog
       v-model="overBudgetVisible"
       title="超出预算，需要说明"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
     >
+      <p
+        v-if="actionError"
+        class="expense-section__error"
+        role="alert"
+      >
+        {{ actionError }}
+      </p>
       <p class="expense-note">
         {{ overBudgetDetail }}
       </p>
       <ElInput
         v-model="overBudgetNote"
+        :disabled="overBudgetSubmitting"
         type="textarea"
         :rows="2"
         placeholder="请填写超支说明（必填）"
       />
       <template #footer>
-        <ElButton @click="overBudgetVisible = false">
+        <ElButton
+          :disabled="overBudgetSubmitting"
+          @click="overBudgetVisible = false"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
+          :loading="overBudgetSubmitting"
           @click="confirmOverBudget"
         >
           确认支出

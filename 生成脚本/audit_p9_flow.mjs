@@ -217,8 +217,9 @@ try {
 
   // 报名（内部成员）
   const memberRegistration = await json(member, 'POST', `/api/activities/${activity.id}/registrations`,
-    { displayName: '内部成员报名' })
-  await json(owner, 'POST', `${ap}/registrations/${memberRegistration.registrationId}/approve`)
+    { displayName: '内部成员报名', version: 0 })
+  await json(owner, 'POST', `${ap}/registrations/${memberRegistration.registrationId}/approve`,
+    { version: memberRegistration.version })
 
   // 经费（A09／精度）：登记 → 提交 → 确认；零头与两位小数
   const expense = await json(member, 'POST', `${ap}/expenses`, {
@@ -240,7 +241,7 @@ try {
   await json(owner, 'POST', `${ap}/start-execution`, { version: await versionOf(owner, ap) })
   await json(owner, 'POST', `${ap}/execution-records`, { category: 'PROGRESS', content: '按计划完成场地布置' })
   await json(owner, 'POST', `${ap}/finish-execution`, { version: await versionOf(owner, ap) })
-  const feedback = await json(member, 'POST', `${ap}/feedback`, { rating: 5, comment: '流程顺畅，建议增加签到' })
+  const feedback = await json(member, 'POST', `${ap}/feedback`, { rating: 5, comment: '流程顺畅，建议增加签到', version: 0 })
   assert.equal(feedback.rating, 5, '反馈提交失败')
   const feedbackSummary = await json(owner, 'GET', `${ap}/feedback`)
   assert.equal(feedbackSummary.count, 1, '反馈份数应为 1')
@@ -428,7 +429,7 @@ try {
   await mobilePage.getByRole('button', { name: /进入工作区/ }).first().click()
   await mobilePage.waitForTimeout(1500)
   const outsiderApply = await json(outsider, 'POST', `/api/activities/${publicActivity.id}/registrations`,
-    { displayName: '外部参与者' })
+    { displayName: '外部参与者', version: 0 })
   assert.equal(outsiderApply.status, 'PENDING', '外部报名应进入待审')
   const outsiderIsMember = (await json(outsider, 'GET', '/api/me/organizations')).items
     .some((x) => x.id === org.id)
@@ -436,14 +437,16 @@ try {
   const myRegistrations = (await json(outsider, 'GET', '/api/me/registrations')).items
   assert.equal(myRegistrations.length, 1, '本人报名记录应可查询')
   // 最后名额竞争：第二个账号在第 1 个已通过后无法再占用该名额（容量 1）
-  await json(owner, 'POST', `${publicPath}/registrations/${outsiderApply.registrationId}/approve`)
+  const outsiderApproved = await json(owner, 'POST', `${publicPath}/registrations/${outsiderApply.registrationId}/approve`,
+    { version: outsiderApply.version })
   const competitor = await login(`p9comp${stamp}`)
   const competitorApply = await status(competitor, 'POST', `/api/activities/${publicActivity.id}/registrations`,
-    { displayName: '竞争者' })
+    { displayName: '竞争者', version: 0 })
   let competitorApproveStatus = null
   if (competitorApply.status === 201) {
     competitorApproveStatus = (await status(owner, 'POST',
-      `${publicPath}/registrations/${competitorApply.body.registrationId}/approve`)).status
+      `${publicPath}/registrations/${competitorApply.body.registrationId}/approve`,
+      { version: competitorApply.body.version })).status
   }
   const publicApproved = (await json(owner, 'GET', `${publicPath}/registrations`)).items
     .filter((x) => x.status === 'APPROVED').length
@@ -451,19 +454,20 @@ try {
   if (competitorApply.status === 201) {
     // 名额已满：待审申请按流程驳回，避免留下未处理报名影响启动执行
     await json(owner, 'POST', `${publicPath}/registrations/${competitorApply.body.registrationId}/reject`,
-      { reason: '名额已满' })
+      { reason: '名额已满', version: competitorApply.body.version })
   }
   // 取消只释放一次名额：本人取消后可以重新申请
-  await json(outsider, 'POST', `/api/activities/${publicActivity.id}/registrations/cancel-self`)
+  await json(outsider, 'POST', `/api/activities/${publicActivity.id}/registrations/cancel-self`,
+    { version: outsiderApproved.version })
   const afterCancel = (await json(outsider, 'GET', '/api/me/registrations')).items[0]
   assert.ok(['CANCELLED_SELF', 'CANCELLED_ORG'].includes(afterCancel.status), '本人取消后状态应为已取消')
   const reapply = await status(outsider, 'POST', `/api/activities/${publicActivity.id}/registrations`,
-    { displayName: '外部参与者（重新申请）' })
+    { displayName: '外部参与者（重新申请）', version: afterCancel.version })
   assert.equal(reapply.status, 201, '取消释放名额后应能重新申请')
 
   // P9.1：外部参与者在复盘期用手机浏览器提交反馈（不加入组织）
   const reapplyId = reapply.body.registrationId
-  await json(owner, 'POST', `${publicPath}/registrations/${reapplyId}/approve`)
+  await json(owner, 'POST', `${publicPath}/registrations/${reapplyId}/approve`, { version: reapply.body.version })
   await json(owner, 'POST', `${publicPath}/start-execution`, { version: await versionOf(owner, publicPath) })
   const publicInExecution = (await call(outsider, 'GET', `/api/public/activities/${publicActivity.id}`)).status()
   await json(owner, 'POST', `${publicPath}/finish-execution`, { version: await versionOf(owner, publicPath) })

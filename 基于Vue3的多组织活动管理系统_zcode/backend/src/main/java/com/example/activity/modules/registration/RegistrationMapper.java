@@ -29,7 +29,8 @@ public interface RegistrationMapper {
         @Param("id") Long id,
         @Param("toStatus") String toStatus,
         @Param("decidedBy") Long decidedBy,
-        @Param("reason") String reason);
+        @Param("reason") String reason,
+        @Param("version") Long version);
 
     /** 名额校验：当前有效报名数（锁内调用）。 */
     int countApproved(@Param("activityId") Long activityId);
@@ -61,10 +62,12 @@ public interface RegistrationMapper {
         @Param("id") Long id,
         @Param("toStatus") String toStatus,
         @Param("decidedBy") Long decidedBy,
-        @Param("reason") String reason);
+        @Param("reason") String reason,
+        @Param("version") Long version);
 
     int reapply(
         @Param("id") Long id,
         @Param("displayName") String displayName,
-        @Param("note") String note);
+        @Param("note") String note,
+        @Param("version") Long version);
 }

@@ -100,7 +100,9 @@ try {
   const memberBody = await memberPage.locator('body').innerText()
 
   // 4. 站内提示：成员收到任务分派与报名结果；账号页展示、未读与标记已读
-  await json(owner, 'POST', `${ap}/registrations/${(await json(owner, 'GET', `${ap}/registrations`)).items[0].registrationId}/approve`)
+  const pendingRegistration = (await json(owner, 'GET', `${ap}/registrations`)).items[0]
+  await json(owner, 'POST', `${ap}/registrations/${pendingRegistration.registrationId}/approve`,
+    { version: pendingRegistration.version })
   await memberPage.goto('/', { waitUntil: 'networkidle' })
   await memberPage.waitForSelector('text=站内提示', { timeout: 15000 })
   const beforeRead = await json(member, 'GET', '/api/me/notifications')
@@ -113,9 +115,17 @@ try {
   await memberPage.waitForTimeout(800)
   const afterRead = await json(member, 'GET', '/api/me/notifications')
 
+  // 保留一条真正未读的提示再撤权，避免先全部已读掩盖隐藏提示的计数错误。
+  await json(owner, 'POST', `${ap}/tasks`, { title: '撤权未读核对', assigneeMemberId: memberMemberId })
+  const unreadBeforePermissionChange = await json(member, 'GET', '/api/me/notifications')
+  assert.equal(unreadBeforePermissionChange.unread, 1)
+
   // 5. 撤权后旧提示不再下发：成员退出（先结束职责）后列表为空
-  await json(owner, 'POST', `${ap}/tasks/${(await json(owner, 'GET', `${ap}/tasks`)).items[0].taskId}/transition`,
-    { toStatus: 'CANCELLED' })
+  for (const task of (await json(owner, 'GET', `${ap}/tasks`)).items) {
+    if (['PENDING', 'IN_PROGRESS'].includes(task.status)) {
+      await json(owner, 'POST', `${ap}/tasks/${task.taskId}/transition`, { toStatus: 'CANCELLED' })
+    }
+  }
   await json(owner, 'PATCH', '/api/organizations/' + org.id + '/activities/' + activity.id,
     { ownerMemberId: ownerMemberId })
     .catch(async () => {
@@ -127,6 +137,16 @@ try {
     })
   const leave = await call(member, 'DELETE', `/api/organizations/${org.id}/members/me`)
   const afterLeave = await json(member, 'GET', '/api/me/notifications')
+  assert.equal(leave.status(), 204)
+  assert.equal(afterLeave.total, 0)
+  assert.equal(afterLeave.unread, 0)
+  await memberPage.reload({ waitUntil: 'networkidle' })
+  await memberPage.getByText('暂无提示。', { exact: true }).waitFor()
+  assert.equal(await memberPage.locator('.notifications__tools .el-tag').count(), 0)
+  assert.equal(await memberPage.getByRole('button', { name: '全部标为已读', exact: true }).count(), 0)
+  const permissionShot = fileURLToPath(new URL('../验证截图/P7-撤权未读.png', import.meta.url))
+  await memberPage.screenshot({ path: permissionShot, fullPage: true })
+  shots.push(permissionShot)
 
   // 6. 窄屏：工作台与提示区块在各宽度下不横向溢出
   const widths = []
@@ -135,17 +155,34 @@ try {
     await ownerPage.goto(`/org/${org.id}`, { waitUntil: 'networkidle' })
     await ownerPage.waitForSelector('text=工作台', { timeout: 15000 })
     await ownerPage.waitForTimeout(200)
+    const initialOverflowPx = await ownerPage.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+    await ownerPage.waitForTimeout(800)
     const measured = await ownerPage.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
+      overflowing: [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > document.documentElement.clientWidth + 2)
+        .slice(0, 8).map(el => ({ tag: el.tagName, class: el.className, right: el.getBoundingClientRect().right })),
     }))
-    widths.push({ width, overflowPx: measured.scrollWidth - measured.clientWidth })
+    widths.push({ width, initialOverflowPx, overflowPx: measured.scrollWidth - measured.clientWidth,
+      ...(measured.scrollWidth > measured.clientWidth + 2 ? { overflowing: measured.overflowing } : {}) })
   }
+  const smallestShot = fileURLToPath(new URL('../验证截图/P7-320px.png', import.meta.url))
+  await ownerPage.screenshot({ path: smallestShot, fullPage: true })
+  shots.push(smallestShot)
   const shot3 = fileURLToPath(new URL('../验证截图/P7-窄屏.png', import.meta.url))
   await ownerPage.setViewportSize({ width: 390, height: 900 })
   await ownerPage.waitForTimeout(200)
   await ownerPage.screenshot({ path: shot3, fullPage: true })
   shots.push(shot3)
+
+  assert.equal(todoJumped, true)
+  assert.equal(unreadShown, true)
+  assert.equal(afterRead.unread, 0)
+  assert.equal(ownerWorkbench.role, 'OWNER')
+  assert.equal(memberWorkbench.role, 'MEMBER')
+  assert.ok(widths.every((item) => item.overflowPx <= 2), JSON.stringify(widths))
+  assert.deepEqual(errors, [])
+  assert.deepEqual(memberErrors, [])
 
   console.log(JSON.stringify({
     check: 'P7 工作台与站内提示真机核对',
@@ -172,6 +209,7 @@ try {
       unreadBefore: beforeRead.unread,
       unreadAfter: afterRead.unread,
       unreadShownInUi: unreadShown,
+      unreadBeforePermissionChange: unreadBeforePermissionChange.unread,
       types: beforeRead.items.map((i) => i.type),
       bodyHasSummary: notificationBody.includes('任务分派') || notificationBody.includes('报名通过'),
     },
@@ -179,6 +217,7 @@ try {
       leaveStatus: leave.status(),
       total: afterLeave.total,
       items: afterLeave.items.length,
+      unread: afterLeave.unread,
     },
     narrowWidths: widths,
     browserErrors: errors,

@@ -12,6 +12,8 @@ public interface ExpenseMapper {
 
     Expense findById(@Param("id") Long id);
 
+    Expense findByIdForUpdate(@Param("id") Long id);
+
     Expense findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
 
     List<Expense> listByActivity(

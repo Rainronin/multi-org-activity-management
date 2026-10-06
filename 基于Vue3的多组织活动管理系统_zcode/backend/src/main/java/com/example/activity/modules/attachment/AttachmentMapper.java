@@ -11,6 +11,8 @@ public interface AttachmentMapper {
 
     Attachment findActiveById(@Param("id") Long id);
 
+    Attachment findById(@Param("id") Long id);
+
     /** F06：按组织的防重键查已提交附件（含已软删除记录，避免同键重放复活已删附件）。 */
     Attachment findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
 

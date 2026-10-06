@@ -34,7 +34,8 @@ class Links(HTMLParser):
 
 def check():
     errors = []
-    paths = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "UI演示/README.md", *sorted(DOCS.rglob("*.md"))]
+    paths = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "UI演示/README.md",
+             ROOT / "生成脚本/README.md", *sorted(DOCS.rglob("*.md"))]
     texts = {}
     stale = re.compile(r"-v\d+\.md|项目计划书评估报告\.md|方案讨论版|推荐方案讨论稿|语言与框架未选定", re.I)
     for path in paths:

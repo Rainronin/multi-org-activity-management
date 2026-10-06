@@ -23,6 +23,15 @@ public class Registration {
     private String cancelReason;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
+    private Long version;
+
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
+    }
 
     public Long getId() {
         return id;

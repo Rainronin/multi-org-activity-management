@@ -25,11 +25,12 @@ function item(overrides: Partial<RegistrationItem> = {}): RegistrationItem {
   return {
     registrationId: '1',
     activityId: '10',
-    accountId: 1,
+    accountId: '1',
     accountUsername: 'u',
     displayName: 'u',
     note: null,
     status: 'PENDING',
+    version: 1,
     cancelReason: null,
     decidedAt: null,
     createdAt: '2027-01-01T00:00:00+08:00',

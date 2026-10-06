@@ -12,7 +12,8 @@ public interface FeedbackMapper {
 
     /** 已存在则更新评分与建议（归档前允许本人修改）。 */
     int update(
-        @Param("id") Long id, @Param("rating") Integer rating, @Param("comment") String comment);
+        @Param("id") Long id, @Param("rating") Integer rating, @Param("comment") String comment,
+        @Param("version") Long version);
 
     Feedback findByActivityAndAccount(
         @Param("activityId") Long activityId, @Param("accountId") Long accountId);

@@ -12,8 +12,8 @@ export interface ActivityItem {
   status: ActivityStatus
   proposal: string | null
   reviewNote: string | null
-  submittedBy: number | null
-  confirmedBy: number | null
+  submittedBy: string | null
+  confirmedBy: string | null
   confirmType: string | null
   startTime: string | null
   endTime: string | null
@@ -37,7 +37,8 @@ export interface ActivityItem {
   reopenCount: number
   summary: string | null
   summaryConfirmedAt: string | null
-  summaryConfirmedBy: number | null
+  summaryConfirmedBy: string | null
+  summaryNeedsReview: boolean
   createdAt: string
   updatedAt: string
 }

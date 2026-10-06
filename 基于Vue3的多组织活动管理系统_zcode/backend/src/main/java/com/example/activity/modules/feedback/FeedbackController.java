@@ -30,25 +30,26 @@ public class FeedbackController {
     }
 
     public record FeedbackResponse(
-        String feedbackId, Long accountId, String accountUsername, Integer rating, String comment,
-        java.time.OffsetDateTime createdAt, java.time.OffsetDateTime updatedAt) {
+        String feedbackId, String accountId, String accountUsername, Integer rating, String comment,
+        java.time.OffsetDateTime createdAt, java.time.OffsetDateTime updatedAt, Long version) {
     }
 
     public record FeedbackSummaryResponse(
         long count, String averageRating, List<FeedbackResponse> items, boolean mineSubmitted,
-        Integer myRating, String myComment, boolean canSubmit, String submitBlockedReason) {
+        Integer myRating, String myComment, boolean canSubmit, String submitBlockedReason, Long myVersion) {
     }
 
     public record SubmitFeedbackRequest(
         @NotNull(message = "请给出 1～5 分评分")
         @Min(value = 1, message = "评分最低 1 分")
         @Max(value = 5, message = "评分最高 5 分") Integer rating,
-        @Size(max = 2000, message = "文字建议不超过 2000 字符") String comment) {
+        @Size(max = 2000, message = "文字建议不超过 2000 字符") String comment,
+        @Min(value = 0, message = "版本不能为负数") Long version) {
     }
 
     private FeedbackResponse toResponse(FeedbackService.FeedbackItem item) {
-        return new FeedbackResponse(String.valueOf(item.feedbackId()), item.accountId(),
-            item.accountUsername(), item.rating(), item.comment(), item.createdAt(), item.updatedAt());
+        return new FeedbackResponse(String.valueOf(item.feedbackId()), String.valueOf(item.accountId()),
+            item.accountUsername(), item.rating(), item.comment(), item.createdAt(), item.updatedAt(), item.version());
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/feedback")
@@ -62,7 +63,7 @@ public class FeedbackController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new FeedbackSummaryResponse(summary.count(), summary.averageRating(), items,
                 summary.mineSubmitted(), summary.myRating(), summary.myComment(),
-                summary.canSubmit(), summary.submitBlockedReason()));
+                summary.canSubmit(), summary.submitBlockedReason(), summary.myVersion()));
     }
 
     /** 提交或修改本人反馈：每账号每活动一份，归档前允许修改。 */
@@ -74,7 +75,7 @@ public class FeedbackController {
         @Valid @RequestBody SubmitFeedbackRequest request) {
         FeedbackService.FeedbackItem saved = feedbackService.submit(
             principal.getAccountId(), orgId, activityId, request.rating(),
-            request.comment() == null ? null : request.comment().trim());
+            request.comment() == null ? null : request.comment().trim(), request.version());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(toResponse(saved));
     }
 }

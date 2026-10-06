@@ -1,6 +1,7 @@
 package com.example.activity.modules.organization;
 
 import com.example.activity.common.ApiException;
+import com.example.activity.common.RequestFingerprint;
 import com.example.activity.common.SecureCodes;
 import com.example.activity.common.audit.AuditService;
 import java.time.OffsetDateTime;
@@ -46,23 +47,41 @@ public class OrganizationInvitationService {
     }
 
     @Transactional
-    public InvitationCreated create(Long actorAccountId, Long orgId, int expiresInDays, int maxUses) {
+    public InvitationCreated create(Long actorAccountId, Long orgId, int expiresInDays, int maxUses, String requestKey) {
         // 组织行排他锁 + 锁内重验身份：撤权与创建竞争时，撤权先生效则本次创建被拒绝（R04）。
         organizationMapper.lockOrganization(orgId);
         requireOwner(orgId, actorAccountId);
+        String key = requestKey == null ? null : requestKey.trim();
+        if (key != null && (key.isEmpty() || key.length() > 64)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "请求参数不合法", "Idempotency-Key 必须为 1～64 字符。");
+        }
+        String fingerprint = key == null ? null : RequestFingerprint.of(expiresInDays, maxUses);
+        if (key != null) {
+            OrganizationInvitation existing = invitationMapper.findByRequestKey(orgId, key);
+            if (existing != null) {
+                if (!existing.getCreatedBy().equals(actorAccountId) || !fingerprint.equals(existing.getRequestFingerprint())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", "重复的防重键", "该请求键已用于其他邀请创建请求。");
+                }
+                // 仅核对原记录，不能延长有效期、恢复已撤销邀请或再次返回明文。
+                return new InvitationCreated(existing.getId(), null, existing.getExpiresAt(), existing.getMaxUses());
+            }
+        }
         // 邀请码需要分享给被邀请人，明文仅创建响应返回一次（存哈希，之后不可再查看）。
         String plainCode = SecureCodes.generate();
         OrganizationInvitation invitation = new OrganizationInvitation();
         invitation.setOrgId(orgId);
         invitation.setCodeHash(SecureCodes.hash(SecureCodes.normalize(plainCode)));
         invitation.setCreatedBy(actorAccountId);
+        invitation.setRequestKey(key);
+        invitation.setRequestFingerprint(fingerprint);
         invitation.setExpiresAt(OffsetDateTime.now().plusDays(expiresInDays));
         invitation.setMaxUses(maxUses);
         invitation.setStatus(OrganizationInvitation.STATUS_ACTIVE);
         invitationMapper.insert(invitation);
-        auditService.record(actorAccountId, "ORGANIZATION", "INVITATION_CREATED", "organization:" + orgId,
-            null, java.util.Map.of("invitationId", invitation.getId(), "maxUses", maxUses, "expiresInDays", expiresInDays));
-        return new InvitationCreated(invitation.getId(), plainCode, invitation.getExpiresAt(), maxUses);
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "INVITATION_CREATED", "organization:" + orgId,
+            null, java.util.Map.of("invitationId", invitation.getId(), "maxUses", maxUses, "expiresInDays", expiresInDays), null, auditState(invitationMapper.findById(invitation.getId())));
+        OrganizationInvitation created = invitationMapper.findById(invitation.getId());
+        return new InvitationCreated(created.getId(), plainCode, created.getExpiresAt(), maxUses);
     }
 
     public List<InvitationItem> list(Long actorAccountId, Long orgId) {
@@ -81,9 +100,9 @@ public class OrganizationInvitationService {
         if (invitation == null || !invitation.getOrgId().equals(orgId)) {
             throw notFound();
         }
-        invitationMapper.revoke(invitationId);
-        auditService.record(actorAccountId, "ORGANIZATION", "INVITATION_REVOKED", "organization:" + orgId,
-            null, java.util.Map.of("invitationId", invitationId));
+        if (invitationMapper.revoke(invitationId) != 1) return;
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "INVITATION_REVOKED", "organization:" + orgId,
+            null, java.util.Map.of("invitationId", invitationId), auditState(invitation), auditState(invitationMapper.findById(invitationId)));
     }
 
     @Transactional
@@ -122,8 +141,7 @@ public class OrganizationInvitationService {
             if (memberMapper.reactivate(history.getId()) != 1) {
                 throw invalid();
             }
-            auditService.record(accountId, "ORGANIZATION", "MEMBER_JOINED", "organization:" + invitation.getOrgId(),
-                "重新加入", java.util.Map.of("memberId", history.getId(), "invitationId", invitation.getId()));
+            recordJoined(accountId, invitation, history, history.getId(), "重新加入");
             return new Accepted(invitation.getOrgId(), orgName(invitation.getOrgId()), OrganizationMember.ROLE_MEMBER);
         }
 
@@ -142,9 +160,24 @@ public class OrganizationInvitationService {
             }
             return new Accepted(invitation.getOrgId(), orgName(invitation.getOrgId()), concurrent.getRole());
         }
-        auditService.record(accountId, "ORGANIZATION", "MEMBER_JOINED", "organization:" + invitation.getOrgId(),
-            null, java.util.Map.of("memberId", member.getId(), "invitationId", invitation.getId()));
+        recordJoined(accountId, invitation, null, member.getId(), null);
         return new Accepted(invitation.getOrgId(), orgName(invitation.getOrgId()), member.getRole());
+    }
+
+    private record InvitationState(Long invitationId, String status, Integer usedCount, Integer maxUses, OffsetDateTime expiresAt) { }
+
+    private InvitationState auditState(OrganizationInvitation invitation) {
+        return new InvitationState(invitation.getId(), invitation.getStatus(), invitation.getUsedCount(), invitation.getMaxUses(), invitation.getExpiresAt());
+    }
+
+    private void recordJoined(Long accountId, OrganizationInvitation invitation, OrganizationMember before, Long memberId, String reason) {
+        var previous = new java.util.LinkedHashMap<String, Object>();
+        previous.put("member", OrganizationMemberService.auditState(before));
+        previous.put("invitation", auditState(invitation));
+        auditService.recordChange(accountId, "ORGANIZATION", "MEMBER_JOINED", "organization:" + invitation.getOrgId(), reason,
+            java.util.Map.of("memberId", memberId, "invitationId", invitation.getId()), previous,
+            java.util.Map.of("member", OrganizationMemberService.auditState(memberMapper.findById(memberId)),
+                "invitation", auditState(invitationMapper.findById(invitation.getId()))));
     }
 
     private void requireOwner(Long orgId, Long accountId) {

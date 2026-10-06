@@ -31,6 +31,10 @@
           AND request_key = #{requestKey}
     </select>
 
+    <select id="findByIdForUpdate" resultType="com.example.activity.modules.expense.Expense">
+        SELECT <include refid="baseColumns" /> FROM expense WHERE id = #{id} FOR UPDATE
+    </select>
+
     <select id="listByActivity" resultType="com.example.activity.modules.expense.Expense">
         SELECT <include refid="baseColumns" />
         FROM expense

@@ -13,6 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.activity.support.ActivityTestBase;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -40,6 +42,12 @@ class P3FlowTest extends ActivityTestBase {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.example.activity.common.audit.AuditService auditService;
 
     private record TestSession(String username, MockHttpSession session) {
     }
@@ -124,6 +132,236 @@ class P3FlowTest extends ActivityTestBase {
 
     private Long accountIdOf(String username) {
         return jdbcTemplate.queryForObject("SELECT id FROM account WHERE username = ?", Long.class, username);
+    }
+
+    private java.util.Map<String, Object> preparationState(String kind, Long id) {
+        var row = jdbcTemplate.queryForMap("SELECT * FROM " + kind + " WHERE id = ?", id);
+        var state = new java.util.LinkedHashMap<String, Object>();
+        state.put("status", row.get("status"));
+        state.put("version", row.get("version"));
+        state.put("assigneeMemberId", row.get("assignee_member_id"));
+        if ("task".equals(kind)) {
+            state.put("priority", row.get("priority"));
+            state.put("completed", row.get("completed_at") != null);
+        } else {
+            state.put("quantity", row.get("quantity"));
+            state.put("unit", row.get("unit"));
+        }
+        return state;
+    }
+
+    private void assertPreparationAudit(String kind, Long id, Long orgId, Long activityId, String action,
+        java.util.Map<String, Object> before, java.util.Map<String, Object> after, MvcResult response) throws Exception {
+        var row = jdbcTemplate.queryForMap("SELECT detail, request_id FROM audit_log WHERE target = ? AND action = ? ORDER BY id DESC LIMIT 1",
+            kind + ":" + id, action);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var detail = mapper.readTree((String) row.get("detail"));
+        assertThat(detail.has("before") && detail.has("after")).as(action + " 的前后字段存在").isTrue();
+        assertThat(detail.get("before")).as(action + " 的变更前事实").isEqualTo(mapper.readTree(mapper.writeValueAsString(before)));
+        assertThat(detail.get("after")).as(action + " 的变更后事实").isEqualTo(mapper.readTree(mapper.writeValueAsString(after)));
+        assertThat(detail.get("orgId").asLong()).isEqualTo(orgId);
+        assertThat(detail.get("activityId").asLong()).isEqualTo(activityId);
+        assertThat(row.get("request_id")).isEqualTo(response.getResponse().getHeader("X-Request-Id"));
+        assertThat((String) row.get("detail")).doesNotContain("审计正文排除样本");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "material"})
+    void preparationAuditsRecordAssignmentsAndActualVersions(String kind) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long memberId = memberIdOf(orgId, member.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId);
+        String root = "/api/organizations/" + orgId + "/activities/" + activityId + "/" + kind + "s";
+        String body = "task".equals(kind)
+            ? "{\"title\":\"审计任务\",\"description\":\"审计正文排除样本\",\"assigneeMemberId\":" + ownerMemberId + "}"
+            : "{\"name\":\"审计物资\",\"quantity\":2,\"unit\":\"件\",\"note\":\"审计正文排除样本\"}";
+        String key = newIdempotencyKey();
+        MvcResult created = mockMvc.perform(post(root).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isCreated()).andReturn();
+        Long id = new com.fasterxml.jackson.databind.ObjectMapper().readTree(created.getResponse().getContentAsString()).get(kind + "Id").asLong();
+        var before = preparationState(kind, id);
+        assertPreparationAudit(kind, id, orgId, activityId, kind.toUpperCase() + "_CREATED", null, before, created);
+        mockMvc.perform(post(root).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isCreated());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(1L);
+        String changed = "task".equals(kind)
+            ? "{\"title\":\"改派任务\",\"description\":\"审计正文排除样本\",\"priority\":\"HIGH\",\"assigneeMemberId\":" + memberId + ",\"version\":1}"
+            : "{\"name\":\"改派物资\",\"quantity\":3,\"unit\":\"套\",\"note\":\"审计正文排除样本\",\"assigneeMemberId\":" + memberId + ",\"version\":1}";
+        MvcResult updated = mockMvc.perform(post(root + "/" + id + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(changed)).andExpect(status().isOk()).andReturn();
+        assertPreparationAudit(kind, id, orgId, activityId, kind.toUpperCase() + "_UPDATED", before, preparationState(kind, id), updated);
+        mockMvc.perform(post(root + "/" + id + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(changed)).andExpect(status().isConflict());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(2L);
+        for (String toStatus : "task".equals(kind) ? java.util.List.of("IN_PROGRESS", "COMPLETED", "PENDING", "CANCELLED")
+            : java.util.List.of("IN_PROGRESS", "READY", "PENDING", "CANCELLED")) {
+            before = preparationState(kind, id);
+            boolean ownAdvance = "task".equals(kind) && ("IN_PROGRESS".equals(toStatus) || "COMPLETED".equals(toStatus));
+            MvcResult result = mockMvc.perform(post(root + "/" + id + (ownAdvance ? "/advance" : "/transition"))
+                    .with(csrf()).session(ownAdvance ? member.session() : owner.session()).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"toStatus\":\"" + toStatus + "\"}")).andExpect(status().isOk()).andReturn();
+            assertPreparationAudit(kind, id, orgId, activityId, kind.toUpperCase() + "_STATUS_" + toStatus,
+                before, preparationState(kind, id), result);
+        }
+        assertThat(((Number) preparationState(kind, id).get("version")).longValue()).isEqualTo(6L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "material"})
+    void preparationAuditFailureRollsBackCreationAndOriginalKeyCanRetry(String kind) throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId);
+        String root = "/api/organizations/" + orgId + "/activities/" + activityId + "/" + kind + "s";
+        String body = "task".equals(kind) ? "{\"title\":\"事务任务\",\"assigneeMemberId\":" + ownerMemberId + "}"
+            : "{\"name\":\"事务物资\",\"quantity\":1,\"unit\":\"件\"}";
+        String key = newIdempotencyKey();
+        long notices = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM notification WHERE activity_id = ?", Long.class, activityId);
+        org.mockito.Mockito.doThrow(new IllegalStateException("测试审计写入失败")).when(auditService).record(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("ACTIVITY"),
+            org.mockito.ArgumentMatchers.eq(kind.toUpperCase() + "_CREATED"), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        mockMvc.perform(post(root).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isInternalServerError());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + kind + " WHERE org_id = ? AND request_key = ?", Long.class, orgId, key)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM notification WHERE activity_id = ?", Long.class, activityId)).isEqualTo(notices);
+        org.mockito.Mockito.doCallRealMethod().when(auditService).record(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("ACTIVITY"),
+            org.mockito.ArgumentMatchers.eq(kind.toUpperCase() + "_CREATED"), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        MvcResult retry = mockMvc.perform(post(root).with(csrf()).session(owner.session()).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isCreated()).andReturn();
+        Long id = new com.fasterxml.jackson.databind.ObjectMapper().readTree(retry.getResponse().getContentAsString()).get(kind + "Id").asLong();
+        assertPreparationAudit(kind, id, orgId, activityId, kind.toUpperCase() + "_CREATED", null, preparationState(kind, id), retry);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + kind + " WHERE org_id = ? AND request_key = ?", Long.class, orgId, key)).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(1L);
+        TestSession member = registerAndLogin();
+        inviteAndAccept(owner, member, orgId);
+        Long memberId = memberIdOf(orgId, member.username());
+        String changed = "task".equals(kind) ? "{\"title\":\"事务改派\",\"assigneeMemberId\":" + memberId + ",\"version\":1}"
+            : "{\"name\":\"事务改派\",\"quantity\":2,\"unit\":\"件\",\"assigneeMemberId\":" + memberId + ",\"version\":1}";
+        var before = preparationState(kind, id);
+        notices = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM notification WHERE activity_id = ?", Long.class, activityId);
+        org.mockito.Mockito.doThrow(new IllegalStateException("测试审计写入失败")).when(auditService).record(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("ACTIVITY"),
+            org.mockito.ArgumentMatchers.eq(kind.toUpperCase() + "_UPDATED"), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        mockMvc.perform(post(root + "/" + id + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(changed)).andExpect(status().isInternalServerError());
+        assertThat(preparationState(kind, id)).isEqualTo(before);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM notification WHERE activity_id = ?", Long.class, activityId)).isEqualTo(notices);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(1L);
+        org.mockito.Mockito.doCallRealMethod().when(auditService).record(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("ACTIVITY"),
+            org.mockito.ArgumentMatchers.eq(kind.toUpperCase() + "_UPDATED"), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        MvcResult updated = mockMvc.perform(post(root + "/" + id + "/update").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(changed)).andExpect(status().isOk()).andReturn();
+        assertPreparationAudit(kind, id, orgId, activityId, kind.toUpperCase() + "_UPDATED", before, preparationState(kind, id), updated);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(2L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "material"})
+    void queuedPreparationWriteRechecksCommittedAssignmentOrState(String kind) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId);
+        String root = "/api/organizations/" + orgId + "/activities/" + activityId + "/" + kind + "s";
+        String body = "task".equals(kind) ? "{\"title\":\"排队任务\",\"assigneeMemberId\":" + memberIdOf(orgId, member.username()) + "}"
+            : "{\"name\":\"排队物资\",\"quantity\":1,\"unit\":\"件\"}";
+        MvcResult created = mockMvc.perform(post(root).with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(body)).andExpect(status().isCreated()).andReturn();
+        Long id = new com.fasterxml.jackson.databind.ObjectMapper().readTree(created.getResponse().getContentAsString()).get(kind + "Id").asLong();
+        try (var executor = java.util.concurrent.Executors.newSingleThreadExecutor(); var connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (var lock = connection.prepareStatement("SELECT id FROM " + kind + " WHERE id = ? FOR UPDATE")) {
+                lock.setLong(1, id);
+                try (var rows = lock.executeQuery()) { assertThat(rows.next()).isTrue(); }
+            }
+            var request = executor.submit(() -> mockMvc.perform(post(root + "/" + id + ("task".equals(kind) ? "/advance" : "/transition"))
+                .with(csrf()).session("task".equals(kind) ? member.session() : owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("task".equals(kind) ? "{\"toStatus\":\"COMPLETED\"}" : "{\"toStatus\":\"READY\"}" )).andReturn());
+            boolean waiting = false;
+            try {
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (System.nanoTime() < deadline && !waiting) {
+                    // 只查看本测试账号连接；FULL保留末尾id，不要求额外系统表权限。
+                    waiting = jdbcTemplate.queryForList("SHOW FULL PROCESSLIST").stream().anyMatch(thread -> {
+                        String sql = String.valueOf(thread.get("Info"));
+                        return "Query".equals(thread.get("Command")) && sql.contains(id.toString())
+                            && (sql.stripLeading().startsWith("UPDATE " + kind)
+                                || sql.contains("FROM " + kind) && sql.contains("FOR UPDATE"));
+                    });
+                    if (!waiting) Thread.sleep(20);
+                }
+                assertThat(waiting).as("真实子记录锁等待").isTrue();
+                try (var change = connection.prepareStatement("UPDATE " + kind + " SET "
+                    + ("task".equals(kind) ? "assignee_member_id = ?" : "status = 'READY'") + ", version = version + 1 WHERE id = ?")) {
+                    int index = 1;
+                    if ("task".equals(kind)) change.setLong(index++, ownerMemberId);
+                    change.setLong(index, id);
+                    assertThat(change.executeUpdate()).isEqualTo(1);
+                }
+                connection.commit();
+                var result = request.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertThat(result.getResponse().getStatus()).as("排队后须重验承担者／状态").isEqualTo("task".equals(kind) ? 403 : 409);
+                assertThat(((Number) preparationState(kind, id).get("version")).longValue()).isEqualTo(2L);
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_log WHERE target = ?", Long.class, kind + ":" + id)).isEqualTo(1L);
+            } finally {
+                connection.rollback();
+            }
+        }
+    }
+
+    @Test
+    void sameCreateKeyReturnsOriginalTaskAndMaterial() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        Long ownerMemberId = memberIdOf(orgId, owner.username());
+        Long activityId = createApprovedActivity(owner, orgId, ownerMemberId);
+        String root = "/api/organizations/" + orgId + "/activities/" + activityId;
+        String taskBody = "{\"title\":\"防重任务\",\"assigneeMemberId\":" + ownerMemberId + "}";
+        String taskKey = newIdempotencyKey();
+        MvcResult task = mockMvc.perform(post(root + "/tasks").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", taskKey).contentType(MediaType.APPLICATION_JSON).content(taskBody))
+            .andExpect(status().isCreated()).andReturn();
+        String taskId = com.jayway.jsonpath.JsonPath.read(task.getResponse().getContentAsString(), "$.taskId");
+        mockMvc.perform(post(root + "/tasks").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", taskKey).contentType(MediaType.APPLICATION_JSON).content(taskBody))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.taskId").value(taskId));
+        mockMvc.perform(post(root + "/tasks").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", taskKey).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"不同任务\",\"assigneeMemberId\":" + ownerMemberId + "}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM task WHERE activity_id = ?", Integer.class,
+            activityId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM notification WHERE activity_id = ?", Integer.class,
+            activityId)).isEqualTo(1);
+
+        String materialBody = "{\"name\":\"防重物资\",\"quantity\":2,\"unit\":\"条\"}";
+        String materialKey = newIdempotencyKey();
+        MvcResult material = mockMvc.perform(post(root + "/materials").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", materialKey).contentType(MediaType.APPLICATION_JSON).content(materialBody))
+            .andExpect(status().isCreated()).andReturn();
+        String materialId = com.jayway.jsonpath.JsonPath.read(material.getResponse().getContentAsString(), "$.materialId");
+        mockMvc.perform(post(root + "/materials").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", materialKey).contentType(MediaType.APPLICATION_JSON).content(materialBody))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.materialId").value(materialId));
+        mockMvc.perform(post(root + "/materials").with(csrf()).session(owner.session())
+                .header("Idempotency-Key", materialKey).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"不同物资\",\"quantity\":2,\"unit\":\"条\"}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM material WHERE activity_id = ?", Integer.class,
+            activityId)).isEqualTo(1);
     }
 
     @Test

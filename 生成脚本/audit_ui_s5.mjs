@@ -1,5 +1,5 @@
 // S5 逐页核对：登录／注册／恢复／账号／组织设置／公开参与。
-// 真实账号与数据；状态反例只在浏览器内拦截响应，不写业务库、不调用模型。
+// 默认模式只读；--account-security 全部替身；--account-security-live 会写 activity_test。
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -8,6 +8,9 @@ import { chromium } from '../UI演示/node_modules/playwright/index.mjs'
 const base = process.env.UI_BASE || 'http://127.0.0.1:5174'
 const out = new URL('../验证截图/UI标准页/', import.meta.url)
 await mkdir(out, { recursive: true })
+if (process.argv.includes('--account-security-live') && process.env.AUDIT_TEST_DATABASE !== 'activity_test') {
+  throw new Error('先从后端日志核实连接 activity_test，再设置 AUDIT_TEST_DATABASE=activity_test')
+}
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
 const results = {
   checks: [],
@@ -20,6 +23,447 @@ const results = {
 }
 let release = null
 const gate = () => new Promise((resolve) => { release = resolve })
+
+// 真实测试后端提交成功后替换页面响应，账号、密码和恢复码只留在本次进程内存。
+if (process.argv.includes('--account-security-live')) {
+  const context = await browser.newContext({ baseURL: base, viewport: { width: 390, height: 844 } })
+  const verifier = await browser.newContext({ baseURL: base })
+  const page = await context.newPage()
+  const errors = []
+  const checks = []
+  const stamp = Date.now()
+  const username = `a11_${stamp}`
+  const password = `Audit${stamp}a`
+  const changedPassword = `Audit${stamp}b`
+  const recoveredPassword = `Audit${stamp}c`
+  page.on('pageerror', error => errors.push(error.message))
+  const check = (name, passed) => checks.push({ name, passed })
+  async function call(method, path, data) {
+    const csrf = await (await verifier.request.get('/api/auth/csrf')).json()
+    return verifier.request.fetch(path, { method, data, headers: { [csrf.headerName]: csrf.token } })
+  }
+  async function loseNextResponse(path, expectedStatus) {
+    let resolve, reject
+    const written = new Promise((yes, no) => { resolve = yes; reject = no })
+    void written.catch(() => undefined)
+    const pattern = `**${path}`
+    let consumed = false
+    const handler = async route => {
+      if (consumed) { await route.continue(); return }
+      consumed = true
+      try {
+        const response = await route.fetch()
+        assert.equal(response.status(), expectedStatus, `${path} 未真正提交成功`)
+        const result = expectedStatus === 204 ? null : await response.json()
+        await route.fulfill({ response, status: 503, json: { status: 503, code: 'AUDIT_RESPONSE_LOST' } })
+        resolve(result)
+      } catch (error) { reject(error); await route.abort().catch(() => undefined) }
+    }
+    await page.route(pattern, handler)
+    return { written }
+  }
+  async function loginWith(value, destination = '/') {
+    await page.getByPlaceholder('注册时设置的用户名').fill(username)
+    await page.getByPlaceholder('请输入密码').fill(value)
+    const reply = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/login' && response.request().method() === 'POST')
+    await page.getByRole('button', { name: '进入工作区' }).click()
+    assert.equal((await reply).status(), 204, '用已确认密码重新登录应一次成功')
+    await page.waitForURL(url => url.pathname === destination)
+    if (destination === '/') await page.getByRole('heading', { name: '我的工作区' }).waitFor()
+    const me = await context.request.get('/api/auth/me')
+    assert.equal(me.status(), 200)
+    assert.equal((await me.json()).username, username)
+  }
+  async function confirmCode() {
+    const dialog = page.getByRole('dialog', { name: '请保存你的恢复码' })
+    await dialog.waitFor()
+    const code = (await dialog.locator('.recovery-code-dialog__code').textContent()).trim()
+    await dialog.getByText('我已将恢复码保存在安全的地方', { exact: true }).click()
+    await dialog.getByRole('button', { name: '确认已保存' }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    return code
+  }
+  try {
+    await page.goto('/register', { waitUntil: 'networkidle' })
+    const registerForm = page.locator('.auth-content form')
+    for (const [index, value] of [username, password, password].entries()) await registerForm.locator('input').nth(index).fill(value)
+    const { written: registered } = await loseNextResponse('/api/auth/register', 201)
+    await page.getByRole('button', { name: '注册', exact: true }).click()
+    const lostRegistration = await registered
+    await page.getByText(/注册结果尚未确认/).waitFor()
+    await page.getByRole('button', { name: '注册', exact: true }).click()
+    await page.getByText(/该用户名已被注册/).waitFor()
+    check('register:committedThen503', Boolean(lostRegistration.id))
+    check('register:replayKeepsLoginGuidance', (await page.locator('.auth-error').textContent()).includes('登录核对'))
+    await page.locator('a[href="/login"]').click()
+    await page.getByRole('heading', { name: '继续，把事情做好。' }).waitFor()
+    const { written: loggedIn } = await loseNextResponse('/api/auth/login', 204)
+    await page.getByPlaceholder('注册时设置的用户名').fill(username)
+    await page.getByPlaceholder('请输入密码').fill(password)
+    await page.getByRole('button', { name: '进入工作区' }).click()
+    await loggedIn
+    await page.locator('.auth-error').waitFor()
+    check('login:committedThen503', (await context.request.get('/api/auth/me')).status() === 200)
+    check('login:unknownResultExplained', (await page.locator('.auth-error').textContent()).includes('结果尚未确认'))
+    await loginWith(password)
+    check('login:manualRetryRestoresPage', true)
+    check('register:originalCredentialsLogin', true)
+
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    const passwordForm = page.locator('.el-dialog:visible form')
+    for (const [index, value] of [password, changedPassword, changedPassword].entries()) await passwordForm.locator('input').nth(index).fill(value)
+    const { written: changed } = await loseNextResponse('/api/auth/password', 204)
+    await page.getByRole('button', { name: '确认修改', exact: true }).click()
+    await changed
+    await page.getByText(/修改结果尚未确认/).waitFor()
+    await page.getByRole('button', { name: '确认修改', exact: true }).click()
+    await page.getByText(/当前密码不正确/).waitFor()
+    check('password:replayKeepsLoginGuidance', (await page.locator('.account-page__dialog-error').textContent()).includes('登录核对'))
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.waitForURL(url => url.pathname === '/login')
+    await loginWith(changedPassword)
+    check('password:newPasswordLogin', true)
+
+    await page.getByRole('button', { name: '重签恢复码', exact: true }).click()
+    const reissueForm = page.locator('.el-dialog:visible form')
+    await reissueForm.locator('input').fill(changedPassword)
+    const { written: reissued } = await loseNextResponse('/api/auth/recovery/reissue', 200)
+    await page.getByRole('button', { name: '重签', exact: true }).click()
+    const lostReissue = await reissued
+    await page.getByText(/重签结果尚未确认/).waitFor()
+    await page.getByRole('button', { name: '重签', exact: true }).click()
+    const currentCode = await confirmCode()
+    check('reissue:manualReplacementIsNew', currentCode !== lostReissue.recoveryCode)
+    for (const code of [lostRegistration.recoveryCode, lostReissue.recoveryCode]) {
+      const rejected = await call('POST', '/api/auth/recover', { username, recoveryCode: code, newPassword: recoveredPassword })
+      assert.equal(rejected.status(), 401)
+    }
+    check('reissue:previousCodesRejected', true)
+
+    await page.getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.waitForURL(url => url.pathname === '/login')
+    await page.locator('a[href="/recover"]').click()
+    await page.getByRole('heading', { name: '用恢复码重新取得控制权。' }).waitFor()
+    const recoveryForm = page.locator('.auth-content form')
+    for (const [index, value] of [username, currentCode, recoveredPassword, recoveredPassword].entries()) await recoveryForm.locator('input').nth(index).fill(value)
+    const { written: recovered } = await loseNextResponse('/api/auth/recover', 200)
+    await page.getByRole('button', { name: '恢复账号', exact: true }).click()
+    await recovered
+    await page.getByText(/恢复结果尚未确认/).waitFor()
+    await page.getByRole('button', { name: '恢复账号', exact: true }).click()
+    await page.getByText(/账号或恢复码不正确/).waitFor()
+    check('recover:replayKeepsLoginGuidance', (await page.locator('.auth-error').textContent()).includes('登录核对'))
+    await page.locator('a[href="/login"]').click()
+    await page.getByRole('heading', { name: '继续，把事情做好。' }).waitFor()
+    await loginWith(recoveredPassword)
+    check('recover:newPasswordLogin', true)
+    await page.getByRole('button', { name: '重签恢复码', exact: true }).click()
+    await page.locator('.el-dialog:visible input').fill(recoveredPassword)
+    await page.getByRole('button', { name: '重签', exact: true }).click()
+    await confirmCode()
+    check('recover:freshCodeConfirmed', true)
+
+    // 三个正式退出入口：真实退出已完成，但页面仅收到 503。
+    const csrf = await (await context.request.get('/api/auth/csrf')).json()
+    const createdOrg = await context.request.post('/api/organizations', { data: { name: `退出核对_${stamp}` },
+      headers: { [csrf.headerName]: csrf.token, 'Idempotency-Key': crypto.randomUUID() } })
+    assert.equal(createdOrg.status(), 201)
+    const organization = await createdOrg.json()
+    for (const [entry, path] of [['account', '/'], ['public', '/public/activities'], ['organization', `/org/${organization.id}`]]) {
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await page.goto(path, { waitUntil: 'networkidle' })
+      const clickLogout = async () => {
+        if (entry !== 'account') await page.getByRole('button', { name: '账号菜单', exact: true }).click()
+        await page.getByRole(entry === 'account' ? 'button' : 'menuitem', { name: '退出登录', exact: true }).click()
+      }
+      // 请求未转发时，真实会话仍有效；核对失败也不能当作已退出或跳走。
+      for (const failure of ['server', 'transport']) {
+        const logoutFailure = route => failure === 'transport' ? route.abort('failed')
+          : route.fulfill({ status: 503, json: { status: 503, code: 'UNAVAILABLE' } })
+        const probeFailure = route => route.fulfill({ status: 503, json: { status: 503, code: 'UNAVAILABLE' } })
+        await page.route('**/api/auth/logout', logoutFailure)
+        if (failure === 'transport') await page.route('**/api/auth/me', probeFailure)
+        const probe = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/me')
+        await clickLogout()
+        assert.equal((await probe).status(), failure === 'transport' ? 503 : 200)
+        await page.getByText('退出结果尚未确认，请检查网络后再次退出。', { exact: true }).first().waitFor()
+        check(`logout:${entry}:${failure}:keepsPageAndSession`, new URL(page.url()).pathname === path
+          && (await context.request.get('/api/auth/me')).status() === 200)
+        await page.unroute('**/api/auth/logout', logoutFailure)
+        if (failure === 'transport') await page.unroute('**/api/auth/me', probeFailure)
+      }
+      const { written: loggedOut } = await loseNextResponse('/api/auth/logout', 204)
+      await clickLogout()
+      await loggedOut
+      await page.waitForTimeout(700)
+      check(`logout:${entry}:serverConfirmedGuest`, (await context.request.get('/api/auth/me')).status() === 401)
+      const cleared = entry === 'public' ? await page.getByRole('button', { name: '登录', exact: true }).isVisible()
+        : new URL(page.url()).pathname === '/login' && await page.locator('.account-page,.workspace').count() === 0
+      check(`logout:${entry}:clearsProtectedState`, cleared)
+      assert.ok(cleared, `${entry} 退出已完成，页面仍保留旧身份`)
+      if (entry === 'public') await page.getByRole('button', { name: '登录', exact: true }).click()
+      await loginWith(recoveredPassword, entry === 'public' ? '/public/activities' : '/')
+    }
+    assert.deepEqual(errors, [])
+    const result = { mode: 'account-security-live', runStamp: stamp, accountId: lostRegistration.id, checks, errors,
+      limitations: ['注册、登录、改密、重签、恢复及退出先由真实 activity_test 后端完成，再替换页面响应为 503；不代表自然网络时序',
+        '退出前的服务／网络失败及核对 503 为页面替身，未转发退出；原会话与正常重试仍用真实后端',
+        '重签是用户明确发起的新一次替换，不恢复此前响应明文；未调用模型或验证自然闲置、生产环境'] }
+    await writeFile(new URL('S5账号真实结果.json', out), JSON.stringify(result, null, 2))
+    console.log(JSON.stringify(result, null, 2))
+    assert.ok(checks.every(check => check.passed), '账号真实结果未知恢复路径仍有误导提示')
+  } catch (error) {
+    console.log(JSON.stringify({ mode: 'account-security-live', checks, errors, path: new URL(page.url()).pathname }))
+    throw error
+  } finally { await browser.close() }
+  process.exit(0)
+}
+
+// 账号安全专项全部使用 API 替身；虚构凭据不发往真实后端，也不输出到结果。
+if (process.argv.includes('--account-security')) {
+  const context = await browser.newContext({ baseURL: base, viewport: { width: 390, height: 844 } })
+  const page = await context.newPage()
+  const errors = []
+  const checks = []
+  page.on('pageerror', error => errors.push(error.message))
+  let authenticated = true
+  let held
+  let activeCode = ''
+  await context.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (held?.path === path && route.request().method() === 'POST') {
+      const number = ++held.calls
+      const code = `fixture-code-${number}`
+      activeCode = code
+      if (number === 1) held.signal()
+      if (number === 1 || path.endsWith('/login')) await held.gate
+      if (held.failure === 'transport') { await route.abort('failed'); return }
+      if (path.endsWith('/login') && !held.failure) authenticated = true
+      await route.fulfill(held.failure
+        ? { status: held.failure === 'session' ? 401 : held.failure, json: { status: held.failure === 'session' ? 401 : held.failure,
+          code: held.failure === 'session' ? 'AUTH_REQUIRED' : held.failure === 401 ? 'AUTH_INVALID_CREDENTIALS' : 'UNAVAILABLE', detail: '服务暂不可用。' } }
+        : path.endsWith('/password') || path.endsWith('/login') ? { status: 204 }
+          : { status: path.endsWith('/register') ? 201 : 200, json: { id: '1', username: 'fixture_user', recoveryCode: code } })
+      return
+    }
+    if (path === '/api/auth/me') {
+      await route.fulfill(authenticated ? { json: { id: '1', username: 'fixture_user' } }
+        : { status: 401, json: { status: 401, code: 'AUTH_REQUIRED' } })
+    } else if (path === '/api/auth/login') {
+      authenticated = true
+      await route.fulfill({ status: 204 })
+    } else if (path === '/api/auth/csrf') {
+      await route.fulfill({ json: { token: 'fixture-csrf', headerName: 'X-CSRF-TOKEN' } })
+    } else if (path === '/api/me/notifications') {
+      await route.fulfill({ json: { items: [], total: 0, unread: 0 } })
+    } else if (['/api/me/registrations', '/api/me/organizations'].includes(path)) {
+      await route.fulfill({ json: { items: [], total: 0 } })
+    } else if (path.endsWith('/unread-count')) {
+      await route.fulfill({ json: { count: 0 } })
+    } else {
+      await route.fulfill({ json: [] })
+    }
+  })
+  const hold = path => {
+    let signal, release
+    const started = new Promise(resolve => { signal = resolve })
+    const gate = new Promise(resolve => { release = resolve })
+    held = { path, calls: 0, signal, gate, failure: false }
+    return { started, release }
+  }
+  const check = (name, passed) => checks.push({ name, passed })
+  const submitAgain = form => form.evaluate(element => {
+    element.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    element.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  })
+  try {
+    authenticated = false
+    await page.goto('/login', { waitUntil: 'networkidle' })
+    const loginForm = page.locator('.auth-content form')
+    const invalidLogin = hold('/api/auth/login')
+    await submitAgain(loginForm)
+    await loginForm.locator('.el-form-item__error').first().waitFor()
+    check('login:validationUnlocks', held.calls === 0 && await loginForm.locator('input').evaluateAll(inputs => inputs.every(input => !input.disabled)))
+    invalidLogin.release()
+    await loginForm.locator('input').nth(0).fill('fixture_user')
+    await loginForm.locator('input').nth(1).fill('Fixture123')
+    for (const failure of [401, 503, 'transport']) {
+      const failedLogin = hold('/api/auth/login')
+      held.failure = failure
+      await submitAgain(loginForm)
+      await failedLogin.started
+      failedLogin.release()
+      const error = page.locator('.auth-error')
+      await error.waitFor()
+      check(`login:${failure}:failureUnlocks`, held.calls === 1 && await loginForm.locator('input').evaluateAll(inputs => inputs.every(input => !input.disabled)))
+      check(`login:${failure}:failureKeepsDraft`, (await loginForm.locator('input').nth(0).inputValue()) === 'fixture_user'
+        && (await loginForm.locator('input').nth(1).inputValue()) === 'Fixture123')
+      if (failure !== 401) check(`login:${failure}:unknownResultExplained`, (await error.textContent()).includes('结果尚未确认'))
+    }
+    const loginPending = hold('/api/auth/login')
+    await submitAgain(loginForm)
+    await loginPending.started
+    await submitAgain(loginForm)
+    await page.waitForTimeout(150)
+    check('login:oneRequest', held.calls === 1)
+    check('login:fieldsLocked', await loginForm.locator('input').evaluateAll(inputs => inputs.every(input => input.disabled)))
+    await page.locator('a[href="/register"]').click()
+    await page.waitForTimeout(350)
+    check('login:pendingRouteKept', new URL(page.url()).pathname === '/login')
+    loginPending.release()
+    await page.getByRole('heading', { name: '我的工作区' }).waitFor()
+    check('login:successNavigation', new URL(page.url()).pathname === '/')
+    assert.ok(checks.every(check => check.passed), '登录发送中存在重复请求或旧响应导航风险')
+    for (const action of ['reissue', 'password', 'register', 'recover']) {
+      console.log(`account-security: ${action}`)
+      const isAccount = ['reissue', 'password'].includes(action)
+      authenticated = isAccount
+      await page.goto(isAccount ? '/' : '/login', { waitUntil: 'networkidle' })
+      if (!isAccount) {
+        await page.locator(`a[href="/${action}"]`).click()
+        await page.getByRole('heading', { name: action === 'register' ? '开始，一起做活动。' : '用恢复码重新取得控制权。' }).waitFor()
+      } else {
+        await page.getByRole('button', { name: action === 'reissue' ? '重签恢复码' : '修改密码', exact: true }).click()
+      }
+      const form = page.locator(isAccount ? '.el-dialog:visible form' : '.auth-content form')
+      const path = action === 'reissue' ? '/api/auth/recovery/reissue' : `/api/auth/${action}`
+      const invalid = hold(path)
+      await submitAgain(form)
+      await form.locator('.el-form-item__error').first().waitFor()
+      check(`${action}:validationUnlocks`, held.calls === 0 && await form.locator('input').evaluateAll(inputs => inputs.every(input => !input.disabled)))
+      invalid.release()
+      const values = action === 'reissue' ? ['Fixture123'] : action === 'password'
+        ? ['Fixture123', 'Fixture456', 'Fixture456'] : action === 'register'
+          ? ['fixture_user', 'Fixture123', 'Fixture123'] : ['fixture_user', 'fixture-old-code', 'Fixture456', 'Fixture456']
+      for (let index = 0; index < values.length; index++) await form.locator('input').nth(index).fill(values[index])
+      for (const failure of [401, 503, 'transport']) {
+        const failed = hold(path)
+        held.failure = failure
+        await submitAgain(form)
+        await failed.started
+        failed.release()
+        const error = page.locator(isAccount ? '.el-dialog:visible .account-page__dialog-error' : '.auth-error')
+        await error.waitFor()
+        check(`${action}:${failure}:failureUnlocks`, held.calls === 1 && await form.locator('input').evaluateAll(inputs => inputs.every(input => !input.disabled)))
+        check(`${action}:${failure}:failureKeepsDraft`, JSON.stringify(await form.locator('input').evaluateAll(inputs => inputs.map(input => input.value))) === JSON.stringify(values))
+        if (failure !== 401) {
+          check(`${action}:${failure}:unknownResultExplained`, (await error.textContent()).includes('结果尚未确认'))
+          assert.ok(checks.at(-1).passed, `${action} 结果未知提示不准确`)
+        }
+      }
+      const pending = hold(path)
+      await submitAgain(form)
+      await pending.started
+      await submitAgain(form)
+      await page.waitForTimeout(150)
+      check(`${action}:oneRequest`, held.calls === 1)
+      check(`${action}:fieldsLocked`, await form.locator('input').evaluateAll(inputs => inputs.every(input => input.disabled)))
+      check(`${action}:sendingUnloadWarns`, await page.evaluate(() => {
+        const event = new Event('beforeunload', { cancelable: true })
+        window.dispatchEvent(event)
+        return event.defaultPrevented
+      }))
+      if (isAccount) {
+        const cancel = page.getByRole('button', { name: '取消', exact: true })
+        check(`${action}:cancelLocked`, await cancel.isDisabled())
+        const box = await page.locator('.el-dialog:visible').boundingBox()
+        check(`${action}:dialogFits390`, box.x >= 0 && box.x + box.width <= 390)
+        await page.keyboard.press('Escape')
+        await page.waitForTimeout(350)
+        check(`${action}:sendingDialogKept`, await form.isVisible())
+      } else {
+        await page.evaluate(() => history.back())
+        await page.waitForTimeout(350)
+        check(`${action}:sendingRouteKept`, new URL(page.url()).pathname === `/${action}`)
+        if (new URL(page.url()).pathname !== `/${action}`) { pending.release(); continue }
+      }
+      pending.release()
+      if (action === 'password') {
+        await page.locator('.el-dialog:visible').waitFor({ state: 'hidden' })
+        continue
+      }
+      const codeDialog = page.getByRole('dialog', { name: '请保存你的恢复码' })
+      await codeDialog.waitFor()
+      const codeBox = await codeDialog.boundingBox()
+      check(`${action}:codeFits390`, codeBox.x >= 0 && codeBox.x + codeBox.width <= 390)
+      check(`${action}:latestCodeDisplayed`, (await codeDialog.locator('.recovery-code-dialog__code').textContent()).trim() === activeCode)
+      check(`${action}:noCloseButton`, await codeDialog.locator('.el-dialog__headerbtn').count() === 0)
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(350)
+      check(`${action}:escapeKeptCode`, await codeDialog.isVisible())
+      assert.ok(checks.every(check => check.passed), `${action} 存在重复提交或恢复码丢失风险`)
+      if (await codeDialog.isVisible()) {
+        await page.screenshot({ path: fileURLToPath(new URL(`S5-账号安全-${action}-390.png`, out)), fullPage: true })
+        check(`${action}:unconfirmedUnloadWarns`, await page.evaluate(() => {
+          const event = new Event('beforeunload', { cancelable: true })
+          window.dispatchEvent(event)
+          return event.defaultPrevented
+        }))
+        if (!isAccount) {
+          await page.evaluate(() => history.back())
+          await page.waitForTimeout(150)
+          check(`${action}:unconfirmedBackKept`, new URL(page.url()).pathname === `/${action}` && await codeDialog.isVisible())
+        }
+        check(`${action}:confirmationRequired`, await codeDialog.getByRole('button', { name: '确认已保存' }).isDisabled())
+        await codeDialog.getByText('我已将恢复码保存在安全的地方', { exact: true }).click()
+        await codeDialog.getByRole('button', { name: '确认已保存' }).click()
+        await codeDialog.waitFor({ state: 'hidden' })
+        if (!isAccount) {
+          await page.waitForURL('**/login')
+          check(`${action}:confirmedNavigation`, true)
+        }
+      }
+    }
+    // 已发送后由另一会话导致失效；应用卸载旧页后重登，迟到结果不得进入新页面。
+    for (const failure of [false, 'session', 503]) {
+      authenticated = true
+      await page.goto('/', { waitUntil: 'networkidle' })
+      await page.getByRole('button', { name: '重签恢复码', exact: true }).click()
+      const form = page.locator('.el-dialog:visible form')
+      await form.locator('input').fill('Fixture123')
+      const old = hold('/api/auth/recovery/reissue')
+      held.failure = failure
+      await submitAgain(form)
+      await old.started
+      authenticated = false
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+      await page.waitForURL(url => url.pathname === '/login')
+      await page.getByPlaceholder('注册时设置的用户名').fill('fixture_user')
+      await page.getByPlaceholder('请输入密码').fill('Fixture123')
+      await page.getByRole('button', { name: '进入工作区' }).click()
+      await page.getByRole('heading', { name: '我的工作区' }).waitFor()
+      old.release()
+      await page.waitForTimeout(350)
+      check(`stale:${failure || 'success'}:keepsNewSession`, new URL(page.url()).pathname === '/'
+        && await page.getByRole('heading', { name: '我的工作区' }).isVisible()
+        && await page.getByRole('dialog', { name: '请保存你的恢复码' }).count() === 0)
+    }
+    await page.getByRole('button', { name: '重签恢复码', exact: true }).click()
+    await page.locator('.el-dialog:visible input').fill('Fixture123')
+    const expired = hold('/api/auth/recovery/reissue')
+    held.failure = 'session'
+    await submitAgain(page.locator('.el-dialog:visible form'))
+    await expired.started
+    expired.release()
+    await page.waitForURL(url => url.pathname === '/login')
+    check('current401:clearsProtectedPage', await page.locator('.account-page').count() === 0)
+    assert.deepEqual(errors, [])
+    const result = { mode: 'account-security', checks, errors,
+      limitations: ['全部 API 替身，不写库；延迟、重复提交和切回事件由脚本控制，不证明自然网络时序或真实闲置失效',
+        'beforeunload 仅检查脚本事件的取消标记，未执行浏览器真实关闭或刷新；未新增厂商或后端全量验收'] }
+    await writeFile(new URL('S5账号安全结果.json', out), JSON.stringify(result, null, 2))
+    console.log(JSON.stringify(result, null, 2))
+    assert.ok(checks.every(check => check.passed), '账号安全专项存在未通过检查')
+  } catch (error) {
+    console.log(JSON.stringify({ checks, errors, path: new URL(page.url()).pathname }))
+    await page.screenshot({ path: fileURLToPath(new URL('S5-账号安全-失败.png', out)), fullPage: true })
+    throw error
+  } finally {
+    await browser.close()
+  }
+  process.exit(0)
+}
 
 /** 页头与状态：一页一个 h1、可见文案、以及四种状态的互斥关系。 */
 const readPage = (target) => target.evaluate(() => ({

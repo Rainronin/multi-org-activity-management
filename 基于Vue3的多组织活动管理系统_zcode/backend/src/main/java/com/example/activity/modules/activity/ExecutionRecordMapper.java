@@ -9,6 +9,10 @@ public interface ExecutionRecordMapper {
 
     int insert(ExecutionRecord record);
 
+    ExecutionRecord findById(@Param("id") Long id);
+
+    ExecutionRecord findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
     List<ExecutionRecord> listByActivity(@Param("activityId") Long activityId);
 
     int countByActivity(@Param("activityId") Long activityId);

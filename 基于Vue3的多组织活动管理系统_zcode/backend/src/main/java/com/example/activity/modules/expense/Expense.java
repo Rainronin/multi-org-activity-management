@@ -6,7 +6,7 @@ import java.time.OffsetDateTime;
 
 /**
  * 活动支出记录（P5.1）。金额以 DECIMAL(12,2) 精确保存；
- * 状态链路：DRAFT → PENDING → APPROVED／REJECTED；APPROVED 只能作废或另建更正记录。
+ * 状态链路：DRAFT → PENDING → APPROVED／REJECTED；APPROVED 须先作废，才可另建关联更正记录。
  */
 public class Expense {
 

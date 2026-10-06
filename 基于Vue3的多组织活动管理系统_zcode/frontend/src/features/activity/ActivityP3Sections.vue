@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { readUiLength } from '../../shared/utils/readUiToken'
 import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElOption, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag, type FormInstance, type FormRules } from 'element-plus'
 import { formatDateTime } from './types'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { newIdempotencyKey } from '../../shared/http/idempotency'
+import { request } from '../../shared/http/client'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { fetchMembers } from '../organization/api'
 import {
   advanceTask, changeMaterialStatus, createMaterial, createTask, deleteAttachment,
   downloadAttachment, fetchAttachments, fetchMaterials, fetchTasks, resolveMyMemberId,
-  transitionTask, updateMaterial, updateTask, uploadAttachment,
+  transitionTask, updateMaterial, updateTask, uploadAttachment, fetchAttachmentByRequestKey,
 } from './p3'
-import type { AttachmentItem, MaterialItem, TaskItem } from './p3'
+import type { AttachmentItem, AttachmentScope, MaterialItem, SaveMaterialInput, SaveTaskInput, TaskItem } from './p3'
 
 // 活动详情的 P3 区块：任务 / 物资 / 资料（附件）。后端逐请求鉴权，这里只决定按钮展示。
 const props = defineProps<{
@@ -35,7 +36,7 @@ const members = ref<{ memberId: string; username: string }[]>([])
 const myMemberId = ref<string | null>(null)
 const errorText = ref('')
 const loading = ref(false)
-/** 是否已完成一次成功读取；未完成时的空表格只能显示“正在加载”，不能显示“暂无”。 */
+/** 是否已完成一次成功读取；读取失败时不渲染空表格。 */
 const loaded = ref(false)
 /** 骨架只在首次进入时延时出现（leading／trailing 来自集中 token）。 */
 const skeleton = useLoadingSkeleton()
@@ -49,7 +50,10 @@ const taskForm = ref({
 })
 
 const taskFormRef = ref<FormInstance>()
+const pendingTaskCreate = ref<{ input: SaveTaskInput; key: string } | null>(null)
 let initialTaskForm = ''
+const taskDirty = computed(() => taskDialogVisible.value
+  && (pendingTaskCreate.value !== null || JSON.stringify(taskForm.value) !== initialTaskForm))
 const taskRules: FormRules = {
   title: [
     { required: true, whitespace: true, message: '请输入任务标题', trigger: 'blur' },
@@ -60,33 +64,61 @@ const taskRules: FormRules = {
 }
 async function closeTaskDialog() {
   if (taskSubmitting.value) return
-  if (JSON.stringify(taskForm.value) !== initialTaskForm) {
+  if (taskDirty.value) {
     try {
-      await ElMessageBox.confirm('任务内容还未保存，确定放弃吗？', '未保存的任务', {
+      await ElMessageBox.confirm(pendingTaskCreate.value
+        ? '创建结果尚未确认。离开后请先核对任务列表，避免重复创建。确定离开？'
+        : '任务内容还未保存，确定放弃吗？', '未保存的任务', {
         confirmButtonText: '放弃填写', cancelButtonText: '继续填写', type: 'warning',
       })
     } catch { return }
   }
+  const needsRecheck = pendingTaskCreate.value !== null
+  pendingTaskCreate.value = null
   taskDialogVisible.value = false
+  if (needsRecheck) void loadAll()
 }
 
 const materialDialogVisible = ref(false)
 const materialSubmitting = ref(false)
+const pendingMaterialCreate = ref<{ input: SaveMaterialInput; key: string } | null>(null)
 const editingMaterial = ref<MaterialItem | null>(null)
 const materialForm = ref({ name: '', quantity: 1, unit: '个', assigneeMemberId: '', note: '' })
+let initialMaterialForm = ''
+const materialDirty = computed(() => materialDialogVisible.value
+  && (pendingMaterialCreate.value !== null || JSON.stringify(materialForm.value) !== initialMaterialForm))
+async function closeMaterialDialog(done: () => void = () => { materialDialogVisible.value = false }) {
+  if (materialSubmitting.value) return
+  if (materialDirty.value) {
+    try {
+      await ElMessageBox.confirm(pendingMaterialCreate.value
+        ? '创建结果尚未确认。离开后请先核对物资列表，避免重复创建。确定离开？'
+        : '物资内容还未保存，确定放弃吗？', '未保存的物资', {
+        confirmButtonText: '放弃填写', cancelButtonText: '继续填写', type: 'warning',
+      })
+    } catch { return }
+  }
+  const needsRecheck = pendingMaterialCreate.value !== null
+  pendingMaterialCreate.value = null
+  done()
+  if (needsRecheck) void loadAll()
+}
 
 const uploadInput = ref<HTMLInputElement>()
 const uploading = ref(false)
+const pendingUpload = ref<{ file: File; key: string; orgId: string; activityId: string; scope: AttachmentScope } | null>(null)
+const pendingActivityUpload = computed(() => pendingUpload.value?.scope.kind === 'activity')
 
 // S10：任务资料弹窗（任务承担者也可上传本人任务的资料）
 const taskAttachmentVisible = ref(false)
 const taskAttachmentTarget = ref<TaskItem | null>(null)
 const taskAttachments = ref<AttachmentItem[]>([])
 const taskAttachmentLoading = ref(false)
+const taskAttachmentLoaded = ref(false)
 const taskUploading = ref(false)
-/** F06：当前上传意图的防重键；失败重试沿用，成功后清空。 */
-let uploadKey = ''
 const taskUploadInput = ref<HTMLInputElement>()
+const pendingTaskUpload = computed(() => pendingUpload.value?.scope.kind === 'task'
+  && pendingUpload.value.scope.taskId === taskAttachmentTarget.value?.taskId)
 
 const statusLabel: Record<string, string> = {
   PENDING: '待处理', IN_PROGRESS: '进行中', COMPLETED: '已完成', CANCELLED: '已取消',
@@ -100,15 +132,20 @@ const priorityLabel: Record<string, string> = { HIGH: '高', MEDIUM: '中', LOW:
 /** 组织负责人或本活动负责人可管理任务与物资；普通成员只能推进本人任务。 */
 const canManage = computed(() => props.orgRole === 'OWNER'
   || (myMemberId.value !== null && myMemberId.value === props.orgDetail?.ownerMemberId))
+const canUploadTaskAttachment = computed(() => canManage.value
+  || (myMemberId.value !== null && myMemberId.value === taskAttachmentTarget.value?.assigneeMemberId))
 
-/** 调整期待确认期间后端对筹备数据只读（S07-A），前端同步隐藏写操作。 */
-const frozen = computed(() => props.orgDetail?.status === 'DRAFT')
+/** 与后端筹备写入状态一致：草稿、待确认、取消及归档只读。 */
+const frozen = computed(() => !['APPROVED', 'EXECUTING', 'REVIEWING'].includes(props.orgDetail?.status ?? 'DRAFT'))
 
 function canAdvance(task: TaskItem): boolean {
   return !canManage.value && !frozen.value && task.assigneeMemberId === myMemberId.value
 }
 
 let requestSeq = 0
+let alive = true
+let actionGeneration = 0
+watch([orgId, activityId], () => { actionGeneration++ }, { flush: 'sync' })
 
 async function loadAll(): Promise<void> {
   if (!orgId.value || !activityId.value) {
@@ -135,6 +172,9 @@ async function loadAll(): Promise<void> {
       return
     }
     tasks.value = t
+    if (taskAttachmentTarget.value) {
+      taskAttachmentTarget.value = t.find(task => task.taskId === taskAttachmentTarget.value?.taskId) ?? null
+    }
     materials.value = m
     attachments.value = a
     myMemberId.value = mine
@@ -152,14 +192,12 @@ async function loadAll(): Promise<void> {
     tasks.value = []
     materials.value = []
     attachments.value = []
-    // 失败不冒充空态：保留 loaded=false，表格列继续显示“正在加载…”而非“暂无”
+    // 失败仅展示错误与重试，不继续显示加载占位或空表格。
     loaded.value = false
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '任务与资料加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '任务与资料加载失败，请重试。')
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -169,6 +207,10 @@ async function loadAll(): Promise<void> {
 }
 
 watch([orgId, activityId], () => {
+  pendingUpload.value = null
+  pendingTaskCreate.value = null
+  pendingMaterialCreate.value = null
+  taskAttachmentVisible.value = false
   tasks.value = []
   materials.value = []
   attachments.value = []
@@ -178,15 +220,36 @@ watch([orgId, activityId], () => {
   return loadAll()
 })
 onMounted(loadAll)
+function checkAssignments(): void {
+  if (!document.hidden && session.status === 'authenticated') void loadAll()
+}
+onMounted(() => document.addEventListener('visibilitychange', checkAssignments))
+onBeforeUnmount(() => {
+  alive = false
+  document.removeEventListener('visibilitychange', checkAssignments)
+  requestSeq++
+})
 
-async function guard(fn: () => Promise<void>): Promise<void> {
+function captureAction() {
+  return { orgId: orgId.value, activityId: activityId.value, generation: session.capture(), scope: actionGeneration }
+}
+
+function isActionCurrent(context: ReturnType<typeof captureAction>): boolean {
+  return alive && context.orgId === orgId.value && context.activityId === activityId.value
+    && context.generation === session.generation && context.scope === actionGeneration
+}
+
+async function guard(fn: (context: ReturnType<typeof captureAction>) => Promise<void>, context = captureAction()): Promise<unknown | null> {
+  if (!isActionCurrent(context)) return null
   errorText.value = ''
   try {
-    await fn()
+    await fn(context)
+    return null
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
-      return
+    if (session.observeUnauthorized(error, context.generation)) {
+      return error
     }
+    if (!isActionCurrent(context)) return error
     if (error instanceof ApiError && !error.isTransportError) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
@@ -197,6 +260,7 @@ async function guard(fn: () => Promise<void>): Promise<void> {
     } else {
       errorText.value = '网络连接失败，请检查网络后重试。'
     }
+    return error
   }
 }
 
@@ -221,6 +285,7 @@ function toLocalInput(value: string | null): string {
 
 function openCreateTask() {
   editingTask.value = null
+  pendingTaskCreate.value = null
   taskForm.value = { title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' }
   initialTaskForm = JSON.stringify(taskForm.value)
   errorText.value = ''
@@ -230,6 +295,7 @@ function openCreateTask() {
 
 function openEditTask(task: TaskItem) {
   editingTask.value = task
+  pendingTaskCreate.value = null
   taskForm.value = {
     title: task.title,
     description: task.description ?? '',
@@ -245,14 +311,16 @@ function openEditTask(task: TaskItem) {
 
 async function submitTask() {
   if (taskSubmitting.value) return
+  const context = captureAction()
   taskSubmitting.value = true
-  if (!(await taskFormRef.value?.validate().catch(() => false))) {
+  if (!pendingTaskCreate.value && !(await taskFormRef.value?.validate().catch(() => false))) {
     taskSubmitting.value = false
     return
   }
+  if (!isActionCurrent(context)) return
   const target = editingTask.value
-  await guard(async () => {
-    const payload = {
+  const failure = await guard(async () => {
+    const payload: SaveTaskInput = pendingTaskCreate.value?.input ?? {
       title: taskForm.value.title.trim(),
       description: taskForm.value.description.trim() || undefined,
       assigneeMemberId: Number(taskForm.value.assigneeMemberId),
@@ -261,25 +329,31 @@ async function submitTask() {
       ...(target ? { version: target.version } : {}),
     }
     if (target) {
-      await updateTask(orgId.value, activityId.value, target.taskId, payload)
+      await updateTask(context.orgId, context.activityId, target.taskId, payload)
     } else {
-      await createTask(orgId.value, activityId.value, payload)
+      if (!pendingTaskCreate.value) pendingTaskCreate.value = { input: payload, key: newIdempotencyKey() }
+      await createTask(context.orgId, context.activityId, pendingTaskCreate.value.input, pendingTaskCreate.value.key)
     }
+    if (!isActionCurrent(context)) return
+    pendingTaskCreate.value = null
     taskDialogVisible.value = false
     editingTask.value = null
     taskForm.value = { title: '', description: '', assigneeMemberId: '', priority: 'MEDIUM', dueAt: '' }
     await loadAll()
-    emit('changed')
-  })
+    if (isActionCurrent(context)) emit('changed')
+  }, context)
+  if (failure instanceof ApiError && !failure.isTransportError
+    && [400, 403, 404, 422, 429].includes(failure.status)) pendingTaskCreate.value = null
   taskSubmitting.value = false
 }
 
 function advanceOwnTask(task: TaskItem, toStatus: 'IN_PROGRESS' | 'COMPLETED') {
   acting.value = task.taskId
-  void guard(async () => {
-    await advanceTask(orgId.value, activityId.value, task.taskId, toStatus)
+  void guard(async (context) => {
+    await advanceTask(context.orgId, context.activityId, task.taskId, toStatus)
+    if (!isActionCurrent(context)) return
     await loadAll()
-    emit('changed')
+    if (isActionCurrent(context)) emit('changed')
   }).finally(() => {
     acting.value = ''
   })
@@ -287,8 +361,9 @@ function advanceOwnTask(task: TaskItem, toStatus: 'IN_PROGRESS' | 'COMPLETED') {
 
 function reopenTask(task: TaskItem) {
   acting.value = task.taskId
-  void guard(async () => {
-    await transitionTask(orgId.value, activityId.value, task.taskId, 'PENDING')
+  void guard(async (context) => {
+    await transitionTask(context.orgId, context.activityId, task.taskId, 'PENDING')
+    if (!isActionCurrent(context)) return
     await loadAll()
   }).finally(() => {
     acting.value = ''
@@ -296,14 +371,16 @@ function reopenTask(task: TaskItem) {
 }
 
 function cancelTask(task: TaskItem) {
+  const context = captureAction()
   acting.value = task.taskId
   void ElMessageBox.confirm(`确定取消任务「${task.title}」？`, '取消任务', {
     confirmButtonText: '取消任务', cancelButtonText: '返回', type: 'warning',
   })
     .then(() => guard(async () => {
-      await transitionTask(orgId.value, activityId.value, task.taskId, 'CANCELLED')
+      await transitionTask(context.orgId, context.activityId, task.taskId, 'CANCELLED')
+      if (!isActionCurrent(context)) return
       await loadAll()
-    }))
+    }, context))
     .catch(() => undefined)
     .finally(() => {
       acting.value = ''
@@ -312,12 +389,17 @@ function cancelTask(task: TaskItem) {
 
 function openCreateMaterial() {
   editingMaterial.value = null
+  pendingMaterialCreate.value = null
+  errorText.value = ''
   materialForm.value = { name: '', quantity: 1, unit: '个', assigneeMemberId: '', note: '' }
+  initialMaterialForm = JSON.stringify(materialForm.value)
   materialDialogVisible.value = true
 }
 
 function openEditMaterial(material: MaterialItem) {
   editingMaterial.value = material
+  pendingMaterialCreate.value = null
+  errorText.value = ''
   materialForm.value = {
     name: material.name,
     quantity: material.quantity,
@@ -325,13 +407,15 @@ function openEditMaterial(material: MaterialItem) {
     assigneeMemberId: material.assigneeMemberId ?? '',
     note: material.note ?? '',
   }
+  initialMaterialForm = JSON.stringify(materialForm.value)
   materialDialogVisible.value = true
 }
 
 async function setMaterialStatus(material: MaterialItem, toStatus: string) {
   acting.value = material.materialId
-  void guard(async () => {
-    await changeMaterialStatus(orgId.value, activityId.value, material.materialId, toStatus)
+  void guard(async (context) => {
+    await changeMaterialStatus(context.orgId, context.activityId, material.materialId, toStatus)
+    if (!isActionCurrent(context)) return
     await loadAll()
   }).finally(() => {
     acting.value = ''
@@ -339,51 +423,54 @@ async function setMaterialStatus(material: MaterialItem, toStatus: string) {
 }
 
 function triggerUpload() {
-  uploadInput.value?.click()
+  if (pendingActivityUpload.value) void sendUpload({ kind: 'activity' })
+  else if (!pendingUpload.value) uploadInput.value?.click()
 }
 
-async function onFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) {
-    return
+async function sendUpload(scope: AttachmentScope, file?: File) {
+  const checking = pendingUpload.value !== null
+  if (uploading.value || taskUploading.value) return
+  if (!pendingUpload.value) {
+    if (!file) return
+    pendingUpload.value = { file, key: newIdempotencyKey(), orgId: orgId.value, activityId: activityId.value, scope }
   }
-  uploading.value = true
-  await guard(async () => {
-    // F06：活动资料上传同样携带防重键（一次上传意图一个键，重试沿用）
-    if (!uploadKey) {
-      uploadKey = newIdempotencyKey()
-    }
-    const csrf = await import('../../shared/http/client').then((mod) =>
-      mod.request<{ token: string; headerName: string }>('/api/auth/csrf'))
-    const form = new FormData()
-    form.append('file', file)
-    await import('../../shared/http/client').then((mod) =>
-      mod.request(
-        `/api/organizations/${orgId.value}/activities/${activityId.value}/attachments`,
-        {
-          method: 'POST',
-          form,
-          headers: { [csrf.data.headerName]: csrf.data.token, 'Idempotency-Key': uploadKey },
-          response: 'none',
-        },
-      ))
-    uploadKey = ''
+  const pending = pendingUpload.value
+  if (pending.scope.kind !== scope.kind
+    || (scope.kind === 'task' && pending.scope.kind === 'task' && pending.scope.taskId !== scope.taskId)) return
+  if (scope.kind === 'task') taskUploading.value = true
+  else uploading.value = true
+  const failure = await guard(async (context) => {
+    if (checking) await fetchAttachmentByRequestKey(pending.orgId, pending.activityId, pending.key)
+    else await uploadAttachment(pending.orgId, pending.activityId, pending.file, pending.key, pending.scope)
+    if (!isActionCurrent(context)) return
+    pendingUpload.value = null
+    if (scope.kind === 'task') await loadTaskAttachments()
     await loadAll()
   })
-  uploading.value = false
+  if (failure instanceof ApiError && !failure.isTransportError
+    && ((!checking && [400, 403, 404, 413, 415, 422, 429].includes(failure.status)) || failure.status === 410)) pendingUpload.value = null
+  if (checking && failure instanceof ApiError && failure.status === 404) errorText.value = '尚未找到上传结果，请稍后继续核对；原文件与请求仍保留。'
+  if (scope.kind === 'task') taskUploading.value = false
+  else uploading.value = false
+}
+
+function onFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (input.files?.[0]) void sendUpload({ kind: 'activity' }, input.files[0])
   input.value = ''
 }
 
 function confirmDeleteAttachment(attachment: AttachmentItem) {
+  const context = captureAction()
   acting.value = attachment.attachmentId
   void ElMessageBox.confirm(`确定删除「${attachment.originalName}」？`, '删除附件', {
     confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
   })
     .then(() => guard(async () => {
-      await deleteAttachment(orgId.value, activityId.value, attachment.attachmentId)
+      await deleteAttachment(context.orgId, context.activityId, attachment.attachmentId)
+      if (!isActionCurrent(context)) return
       await loadAll()
-    }))
+    }, context))
     .catch(() => undefined)
     .finally(() => {
       acting.value = ''
@@ -391,10 +478,11 @@ function confirmDeleteAttachment(attachment: AttachmentItem) {
 }
 
 async function submitMaterial() {
+  if (materialSubmitting.value) return
   materialSubmitting.value = true
   const target = editingMaterial.value
-  await guard(async () => {
-    const payload = {
+  const failure = await guard(async (context) => {
+    const payload: SaveMaterialInput = pendingMaterialCreate.value?.input ?? {
       name: materialForm.value.name.trim(),
       quantity: Number(materialForm.value.quantity),
       unit: materialForm.value.unit.trim(),
@@ -404,19 +492,38 @@ async function submitMaterial() {
       ...(target ? { version: target.version } : {}),
     }
     if (target) {
-      await updateMaterial(orgId.value, activityId.value, target.materialId, payload)
+      await updateMaterial(context.orgId, context.activityId, target.materialId, payload)
     } else {
-      await createMaterial(orgId.value, activityId.value, payload)
+      if (!pendingMaterialCreate.value) pendingMaterialCreate.value = { input: payload, key: newIdempotencyKey() }
+      await createMaterial(context.orgId, context.activityId, pendingMaterialCreate.value.input, pendingMaterialCreate.value.key)
     }
+    if (!isActionCurrent(context)) return
+    pendingMaterialCreate.value = null
     materialDialogVisible.value = false
     editingMaterial.value = null
     await loadAll()
   })
+  if (failure instanceof ApiError && !failure.isTransportError
+    && [400, 403, 404, 422, 429].includes(failure.status)) pendingMaterialCreate.value = null
   materialSubmitting.value = false
 }
 
-function download(attachment: AttachmentItem) {
-  downloadAttachment(orgId.value, activityId.value, attachment.attachmentId, attachment.originalName)
+const downloadingId = ref('')
+async function download(attachment: AttachmentItem) {
+  if (downloadingId.value) return
+  const context = captureAction()
+  downloadingId.value = attachment.attachmentId
+  errorText.value = ''
+  try {
+    await downloadAttachment(context.orgId, context.activityId, attachment.attachmentId, attachment.originalName)
+  } catch (error) {
+    if (!isActionCurrent(context) || session.observeUnauthorized(error, context.generation)) return
+    const message = readErrorMessage(error, '下载失败，请重试。')
+    if (previewVisible.value) previewError.value = message
+    else errorText.value = message
+  } finally {
+    downloadingId.value = ''
+  }
 }
 
 // P3.1：允许类型预览——图片与 PDF 在弹窗内直接查看（走同一受控端点，带会话 Cookie），
@@ -424,6 +531,10 @@ function download(attachment: AttachmentItem) {
 const previewVisible = ref(false)
 const previewTarget = ref<AttachmentItem | null>(null)
 const previewUrl = ref('')
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewSkeleton = useLoadingSkeleton()
+let previewRequestSeq = 0
 
 const PREVIEW_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
@@ -446,11 +557,38 @@ function attachmentUrl(attachment: AttachmentItem): string {
     + `/attachments/${encodeURIComponent(attachment.attachmentId)}/download`
 }
 
-function openPreview(attachment: AttachmentItem) {
+async function openPreview(attachment: AttachmentItem) {
   previewTarget.value = attachment
-  previewUrl.value = attachmentUrl(attachment)
   previewVisible.value = true
+  const seq = ++previewRequestSeq
+  const context = captureAction()
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+  previewError.value = ''
+  previewLoading.value = true
+  previewSkeleton.begin()
+  try {
+    const response = await request<Blob>(attachmentUrl(attachment), { response: 'blob' })
+    if (seq === previewRequestSeq && isActionCurrent(context)) previewUrl.value = URL.createObjectURL(response.data)
+  } catch (error) {
+    if (seq !== previewRequestSeq || !isActionCurrent(context) || session.observeUnauthorized(error, context.generation)) return
+    previewError.value = readErrorMessage(error, '资料预览加载失败，请重试。')
+  } finally {
+    if (seq === previewRequestSeq) {
+      previewLoading.value = false
+      previewSkeleton.end()
+    }
+  }
 }
+
+function clearPreview() {
+  previewRequestSeq++
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+  previewSkeleton.hide()
+}
+watch(previewVisible, value => { if (!value) clearPreview() })
+onBeforeUnmount(clearPreview)
 
 async function openTaskAttachments(task: TaskItem) {
   taskAttachmentTarget.value = task
@@ -463,41 +601,50 @@ async function loadTaskAttachments(): Promise<void> {
   if (!task || !orgId.value || !activityId.value) {
     return
   }
+  const context = captureAction()
   taskAttachmentLoading.value = true
-  await guard(async () => {
-    taskAttachments.value = await fetchAttachments(orgId.value, activityId.value,
+  taskAttachmentLoaded.value = false
+  // 当前任务读取成功前不展示上一任务的资料或空表格。
+  taskAttachments.value = []
+  const failure = await guard(async () => {
+    const items = await fetchAttachments(context.orgId, context.activityId,
       { kind: 'task', taskId: task.taskId })
-  })
+    if (isActionCurrent(context) && taskAttachmentTarget.value?.taskId === task.taskId) taskAttachments.value = items
+  }, context)
+  if (!isActionCurrent(context) || taskAttachmentTarget.value?.taskId !== task.taskId) return
+  taskAttachmentLoaded.value = failure === null
   taskAttachmentLoading.value = false
 }
 
 function triggerTaskUpload() {
-  taskUploadInput.value?.click()
+  if (pendingTaskUpload.value && taskAttachmentTarget.value) {
+    void sendUpload({ kind: 'task', taskId: taskAttachmentTarget.value.taskId })
+  } else if (!pendingUpload.value) taskUploadInput.value?.click()
 }
 
-async function onTaskFileChange(event: Event) {
+function onTaskFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   const task = taskAttachmentTarget.value
-  if (!file || !task) {
-    return
-  }
-  taskUploading.value = true
-  await guard(async () => {
-    // F06：一次上传意图一个防重键，重试沿用同一键（失败时保留在 uploadKey 中）
-    if (!uploadKey) {
-      uploadKey = newIdempotencyKey()
-    }
-    await uploadAttachment(orgId.value, activityId.value, file, uploadKey, { kind: 'task', taskId: task.taskId })
-    uploadKey = ''
-    await loadTaskAttachments()
-    await loadAll()
-  })
-  taskUploading.value = false
+  if (file && task) void sendUpload({ kind: 'task', taskId: task.taskId }, file)
   input.value = ''
 }
 
+async function closeTaskAttachments(done: () => void = () => { taskAttachmentVisible.value = false }) {
+  if (taskUploading.value) return
+  if (pendingTaskUpload.value) {
+    try {
+      await ElMessageBox.confirm('上传结果尚未确认。放弃后请先核对任务资料列表，避免重复上传。确定关闭？', '结果待核对', {
+        confirmButtonText: '放弃核对', cancelButtonText: '继续核对', type: 'warning',
+      })
+    } catch { return }
+    pendingUpload.value = null
+  }
+  done()
+}
+
 function confirmDeleteTaskAttachment(attachment: AttachmentItem) {
+  const context = captureAction()
   const task = taskAttachmentTarget.value
   if (!task) {
     return
@@ -507,23 +654,29 @@ function confirmDeleteTaskAttachment(attachment: AttachmentItem) {
     confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
   })
     .then(() => guard(async () => {
-      await deleteAttachment(orgId.value, activityId.value, attachment.attachmentId)
+      await deleteAttachment(context.orgId, context.activityId, attachment.attachmentId)
+      if (!isActionCurrent(context)) return
       await loadTaskAttachments()
+      if (!isActionCurrent(context)) return
       await loadAll()
-    }))
+    }, context))
     .catch(() => undefined)
     .finally(() => {
       acting.value = ''
     })
 }
 
-defineExpose({ reload: loadAll })
+defineExpose({
+  reload: loadAll,
+  hasUnsavedForm: () => taskDirty.value || materialDirty.value || pendingUpload.value !== null,
+  isSubmitting: () => taskSubmitting.value || materialSubmitting.value || uploading.value || taskUploading.value,
+})
 </script>
 
 <template>
   <div class="p3-sections">
     <p
-      v-if="errorText"
+      v-if="errorText && !taskAttachmentVisible"
       class="p3-error"
       role="alert"
     >
@@ -556,7 +709,7 @@ defineExpose({ reload: loadAll })
         </ElButton>
       </div>
       <ElSkeleton
-        v-if="skeleton.loading.value && tasks.length === 0"
+        v-if="(loading || loaded) && skeleton.loading.value && tasks.length === 0"
         :rows="4"
         animated
         data-p3-skeleton="tasks"
@@ -564,7 +717,7 @@ defineExpose({ reload: loadAll })
         aria-label="正在加载任务"
       />
       <ElTable
-        v-else
+        v-else-if="loading || loaded"
         :data="tasks"
       >
         <template #empty>
@@ -700,7 +853,7 @@ defineExpose({ reload: loadAll })
         </ElButton>
       </div>
       <ElSkeleton
-        v-if="skeleton.loading.value && materials.length === 0"
+        v-if="(loading || loaded) && skeleton.loading.value && materials.length === 0"
         :rows="3"
         animated
         data-p3-skeleton="materials"
@@ -708,7 +861,7 @@ defineExpose({ reload: loadAll })
         aria-label="正在加载物资"
       />
       <ElTable
-        v-else
+        v-else-if="loading || loaded"
         :data="materials"
       >
         <template #empty>
@@ -805,21 +958,28 @@ defineExpose({ reload: loadAll })
           type="primary"
           plain
           :loading="uploading"
-          :disabled="frozen"
+          :disabled="frozen || (Boolean(pendingUpload) && !pendingActivityUpload)"
           @click="triggerUpload"
         >
-          上传资料
+          {{ pendingActivityUpload && !uploading ? '核对上传结果' : '上传资料' }}
         </ElButton>
         <input
           ref="uploadInput"
           type="file"
           class="p3-upload-input"
           accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.docx,.xlsx,.pptx,.zip"
+          :disabled="Boolean(pendingUpload)"
           @change="onFileChange"
         >
       </div>
+      <p
+        v-if="pendingActivityUpload"
+        class="p3-note"
+      >
+        上传结果尚未确认，请用原文件核对，避免重复上传。
+      </p>
       <ElSkeleton
-        v-if="skeleton.loading.value && attachments.length === 0"
+        v-if="(loading || loaded) && skeleton.loading.value && attachments.length === 0"
         :rows="3"
         animated
         data-p3-skeleton="attachments"
@@ -827,7 +987,7 @@ defineExpose({ reload: loadAll })
         aria-label="正在加载资料"
       />
       <ElTable
-        v-else
+        v-else-if="loading || loaded"
         :data="attachments"
       >
         <template #empty>
@@ -868,6 +1028,7 @@ defineExpose({ reload: loadAll })
             </ElButton>
             <ElButton
               size="small"
+              :loading="downloadingId === row.attachmentId"
               @click="download(row as AttachmentItem)"
             >
               下载
@@ -891,25 +1052,50 @@ defineExpose({ reload: loadAll })
     <ElDialog
       v-model="taskAttachmentVisible"
       :title="`任务资料：${taskAttachmentTarget?.title ?? ''}`"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - 2 * var(--ui-space-4)))"
+      :before-close="closeTaskAttachments"
+      :show-close="!taskUploading"
     >
+      <p
+        v-if="errorText"
+        class="p3-error"
+        role="alert"
+      >
+        {{ errorText }}
+        <ElButton
+          v-if="!taskAttachmentLoading && !taskAttachmentLoaded"
+          size="small"
+          @click="loadTaskAttachments"
+        >
+          重新加载
+        </ElButton>
+      </p>
+      <p
+        v-if="pendingTaskUpload"
+        class="p3-note"
+      >
+        上传结果尚未确认，请用原文件核对，避免重复上传。
+      </p>
       <div class="p3-block__head">
         <span class="p3-note">任务承担者可以上传与删除本人任务的资料。</span>
         <ElButton
+          v-if="canUploadTaskAttachment"
           size="small"
           type="primary"
           plain
           :loading="taskUploading"
-          :disabled="frozen"
+          :disabled="frozen || (Boolean(pendingUpload) && !pendingTaskUpload)"
           @click="triggerTaskUpload"
         >
-          上传资料
+          {{ pendingTaskUpload && !taskUploading ? '核对上传结果' : '上传资料' }}
         </ElButton>
         <input
+          v-if="canUploadTaskAttachment"
           ref="taskUploadInput"
           type="file"
           class="p3-upload-input"
           accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.docx,.xlsx,.pptx,.zip"
+          :disabled="Boolean(pendingUpload)"
           @change="onTaskFileChange"
         >
       </div>
@@ -922,7 +1108,7 @@ defineExpose({ reload: loadAll })
         aria-label="正在加载任务资料"
       />
       <ElTable
-        v-else
+        v-else-if="taskAttachmentLoaded"
         :data="taskAttachments"
       >
         <template #empty>
@@ -963,6 +1149,7 @@ defineExpose({ reload: loadAll })
             </ElButton>
             <ElButton
               size="small"
+              :loading="downloadingId === row.attachmentId"
               @click="download(row as AttachmentItem)"
             >
               下载
@@ -982,7 +1169,10 @@ defineExpose({ reload: loadAll })
         </ElTableColumn>
       </ElTable>
       <template #footer>
-        <ElButton @click="taskAttachmentVisible = false">
+        <ElButton
+          :disabled="taskUploading"
+          @click="closeTaskAttachments()"
+        >
           关闭
         </ElButton>
       </template>
@@ -994,8 +1184,27 @@ defineExpose({ reload: loadAll })
       width="min(100%, var(--ui-drawer-width))"
     >
       <div class="p3-preview">
+        <ElSkeleton
+          v-if="previewSkeleton.loading.value"
+          :rows="4"
+          animated
+          aria-busy="true"
+          aria-label="正在加载资料预览"
+        />
+        <p
+          v-else-if="previewError"
+          class="p3-error"
+          role="alert"
+        >
+          {{ previewError }} <ElButton
+            v-if="previewTarget"
+            @click="openPreview(previewTarget)"
+          >
+            重试
+          </ElButton>
+        </p>
         <img
-          v-if="previewKind === 'image' && previewUrl"
+          v-else-if="previewKind === 'image' && previewUrl"
           :src="previewUrl"
           :alt="previewTarget?.originalName ?? '资料预览'"
           class="p3-preview__image"
@@ -1007,7 +1216,7 @@ defineExpose({ reload: loadAll })
           class="p3-preview__frame"
         />
         <p
-          v-else
+          v-else-if="!previewLoading"
           class="p3-note"
         >
           该类型不支持在线预览，请下载后查看。
@@ -1020,6 +1229,7 @@ defineExpose({ reload: loadAll })
         <ElButton
           v-if="previewTarget"
           type="primary"
+          :loading="downloadingId === previewTarget.attachmentId"
           @click="download(previewTarget)"
         >
           下载
@@ -1045,7 +1255,7 @@ defineExpose({ reload: loadAll })
       <ElForm
         ref="taskFormRef"
         :rules="taskRules"
-        :disabled="taskSubmitting"
+        :disabled="taskSubmitting || Boolean(pendingTaskCreate)"
         :model="taskForm"
         label-position="top"
       >
@@ -1123,7 +1333,7 @@ defineExpose({ reload: loadAll })
           :loading="taskSubmitting"
           @click="submitTask"
         >
-          {{ editingTask ? '保存' : '创建' }}
+          {{ editingTask ? '保存' : pendingTaskCreate ? '核对创建结果' : '创建' }}
         </ElButton>
       </template>
     </ElDialog>
@@ -1132,9 +1342,19 @@ defineExpose({ reload: loadAll })
       v-model="materialDialogVisible"
       :title="editingMaterial ? '编辑物资' : '添加物资'"
       width="var(--ui-dialog-width)"
+      :before-close="closeMaterialDialog"
+      :show-close="!materialSubmitting"
     >
+      <p
+        v-if="errorText"
+        class="p3-error"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
       <ElForm
         :model="materialForm"
+        :disabled="materialSubmitting || Boolean(pendingMaterialCreate)"
         label-position="top"
       >
         <ElFormItem
@@ -1187,7 +1407,10 @@ defineExpose({ reload: loadAll })
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="materialDialogVisible = false">
+        <ElButton
+          :disabled="materialSubmitting"
+          @click="closeMaterialDialog()"
+        >
           取消
         </ElButton>
         <ElButton
@@ -1195,7 +1418,7 @@ defineExpose({ reload: loadAll })
           :loading="materialSubmitting"
           @click="submitMaterial"
         >
-          {{ editingMaterial ? '保存' : '添加' }}
+          {{ editingMaterial ? '保存' : pendingMaterialCreate ? '核对创建结果' : '添加' }}
         </ElButton>
       </template>
     </ElDialog>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessageBox, ElTag, type FormInstance, type FormRules } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessage, ElMessageBox, ElSkeleton, ElTag, type FormInstance, type FormRules } from 'element-plus'
+import { useLoadingSkeleton } from '../../shared/utils/useLoadingSkeleton'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import { useOrganizationsStore } from '../../stores/organizations'
 import { reissueRecoveryCode } from './api'
@@ -61,16 +62,23 @@ const reissueRules: FormRules = {
 
 const codeDialogVisible = ref(false)
 const issuedRecoveryCode = ref('')
+const securitySubmitting = computed(() => passwordSubmitting.value || reissueSubmitting.value)
 
 const createDialogVisible = ref(false)
 const joinDialogVisible = ref(false)
 const directoryError = ref('')
+const directoryLoading = ref(true)
+const directorySkeleton = useLoadingSkeleton()
 
 // P4.3 我的报名（跨组织）：入口放在账号页，外部参与者不需要进入组织工作区。
 const registrations = ref<RegistrationItem[]>([])
 const registrationsError = ref('')
+const registrationsLoading = ref(true)
+const registrationsSkeleton = useLoadingSkeleton()
 const cancellingId = ref('')
 const cancellingError = ref('')
+let alive = true
+onBeforeUnmount(() => { alive = false })
 
 const registrationTagType = (status: RegistrationStatus): 'success' | 'info' | 'warning' | 'danger' =>
   status === 'APPROVED' ? 'success' : status === 'PENDING' ? 'warning'
@@ -78,34 +86,39 @@ const registrationTagType = (status: RegistrationStatus): 'success' | 'info' | '
 
 /** F01：本人取消后立即刷新状态；名额释放与幂等由后端保证。 */
 function cancelRegistration(item: RegistrationItem) {
+  const gen = session.capture()
+  const isCurrent = () => alive && gen === session.generation
   cancellingError.value = ''
   cancellingId.value = item.registrationId
   void ElMessageBox.confirm('确定取消本人报名？名额将立即释放。', '取消报名', {
     confirmButtonText: '取消报名', cancelButtonText: '返回', type: 'warning',
   })
     .then(async () => {
-      const gen = session.capture()
+      if (!isCurrent()) return
       try {
-        await cancelMyRegistration(item.activityId)
+        await cancelMyRegistration(item.activityId, item.version)
       } catch (error) {
         if (session.observeUnauthorized(error, gen)) {
           return
         }
+        if (!isCurrent()) return
         cancellingError.value = error instanceof ApiError && !error.isTransportError
           ? error.detail || '取消失败，请重试。'
           : '网络连接失败，请检查网络后重试。'
         return
       }
-      await loadRegistrations()
+      if (isCurrent()) await loadRegistrations()
     })
     .catch(() => undefined)
     .finally(() => {
-      cancellingId.value = ''
+      if (isCurrent()) cancellingId.value = ''
     })
 }
 
 async function loadRegistrations(): Promise<void> {
   registrationsError.value = ''
+  registrationsLoading.value = true
+  if (registrations.value.length === 0) registrationsSkeleton.begin()
   const gen = session.capture()
   try {
     const items = await fetchMyRegistrations()
@@ -118,14 +131,19 @@ async function loadRegistrations(): Promise<void> {
       return
     }
     registrations.value = []
-    registrationsError.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '报名记录加载失败，请重试。'
+    registrationsError.value = readErrorMessage(error, '报名记录加载失败，请重试。')
+  } finally {
+    if (alive && gen === session.generation) {
+      registrationsLoading.value = false
+      registrationsSkeleton.end()
+    }
   }
 }
 
 async function loadDirectory(): Promise<void> {
   directoryError.value = ''
+  directoryLoading.value = true
+  if (directoryStore.items.length === 0) directorySkeleton.begin()
   const gen = session.capture()
   try {
     await directoryStore.fetchDirectory(true)
@@ -133,9 +151,12 @@ async function loadDirectory(): Promise<void> {
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    directoryError.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '组织目录加载失败，请重试。'
+    directoryError.value = readErrorMessage(error, '组织目录加载失败，请重试。')
+  } finally {
+    if (alive && gen === session.generation) {
+      directoryLoading.value = false
+      directorySkeleton.end()
+    }
   }
 }
 
@@ -148,47 +169,50 @@ function enterOrganization(org: OrganizationDirectoryItem): void {
   void router.push(`/org/${org.id}`)
 }
 
+async function enterAfterDirectoryRefresh(orgId: string): Promise<void> {
+  if (!alive) return
+  const gen = session.capture()
+  await loadDirectory()
+  if (alive && gen === session.generation) void router.push(`/org/${orgId}`)
+}
+
 function onOrganizationCreated(org: OrganizationDirectoryItem): void {
-  directoryStore.fetchDirectory(true).finally(() => {
-    void router.push(`/org/${org.id}`)
-  })
+  void enterAfterDirectoryRefresh(org.id)
 }
 
 function onOrganizationJoined(org: { orgId: string; name: string }): void {
-  directoryStore.fetchDirectory(true).finally(() => {
-    void router.push(`/org/${org.orgId}`)
-  })
+  void enterAfterDirectoryRefresh(org.orgId)
 }
 
 async function submitPasswordChange() {
-  const valid = await passwordFormRef.value?.validate().catch(() => false)
-  if (!valid) {
-    return
-  }
-    const gen = session.capture()
-passwordSubmitting.value = true
+  if (securitySubmitting.value || codeDialogVisible.value) return
+  const gen = session.capture()
+  passwordSubmitting.value = true
   passwordError.value = ''
   try {
+    const valid = await passwordFormRef.value?.validate().catch(() => false)
+    if (!valid || !alive || gen !== session.generation) return
     await session.changePassword(passwordFields.currentPassword, passwordFields.newPassword)
+    if (!alive || gen !== session.generation) return
     passwordDialogVisible.value = false
     passwordFields.currentPassword = ''
     passwordFields.newPassword = ''
     passwordFields.confirmPassword = ''
   } catch (error) {
-    if (session.observeUnauthorized(error, gen)) {
+    if (session.observeUnauthorized(error, gen) || !alive || gen !== session.generation) {
       return
     }
-    if (error instanceof ApiError && !error.isTransportError) {
+    if (error instanceof ApiError && !error.isTransportError && (error.status ?? 0) < 500) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
         passwordError.value = '安全校验已过期，请重新提交。'
       } else if (error.code === 'AUTH_INVALID_CREDENTIALS') {
-        passwordError.value = '当前密码不正确。'
+        passwordError.value = '当前密码不正确。若刚才修改结果尚未确认，请先用新密码重新登录核对。'
       } else {
         passwordError.value = error.detail || '修改密码失败，请稍后重试。'
       }
     } else {
-      passwordError.value = '网络连接失败，请检查网络后重试。'
+      passwordError.value = '修改结果尚未确认。请先用新密码重新登录核对；若无法登录，再尝试原密码。'
     }
   } finally {
     passwordSubmitting.value = false
@@ -196,24 +220,24 @@ passwordSubmitting.value = true
 }
 
 async function submitReissue() {
-  const valid = await reissueFormRef.value?.validate().catch(() => false)
-  if (!valid) {
-    return
-  }
-    const gen = session.capture()
-reissueSubmitting.value = true
+  if (securitySubmitting.value || codeDialogVisible.value) return
+  const gen = session.capture()
+  reissueSubmitting.value = true
   reissueError.value = ''
   try {
+    const valid = await reissueFormRef.value?.validate().catch(() => false)
+    if (!valid || !alive || gen !== session.generation) return
     const result = await reissueRecoveryCode(reissueFields.currentPassword)
+    if (!alive || gen !== session.generation) return
     reissueDialogVisible.value = false
     reissueFields.currentPassword = ''
     issuedRecoveryCode.value = result.recoveryCode
     codeDialogVisible.value = true
   } catch (error) {
-    if (session.observeUnauthorized(error, gen)) {
+    if (session.observeUnauthorized(error, gen) || !alive || gen !== session.generation) {
       return
     }
-    if (error instanceof ApiError && !error.isTransportError) {
+    if (error instanceof ApiError && !error.isTransportError && (error.status ?? 0) < 500) {
       if (error.code === 'CSRF_INVALID') {
         invalidateCsrfCredential()
         reissueError.value = '安全校验已过期，请重新提交。'
@@ -223,7 +247,7 @@ reissueSubmitting.value = true
         reissueError.value = error.detail || '重签失败，请稍后重试。'
       }
     } else {
-      reissueError.value = '网络连接失败，请检查网络后重试。'
+      reissueError.value = '重签结果尚未确认，旧恢复码可能已失效。请保持登录，重新重签并保存新码。'
     }
   } finally {
     reissueSubmitting.value = false
@@ -231,10 +255,13 @@ reissueSubmitting.value = true
 }
 
 async function handleLogout() {
+  if (securitySubmitting.value || codeDialogVisible.value) return
+  const gen = session.capture()
   try {
     await session.logout()
-  } finally {
-    await router.replace('/login')
+    if (session.status === 'guest') await router.replace('/login')
+  } catch {
+    if (alive && gen === session.generation) ElMessage.error('退出结果尚未确认，请检查网络后再次退出。')
   }
 }
 </script>
@@ -284,6 +311,13 @@ async function handleLogout() {
           重新加载
         </ElButton>
       </p>
+      <ElSkeleton
+        v-else-if="directorySkeleton.loading.value && directoryStore.items.length === 0"
+        :rows="3"
+        animated
+        aria-busy="true"
+        aria-label="正在加载组织目录"
+      />
       <ul
         v-else-if="directoryStore.items.length > 0"
         class="account-page__orgs"
@@ -310,10 +344,17 @@ async function handleLogout() {
         </li>
       </ul>
       <p
-        v-else
+        v-else-if="!directoryLoading"
         class="account-page__hint"
       >
         尚未创建或加入任何组织。创建组织后即可开始协作。
+      </p>
+      <p
+        v-else
+        class="account-page__hint"
+        role="status"
+      >
+        正在加载组织目录……
       </p>
     </section>
 
@@ -333,7 +374,20 @@ async function handleLogout() {
         role="alert"
       >
         {{ registrationsError }}
+        <ElButton
+          text
+          @click="loadRegistrations"
+        >
+          重新加载
+        </ElButton>
       </p>
+      <ElSkeleton
+        v-else-if="registrationsSkeleton.loading.value && registrations.length === 0"
+        :rows="3"
+        animated
+        aria-busy="true"
+        aria-label="正在加载报名记录"
+      />
       <ul
         v-else-if="registrations.length > 0"
         class="account-page__orgs"
@@ -402,10 +456,17 @@ async function handleLogout() {
         </li>
       </ul>
       <p
-        v-else
+        v-else-if="!registrationsLoading"
         class="account-page__hint"
       >
         暂无报名记录。登录后可在公开活动页报名，并在活动开始前取消。
+      </p>
+      <p
+        v-else
+        class="account-page__hint"
+        role="status"
+      >
+        正在加载报名记录……
       </p>
       <p
         v-if="cancellingError"
@@ -424,15 +485,22 @@ async function handleLogout() {
         <h2>账号安全</h2>
       </div>
       <div class="account-page__actions">
-        <ElButton @click="passwordDialogVisible = true">
+        <ElButton
+          :disabled="securitySubmitting || codeDialogVisible"
+          @click="passwordDialogVisible = true"
+        >
           修改密码
         </ElButton>
-        <ElButton @click="reissueDialogVisible = true">
+        <ElButton
+          :disabled="securitySubmitting || codeDialogVisible"
+          @click="reissueDialogVisible = true"
+        >
           重签恢复码
         </ElButton>
         <ElButton
           type="danger"
           plain
+          :disabled="securitySubmitting || codeDialogVisible"
           @click="handleLogout"
         >
           退出登录
@@ -443,7 +511,10 @@ async function handleLogout() {
     <ElDialog
       v-model="passwordDialogVisible"
       title="修改密码"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - var(--ui-space-8)))"
+      :close-on-click-modal="!securitySubmitting"
+      :close-on-press-escape="!securitySubmitting"
+      :show-close="!securitySubmitting"
     >
       <p
         v-if="passwordError"
@@ -456,6 +527,7 @@ async function handleLogout() {
         ref="passwordFormRef"
         :model="passwordFields"
         :rules="passwordRules"
+        :disabled="securitySubmitting"
         label-position="top"
         @submit.prevent="submitPasswordChange"
       >
@@ -495,12 +567,16 @@ async function handleLogout() {
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="passwordDialogVisible = false">
+        <ElButton
+          :disabled="securitySubmitting"
+          @click="passwordDialogVisible = false"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
           :loading="passwordSubmitting"
+          :disabled="securitySubmitting"
           @click="submitPasswordChange"
         >
           确认修改
@@ -511,7 +587,10 @@ async function handleLogout() {
     <ElDialog
       v-model="reissueDialogVisible"
       title="重签恢复码"
-      width="var(--ui-dialog-width)"
+      width="min(var(--ui-dialog-width), calc(100vw - var(--ui-space-8)))"
+      :close-on-click-modal="!securitySubmitting"
+      :close-on-press-escape="!securitySubmitting"
+      :show-close="!securitySubmitting"
     >
       <p
         v-if="reissueError"
@@ -524,6 +603,7 @@ async function handleLogout() {
         ref="reissueFormRef"
         :model="reissueFields"
         :rules="reissueRules"
+        :disabled="securitySubmitting"
         label-position="top"
         @submit.prevent="submitReissue"
       >
@@ -540,12 +620,16 @@ async function handleLogout() {
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="reissueDialogVisible = false">
+        <ElButton
+          :disabled="securitySubmitting"
+          @click="reissueDialogVisible = false"
+        >
           取消
         </ElButton>
         <ElButton
           type="primary"
           :loading="reissueSubmitting"
+          :disabled="securitySubmitting"
           @click="submitReissue"
         >
           重签
@@ -556,6 +640,7 @@ async function handleLogout() {
     <RecoveryCodeDialog
       v-model="codeDialogVisible"
       :code="issuedRecoveryCode"
+      :submitting="securitySubmitting"
       confirm-target="新恢复码"
     />
 

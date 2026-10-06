@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { ElButton, ElCheckbox, ElDialog } from 'element-plus'
 
 const props = defineProps<{
   modelValue: boolean
   code: string
   confirmTarget: string
+  submitting?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -26,8 +28,22 @@ watch(visible, (value) => {
   }
 })
 
-function confirm() {
+// 发放中及尚未确认保存时保留当前页面，恢复码不进入持久存储。
+const canLeave = () => !props.submitting && !visible.value
+onBeforeRouteLeave(canLeave)
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!canLeave()) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+
+async function confirm() {
+  if (!acknowledged.value) return
   visible.value = false
+  await nextTick()
   emit('confirmed')
 }
 </script>
@@ -37,8 +53,10 @@ function confirm() {
   <ElDialog
     v-model="visible"
     title="请保存你的恢复码"
-    width="var(--ui-dialog-width)"
+    width="min(var(--ui-dialog-width), calc(100vw - var(--ui-space-8)))"
     :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :show-close="false"
   >
     <p
       class="recovery-code-dialog__warning"

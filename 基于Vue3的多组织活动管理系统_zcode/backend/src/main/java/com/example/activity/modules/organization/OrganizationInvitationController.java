@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
@@ -40,7 +41,7 @@ public class OrganizationInvitationController {
     }
 
     public record InvitationItemResponse(
-        String invitationId, Long createdBy, java.time.OffsetDateTime createdAt,
+        String invitationId, String createdBy, java.time.OffsetDateTime createdAt,
         java.time.OffsetDateTime expiresAt, int maxUses, int usedCount, String status) {
     }
 
@@ -54,11 +55,12 @@ public class OrganizationInvitationController {
     public ResponseEntity<CreatedResponse> create(
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody CreateInvitationRequest request) {
         int expiresInDays = request.expiresInDays() == null ? 7 : request.expiresInDays();
         int maxUses = request.maxUses() == null ? 10 : request.maxUses();
         OrganizationInvitationService.InvitationCreated created =
-            invitationService.create(principal.getAccountId(), orgId, expiresInDays, maxUses);
+            invitationService.create(principal.getAccountId(), orgId, expiresInDays, maxUses, requestKey);
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
             .body(new CreatedResponse(String.valueOf(created.invitationId()), created.code(),
                 created.expiresAt(), created.maxUses()));
@@ -69,7 +71,7 @@ public class OrganizationInvitationController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId) {
         List<InvitationItemResponse> items = invitationService.list(principal.getAccountId(), orgId).stream()
-            .map(item -> new InvitationItemResponse(String.valueOf(item.invitationId()), item.createdBy(),
+            .map(item -> new InvitationItemResponse(String.valueOf(item.invitationId()), String.valueOf(item.createdBy()),
                 item.createdAt(), item.expiresAt(), item.maxUses(), item.usedCount(), item.status()))
             .toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new InvitationsResponse(items));

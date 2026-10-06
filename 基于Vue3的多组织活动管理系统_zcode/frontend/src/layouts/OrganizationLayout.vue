@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, ArrowRight, CircleCheck, FolderOpened, HomeFilled, Menu, Setting, User } from '@element-plus/icons-vue'
-import { ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus'
+import { ElAlert, ElButton, ElDropdown, ElDropdownItem, ElDropdownMenu, ElMessage } from 'element-plus'
 import { ApiError } from '../shared/http/error'
-import { invalidateCsrfCredential, useSessionStore } from '../stores/session'
+import { useSessionStore } from '../stores/session'
 import { useOrganizationsStore } from '../stores/organizations'
 import { fetchOrganization } from '../features/organization/api'
 import { roleLabel, type OrganizationDetail } from '../features/organization/types'
@@ -34,8 +34,8 @@ const orgState = ref<'loading' | 'ready' | 'missing'>('loading')
 
 const orgId = computed(() => String(route.params.orgId ?? ''))
 
-// 迟到响应保护：只接受当前 orgId 的响应（前端架构 5.2）。
-let requestedOrgId = ''
+// 来回切换同一组织时，也只接受最新请求及当前会话的响应。
+let organizationRequestId = 0
 let directoryRequestId = 0
 
 const role = computed(() => orgDetail.value?.role ?? null)
@@ -43,27 +43,36 @@ const roleText = computed(() => (role.value ? roleLabel(role.value) : ''))
 const username = computed(() => session.account?.username ?? '')
 const avatarInitial = computed(() => username.value.charAt(0))
 
-async function loadOrganization(targetOrgId: string): Promise<void> {
-  requestedOrgId = targetOrgId
-  orgState.value = 'loading'
+async function loadOrganization(targetOrgId: string, background = false): Promise<void> {
+  const requestId = ++organizationRequestId
+  if (!background) {
+    orgState.value = 'loading'
+    orgDetail.value = null
+  }
+  loadError.value = ''
   const gen = session.capture()
   try {
     const detail = await fetchOrganization(targetOrgId)
-    if (requestedOrgId !== targetOrgId) {
+    if (requestId !== organizationRequestId || gen !== session.generation) {
       return
     }
     orgDetail.value = detail
     orgState.value = 'ready'
   } catch (error) {
+    if (requestId !== organizationRequestId || gen !== session.generation) {
+      return
+    }
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    if (requestedOrgId !== targetOrgId) {
-      return
-    }
-    if (error instanceof ApiError && !error.isTransportError && error.status === 404) {
+    if (error instanceof ApiError && !error.isTransportError && [403, 404].includes(error.status)) {
       orgState.value = 'missing'
       orgDetail.value = null
+      loadError.value = error.status === 403 ? '无权访问此组织。' : '组织不存在或无权访问。'
+      void loadDirectory(true)
+    } else if (background && orgDetail.value) {
+      // 读取失败不等于撤权，不清空仍有效的身份和未保存表单。
+      loadError.value = '组织权限核对失败，请重试。'
     } else {
       // 读取失败保留为可重试状态；网络问题不当作无权访问。
       orgState.value = 'missing'
@@ -77,12 +86,12 @@ async function loadOrganization(targetOrgId: string): Promise<void> {
 
 const loadError = ref('')
 
-async function loadDirectory(): Promise<void> {
+async function loadDirectory(force = false): Promise<void> {
   directoryLoading.value = true
   const requestId = ++directoryRequestId
   const gen = session.capture()
   try {
-    await directoryStore.fetchDirectory()
+    await directoryStore.fetchDirectory(force)
     if (directoryRequestId === requestId) {
       directoryLoading.value = false
     }
@@ -107,14 +116,12 @@ function onAccountCommand(command: string): void {
 }
 
 async function handleLogout(): Promise<void> {
+  const gen = session.capture()
   try {
     await session.logout()
-  } catch (error) {
-    if (error instanceof ApiError && !error.isTransportError && error.code === 'CSRF_INVALID') {
-      invalidateCsrfCredential()
-    }
-  } finally {
-    await router.replace('/login')
+    if (session.status === 'guest') await router.replace('/login')
+  } catch {
+    if (gen === session.generation) ElMessage.error('退出结果尚未确认，请检查网络后再次退出。')
   }
 }
 
@@ -129,11 +136,23 @@ function reloadOrganization(): void {
   void directoryStore.fetchDirectory(true)
 }
 
+function checkPermissions(): void {
+  if (document.hidden || session.status !== 'authenticated' || !orgId.value) return
+  void loadOrganization(orgId.value, true)
+  void loadDirectory(true)
+}
+
 onMounted(() => {
+  document.addEventListener('visibilitychange', checkPermissions)
   void loadDirectory()
   if (orgId.value) {
     void loadOrganization(orgId.value)
   }
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', checkPermissions)
+  organizationRequestId++
+  directoryRequestId++
 })
 
 const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '组织概览')
@@ -332,11 +351,22 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
         </div>
       </header>
       <main class="org-main">
+        <ElAlert
+          v-if="loadError && orgState === 'ready'"
+          type="warning"
+          :title="loadError"
+          :closable="false"
+        >
+          <ElButton @click="checkPermissions">
+            重新核对权限
+          </ElButton>
+        </ElAlert>
         <!-- 组织不可访问时不渲染子页，避免子页继续加载受限数据（R03） -->
         <template v-if="orgState !== 'missing'">
           <RouterView v-slot="{ Component }">
             <component
               :is="Component"
+              :key="`${orgId}:${orgDetail?.role}`"
               :org-detail="orgDetail"
               :state="orgState"
               :error-text="loadError"

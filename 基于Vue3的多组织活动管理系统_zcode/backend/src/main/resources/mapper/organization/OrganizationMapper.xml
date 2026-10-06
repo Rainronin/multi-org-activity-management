@@ -3,14 +3,20 @@
 <mapper namespace="com.example.activity.modules.organization.OrganizationMapper">
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO organization (name, description, status)
-        VALUES (#{name}, #{description}, #{status})
+        INSERT INTO organization (name, description, status, created_by, request_key, request_fingerprint)
+        VALUES (#{name}, #{description}, #{status}, #{createdBy}, #{requestKey}, #{requestFingerprint})
     </insert>
 
     <select id="findById" resultType="com.example.activity.modules.organization.Organization">
         SELECT id, name, description, status, created_at
         FROM organization
         WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.organization.Organization">
+        SELECT id, name, description, status, created_by, request_key, request_fingerprint, created_at
+        FROM organization
+        WHERE created_by = #{creatorAccountId} AND request_key = #{requestKey}
     </select>
 
     <select id="countActiveMembers" resultType="int">

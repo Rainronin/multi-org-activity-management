@@ -3,13 +3,22 @@
 <mapper namespace="com.example.activity.modules.activity.ExecutionRecordMapper">
 
     <sql id="baseColumns">
-        id, org_id, activity_id, category, content, recorded_by, created_at
+        id, org_id, activity_id, category, content, recorded_by, request_key, request_fingerprint, created_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO execution_record (org_id, activity_id, category, content, recorded_by)
-        VALUES (#{orgId}, #{activityId}, #{category}, #{content}, #{recordedBy})
+        INSERT INTO execution_record (org_id, activity_id, category, content, recorded_by, request_key, request_fingerprint)
+        VALUES (#{orgId}, #{activityId}, #{category}, #{content}, #{recordedBy}, #{requestKey}, #{requestFingerprint})
     </insert>
+
+    <select id="findById" resultType="com.example.activity.modules.activity.ExecutionRecord">
+        SELECT <include refid="baseColumns" /> FROM execution_record WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.activity.ExecutionRecord">
+        SELECT <include refid="baseColumns" /> FROM execution_record
+        WHERE org_id = #{orgId} AND request_key = #{requestKey}
+    </select>
 
     <select id="listByActivity" resultType="com.example.activity.modules.activity.ExecutionRecord">
         SELECT <include refid="baseColumns" />

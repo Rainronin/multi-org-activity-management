@@ -51,7 +51,7 @@ public class AiGenerationController {
         String generationId, String type, String status, String activityId, String output, String errorCode,
         String errorMessage, String protocol, String model, String endpointHost, List<String> scope,
         List<String> missing, boolean sourceChanged, OffsetDateTime createdAt, OffsetDateTime adoptedAt,
-        Long adoptedBy, String requestId) {
+        String adoptedBy, String requestId) {
     }
 
     public record GenerationListResponse(List<GenerationResponse> items) {
@@ -67,7 +67,7 @@ public class AiGenerationController {
         return new GenerationResponse(view.generationId(), view.type(), view.status(), view.activityId(),
             view.output(), view.errorCode(), view.errorMessage(), view.protocol(), view.model(),
             view.endpointHost(), view.scope(), view.missing(), view.sourceChanged(), view.createdAt(),
-            view.adoptedAt(), view.adoptedBy(), view.requestId());
+            view.adoptedAt(), view.adoptedBy() == null ? null : String.valueOf(view.adoptedBy()), view.requestId());
     }
 
     /** 生成前预览本次输入范围与缺失信息，不调用模型。 */
@@ -120,6 +120,16 @@ public class AiGenerationController {
                 .map(AiGenerationController::toResponse).toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new GenerationListResponse(items));
+    }
+
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/ai/generations/by-request-key")
+    public ResponseEntity<GenerationResponse> getByRequestKey(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @RequestParam("key") String key) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(toResponse(generationService.getByRequestKey(principal.getAccountId(), orgId, activityId, key)));
     }
 
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/ai/generations/{generationId}")

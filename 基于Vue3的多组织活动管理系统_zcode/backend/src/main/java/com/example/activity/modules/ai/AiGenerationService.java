@@ -62,7 +62,7 @@ public class AiGenerationService {
     }
 
     public record ConnectionTestResult(
-        String status, String message, Integer testedRevision, String requestId, OffsetDateTime testedAt) {
+        String status, String message, Integer testedRevision, String requestId, OffsetDateTime testedAt, String errorCode) {
     }
 
     private final AiGenerationMapper generationMapper;
@@ -71,6 +71,7 @@ public class AiGenerationService {
     private final AiModelClient modelClient;
     private final ActivityService activityService;
     private final OrganizationMemberMapper memberMapper;
+    private final com.example.activity.modules.organization.OrganizationMapper organizationMapper;
     private final AuditService auditService;
     private final AiProperties properties;
     private final TransactionTemplate transactionTemplate;
@@ -82,6 +83,7 @@ public class AiGenerationService {
         AiModelClient modelClient,
         ActivityService activityService,
         OrganizationMemberMapper memberMapper,
+        com.example.activity.modules.organization.OrganizationMapper organizationMapper,
         AuditService auditService,
         AiProperties properties,
         PlatformTransactionManager transactionManager) {
@@ -91,6 +93,7 @@ public class AiGenerationService {
         this.modelClient = modelClient;
         this.activityService = activityService;
         this.memberMapper = memberMapper;
+        this.organizationMapper = organizationMapper;
         this.auditService = auditService;
         this.properties = properties;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
@@ -165,6 +168,8 @@ public class AiGenerationService {
             } catch (org.springframework.dao.DuplicateKeyException duplicate) {
                 throw conflict("REQUEST_IN_PROGRESS", "相同请求已被受理", "请使用原请求键重试，以获取已有生成结果。");
             }
+            auditService.recordChange(accountId, "AI", "AI_GENERATION_STARTED", "generation:" + record.getId(), null,
+                Map.of("orgId", orgId, "activityId", activityId), null, auditState(generationMapper.findById(record.getId())));
             return new Snapshot(record, input, config, false);
         });
 
@@ -194,43 +199,73 @@ public class AiGenerationService {
     // ---------- 连接测试（P8.1） ----------
 
     /** 使用固定非业务短文本测试已保存的指定配置版本；测试同样计入组织调用额度。 */
-    public ConnectionTestResult testConnection(Long accountId, Long orgId, Long version) {
-        AiConfig config = configService.requireTestable(accountId, orgId, version);
-        AiPromptBuilder.Prompt prompt = AiPromptBuilder.connectionTest();
-        String requestKey = "test-" + UUID.randomUUID();
-        AiGeneration record = transactionTemplate.execute(status -> {
+    public ConnectionTestResult testConnection(Long accountId, Long orgId, Long version, String requestKey) {
+        // 旧无键调用兼容；正式页面始终保留原键，核对只读查询。
+        String key = requestKey == null ? "test-" + UUID.randomUUID() : requestKey;
+        requireRequestKey(key);
+        Snapshot testSnapshot = transactionTemplate.execute(status -> {
+            // 先取组织锁再读取，避免 MyBatis 会话缓存保留取锁前的角色或配置。
+            organizationMapper.lockOrganizationShared(orgId);
+            var configView = configService.get(accountId, orgId);
+            if (!"OWNER".equals(configView.viewerRole())) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以测试模型配置。");
+            AiGeneration existing = generationMapper.findByRequestKey(orgId, accountId, key);
+            String fingerprint = com.example.activity.common.RequestFingerprint.of("CONNECTION_TEST", version);
+            if (existing != null) {
+                if (!AiGeneration.TYPE_CONNECTION_TEST.equals(existing.getType()) || !fingerprint.equals(existing.getRequestFingerprint()))
+                    throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键", "该请求键已用于其他连接测试内容。");
+                return new Snapshot(existing, null, null, true);
+            }
+            AiConfig config = configService.requireTestable(accountId, orgId, version);
             AiGeneration row = new AiGeneration();
             row.setOrgId(orgId);
-            row.setActivityId(null);
             row.setType(AiGeneration.TYPE_CONNECTION_TEST);
             row.setOperatorAccountId(accountId);
             row.setStatus(AiGeneration.STATUS_RUNNING);
-            row.setRequestKey(requestKey);
-            row.setRequestFingerprint(sha256("CONNECTION_TEST|" + config.getConnectionRevision()));
+            row.setRequestKey(key);
+            row.setRequestFingerprint(fingerprint);
             row.setSourceScope("连接测试：固定短文本，不发送任何组织资料");
             row.setProtocol(config.getProtocol());
             row.setModel(config.getModel());
             row.setEndpointHost(modelClient.validateEndpoint(config.getEndpoint()));
             row.setConfigVersion(config.getVersion());
             row.setConnectionRevision(config.getConnectionRevision());
-            generationMapper.insert(row);
-            return row;
+            try { generationMapper.insert(row); }
+            catch (org.springframework.dao.DuplicateKeyException duplicate) {
+                throw conflict("REQUEST_IN_PROGRESS", "相同请求已被受理", "请保留原请求键核对测试结果。");
+            }
+            auditService.recordChange(accountId, "AI", "AI_CONNECTION_TEST_STARTED", "generation:" + row.getId(), null,
+                Map.of("orgId", orgId), null, auditState(generationMapper.findById(row.getId())));
+            return new Snapshot(row, null, config, false);
         });
+        if (testSnapshot.replay()) return getConnectionTestByRequestKey(accountId, orgId, key);
+        AiGeneration record = testSnapshot.record();
+        AiConfig config = testSnapshot.config();
+        AiPromptBuilder.Prompt prompt = AiPromptBuilder.connectionTest();
         AiModelClient.Outcome outcome;
-        try {
-            outcome = modelClient.call(config, true, prompt.system(), prompt.user());
-        } catch (ApiException ex) {
-            markFailed(record.getId(), ex.getCode());
-            throw ex;
-        }
+        try { outcome = modelClient.call(config, true, prompt.system(), prompt.user()); }
+        catch (ApiException ex) { markFailed(record.getId(), ex.getCode()); throw ex; }
         Finalize result = finalizeTest(accountId, orgId, config, record.getId(), outcome);
-        if (result.error() != null) {
-            throw result.error();
-        }
-        AiConfig latest = configMapper.findByOrgId(orgId);
-        return new ConnectionTestResult("SUCCEEDED",
-            "连接成功；测试通过只证明当次基础文本调用可用，启用后即可在活动中生成。",
-            latest.getTestedRevision(), outcome.requestId(), latest.getTestedAt());
+        if (result.error() != null) throw result.error();
+        return getConnectionTestByRequestKey(accountId, orgId, key);
+    }
+
+    public ConnectionTestResult getConnectionTestByRequestKey(Long accountId, Long orgId, String requestKey) {
+        requireRequestKey(requestKey);
+        var config = configService.get(accountId, orgId);
+        if (!"OWNER".equals(config.viewerRole())) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人可以核对连接测试。");
+        AiGeneration row = generationMapper.findByRequestKey(orgId, accountId, requestKey);
+        if (row == null || !AiGeneration.TYPE_CONNECTION_TEST.equals(row.getType()))
+            throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "测试记录不存在或无权访问。");
+        reconcileStaleRunning(orgId);
+        row = generationMapper.findById(row.getId());
+        String message = AiGeneration.STATUS_SUCCEEDED.equals(row.getStatus()) ? "连接成功；仅证明当次基础文本调用可用。"
+            : AiGeneration.STATUS_RUNNING.equals(row.getStatus()) ? "连接测试进行中，请保留原请求键稍后核对。" : errorMessage(row.getErrorCode());
+        boolean unknown = AiGeneration.STATUS_FAILED.equals(row.getStatus()) && row.getErrorCode() != null && java.util.Set.of(
+            "AI_TIMEOUT", "AI_UPSTREAM_ERROR", "AI_CONNECT_FAILED", "AI_CALL_INTERRUPTED", "AI_CALL_ABORTED").contains(row.getErrorCode());
+        if (unknown) message = "连接测试结果仍不明确，无法确认上游调用结果；请保留原请求键核对，不自动重发。";
+        return new ConnectionTestResult(unknown ? "UNKNOWN" : row.getStatus(), message,
+            AiGeneration.STATUS_SUCCEEDED.equals(row.getStatus()) ? row.getConnectionRevision() : null,
+            row.getRequestId(), AiGeneration.STATUS_SUCCEEDED.equals(row.getStatus()) ? row.getUpdatedAt() : null, row.getErrorCode());
     }
 
     // ---------- 查询与人工采用 ----------
@@ -243,6 +278,16 @@ public class AiGenerationService {
         return view(generationMapper.findById(generationId), input);
     }
 
+    /** 结果未知时只读核对原请求：请求键限原操作者，仍按当前活动权限重新鉴权。 */
+    public GenerationView getByRequestKey(Long accountId, Long orgId, Long activityId, String requestKey) {
+        requireRequestKey(requestKey);
+        AiGeneration row = generationMapper.findByRequestKey(orgId, accountId, requestKey);
+        if (row == null || row.getActivityId() == null || !row.getActivityId().equals(activityId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "生成记录不存在或无权访问。");
+        }
+        return get(accountId, orgId, activityId, row.getId());
+    }
+
     /** 活动下最近的生成记录：复盘页与草稿页展示生成中／失败／成功与采用状态。 */
     public List<GenerationView> list(Long accountId, Long orgId, Long activityId, String type) {
         ActivityService.AiInput input = activityService.aiInput(accountId, orgId, activityId, requireType(type));
@@ -251,15 +296,20 @@ public class AiGenerationService {
     }
 
     /** 人工采用草稿：只记录采用人与时间；保存方案／总结仍由所属业务端点执行。 */
+    @org.springframework.transaction.annotation.Transactional
     public GenerationView adopt(Long accountId, Long orgId, Long activityId, Long generationId) {
         AiGeneration row = requireRecord(orgId, activityId, generationId);
         ActivityService.AiInput input = activityService.aiInput(accountId, orgId, activityId, requireType(row.getType()));
         if (!AiGeneration.STATUS_SUCCEEDED.equals(row.getStatus()) || row.getOutputText() == null) {
             throw conflict("AI_GENERATION_NOT_READY", "该草稿不可采用", "只有生成成功的草稿可以记录采用状态。");
         }
-        generationMapper.markAdopted(generationId, accountId);
-        auditService.record(accountId, "AI", "AI_DRAFT_ADOPTED", "activity:" + activityId, null,
-            Map.of("type", row.getType(), "generationId", String.valueOf(generationId)));
+        row = generationMapper.findByIdForUpdate(generationId);
+        if (row.getAdoptedAt() == null) {
+            generationMapper.markAdopted(generationId, accountId);
+            auditService.recordChange(accountId, "AI", "AI_DRAFT_ADOPTED", "activity:" + activityId, null,
+                Map.of("type", row.getType(), "generationId", String.valueOf(generationId)),
+                auditState(row), auditState(generationMapper.findById(generationId)));
+        }
         return view(generationMapper.findById(generationId), input);
     }
 
@@ -283,26 +333,21 @@ public class AiGenerationService {
             try {
                 current = activityService.aiInput(accountId, orgId, activityId, type);
             } catch (ApiException ex) {
-                generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, outcome.text(),
+                finishGeneration(generationId, AiGeneration.STATUS_FAILED, outcome.text(),
                     "AI_PERMISSION_REVOKED", outcome.requestId());
-                auditService.record(accountId, "AI", "AI_GENERATION_REVOKED", "activity:" + activityId, null,
-                    Map.of("type", type, "reason", ex.getCode(), "generationId", String.valueOf(generationId)));
                 return new Finalize(null, ex);
             }
             AiConfig latest = configMapper.findByOrgId(orgId);
             boolean configUnchanged = latest != null && latest.isEnabled()
                 && latest.getConnectionRevision().equals(outcome.connectionRevision());
             if (!configUnchanged) {
-                generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, outcome.text(),
+                finishGeneration(generationId, AiGeneration.STATUS_FAILED, outcome.text(),
                     "AI_CONFIG_CHANGED", outcome.requestId());
                 return new Finalize(null, conflict("AI_CONFIG_CHANGED", "调用期间模型配置已变化",
                     "本次结果未采用，也未自动改用新配置重发；如需草稿请按当前配置重新生成。"));
             }
-            generationMapper.finish(generationId, AiGeneration.STATUS_SUCCEEDED, outcome.text(), null,
+            finishGeneration(generationId, AiGeneration.STATUS_SUCCEEDED, outcome.text(), null,
                 outcome.requestId());
-            auditService.record(accountId, "AI", "AI_GENERATION_SUCCEEDED", "activity:" + activityId, null,
-                Map.of("type", type, "model", outcome.model(), "protocol", outcome.protocol(),
-                    "chars", outcome.text().length(), "generationId", String.valueOf(generationId)));
             return new Finalize(view(generationMapper.findById(generationId), current), null);
         });
     }
@@ -311,38 +356,43 @@ public class AiGenerationService {
     private Finalize finalizeTest(
         Long accountId, Long orgId, AiConfig tested, Long generationId, AiModelClient.Outcome outcome) {
         return transactionTemplate.execute(status -> {
+            organizationMapper.lockOrganizationShared(orgId);
             AiConfig latest = configMapper.findByOrgId(orgId);
             if (latest == null || !latest.getConnectionRevision().equals(tested.getConnectionRevision())) {
-                generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, null,
+                finishGeneration(generationId, AiGeneration.STATUS_FAILED, null,
                     "AI_CONFIG_CHANGED", outcome.requestId());
                 return new Finalize(null, conflict("AI_CONFIG_CHANGED", "测试期间配置已变化",
                     "本次测试结果不生效，也不会把新配置标记为已通过；请对当前版本重新测试。"));
             }
+            AiGeneration pending = generationMapper.findByIdForUpdate(generationId);
+            if (!AiGeneration.STATUS_RUNNING.equals(pending.getStatus())) {
+                return new Finalize(null, conflict("AI_CALL_ABORTED", "测试已结束", "本次记录已结束，迟到结果不更新配置测试状态。"));
+            }
             OrganizationMember member = memberMapper.findActive(orgId, accountId);
             if (member == null || !OrganizationMember.ROLE_OWNER.equals(member.getRole())) {
-                generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, null,
+                finishGeneration(generationId, AiGeneration.STATUS_FAILED, null,
                     "AI_PERMISSION_REVOKED", outcome.requestId());
                 return new Finalize(null, new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问",
                     "仅组织负责人可以测试模型配置。"));
             }
             if (configMapper.markTested(orgId, tested.getConnectionRevision(), accountId) != 1) {
-                generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, null,
+                finishGeneration(generationId, AiGeneration.STATUS_FAILED, null,
                     "AI_CONFIG_CHANGED", outcome.requestId());
                 return new Finalize(null, conflict("AI_CONFIG_CHANGED", "测试期间配置已变化",
                     "本次测试结果不生效；请对当前版本重新测试。"));
             }
-            generationMapper.finish(generationId, AiGeneration.STATUS_SUCCEEDED, outcome.text(), null,
+            finishGeneration(generationId, AiGeneration.STATUS_SUCCEEDED, outcome.text(), null,
                 outcome.requestId());
-            auditService.record(accountId, "AI", "AI_CONNECTION_TESTED", "org:" + orgId, null,
+            auditService.recordChange(accountId, "AI", "AI_CONNECTION_TESTED", "org:" + orgId, null,
                 Map.of("protocol", outcome.protocol(), "model", outcome.model(),
-                    "connectionRevision", outcome.connectionRevision()));
+                    "connectionRevision", outcome.connectionRevision()), AiConfigService.auditState(latest), AiConfigService.auditState(configMapper.findByOrgId(orgId)));
             return new Finalize(null, null);
         });
     }
 
     private void markFailed(Long generationId, String errorCode) {
         transactionTemplate.execute(status -> {
-            generationMapper.finish(generationId, AiGeneration.STATUS_FAILED, null, errorCode, MDC.get("requestId"));
+            finishGeneration(generationId, AiGeneration.STATUS_FAILED, null, errorCode, MDC.get("requestId"));
             return null;
         });
     }
@@ -353,9 +403,36 @@ public class AiGenerationService {
     private void reconcileStaleRunning(Long orgId) {
         OffsetDateTime cutoff = OffsetDateTime.now().minusSeconds(properties.getMaxTimeoutSeconds() + 15L);
         transactionTemplate.execute(status -> {
-            generationMapper.failStaleRunning(orgId, cutoff, "AI_CALL_ABORTED");
+            for (var row : generationMapper.listStaleRunning(orgId, cutoff)) {
+                finishGeneration(row.getId(), AiGeneration.STATUS_FAILED, null, "AI_CALL_ABORTED", null);
+            }
             return null;
         });
+    }
+
+    private record GenerationState(String status, String errorCode, Long adoptedBy, OffsetDateTime adoptedAt,
+        Integer connectionRevision, Long configVersion, boolean hasOutput) { }
+
+    private GenerationState auditState(AiGeneration row) {
+        return new GenerationState(row.getStatus(), row.getErrorCode(), row.getAdoptedBy(), row.getAdoptedAt(),
+            row.getConnectionRevision(), row.getConfigVersion(), row.getOutputText() != null);
+    }
+
+    private void finishGeneration(Long generationId, String status, String output, String errorCode, String requestId) {
+        AiGeneration before = generationMapper.findByIdForUpdate(generationId);
+        if (generationMapper.finish(generationId, status, output, errorCode, requestId) != 1) return;
+        String action = AiGeneration.STATUS_SUCCEEDED.equals(status) ? "AI_GENERATION_SUCCEEDED"
+            : "AI_PERMISSION_REVOKED".equals(errorCode) ? "AI_GENERATION_REVOKED" : "AI_GENERATION_FAILED";
+        var detail = new java.util.LinkedHashMap<String, Object>();
+        detail.put("generationId", String.valueOf(generationId));
+        detail.put("orgId", before.getOrgId());
+        detail.put("type", before.getType());
+        detail.put("model", before.getModel());
+        detail.put("protocol", before.getProtocol());
+        detail.put("chars", output == null ? 0 : output.length());
+        auditService.recordChange("AI_CALL_ABORTED".equals(errorCode) ? null : before.getOperatorAccountId(), "AI", action,
+            before.getActivityId() == null ? "generation:" + generationId : "activity:" + before.getActivityId(),
+            errorCode, detail, auditState(before), auditState(generationMapper.findById(generationId)));
     }
 
     private GenerationView view(AiGeneration row, ActivityService.AiInput current) {

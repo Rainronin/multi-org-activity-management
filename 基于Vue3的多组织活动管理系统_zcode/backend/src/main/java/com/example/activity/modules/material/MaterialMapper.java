@@ -11,6 +11,11 @@ public interface MaterialMapper {
 
     Material findById(@Param("id") Long id);
 
+    /** 写入前锁住物资并读取当前状态、承担者与版本。 */
+    Material findByIdForUpdate(@Param("id") Long id);
+
+    Material findByRequestKey(@Param("orgId") Long orgId, @Param("requestKey") String requestKey);
+
     List<Material> listByActivity(@Param("activityId") Long activityId);
 
     int update(@Param("id") Long id, @Param("name") String name, @Param("quantity") Integer quantity,

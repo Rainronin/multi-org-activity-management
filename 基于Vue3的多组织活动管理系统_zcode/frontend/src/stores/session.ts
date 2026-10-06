@@ -91,7 +91,8 @@ export const useSessionStore = defineStore('session', () => {
         return
       }
       if (error instanceof ApiError && error.status === 401) {
-        invalidateProtectedState()
+        // 已登录会话失效复用同一清理及登录引导；匿名启动只清理状态。
+        if (!observeUnauthorized(error, gen)) invalidateProtectedState()
         return
       }
       throw error
@@ -103,28 +104,47 @@ export const useSessionStore = defineStore('session', () => {
     if (status.value !== 'authenticated') {
       return
     }
-    const gen = capture()
     try {
       await bootstrap()
     } catch {
       return
     }
-    if (status.value !== 'authenticated' && gen === generation.value) {
-      redirectToLogin?.('/login')
-    }
   }
 
   async function login(username: string, password: string): Promise<void> {
-    await apiLogin(username, password)
+    // 登录可能已轮换 CSRF，但响应尚未确认；下一次写入重新获取凭据。
+    try {
+      await apiLogin(username, password)
+    } finally {
+      invalidateCsrfCredential()
+    }
     await bootstrap()
-    invalidateCsrfCredential()
     // 会话主体切换：递增代次，作废切换前所有在途请求的回写资格
     generation.value++
   }
 
   async function logout(): Promise<void> {
-    await apiLogout()
-    invalidateProtectedState()
+    const gen = capture()
+    try {
+      await apiLogout()
+    } catch (error) {
+      if (gen !== generation.value) return
+      // 退出可能已经完成；仅凭当前会话的明确 401 清理，核对失败保留原页面供重试。
+      invalidateCsrfCredential()
+      try {
+        await request<MeResponse>('/api/auth/me', { timeoutMs: 10000 })
+      } catch (checkError) {
+        if (gen !== generation.value) return
+        if (checkError instanceof ApiError && !checkError.isTransportError
+          && checkError.status === 401 && checkError.code === 'AUTH_REQUIRED') {
+          invalidateProtectedState()
+          return
+        }
+      }
+      if (gen !== generation.value) return
+      throw error
+    }
+    if (gen === generation.value) invalidateProtectedState()
   }
 
   async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
@@ -138,6 +158,11 @@ export const useSessionStore = defineStore('session', () => {
    */
   function observeUnauthorized(error: unknown, requestGeneration: number): boolean {
     if (!(error instanceof ApiError) || error.isTransportError) {
+      return false
+    }
+    // 各模块已有错误观察入口：当前 CSRF 拒绝只作废凭据，由用户手动重试。
+    if (error.status === 403 && error.code === 'CSRF_INVALID' && requestGeneration === generation.value) {
+      invalidateCsrfCredential()
       return false
     }
     if (error.status !== 401 || error.code !== 'AUTH_REQUIRED') {

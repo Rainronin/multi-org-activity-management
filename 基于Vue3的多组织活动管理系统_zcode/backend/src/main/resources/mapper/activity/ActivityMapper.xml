@@ -62,7 +62,9 @@
             AND owner_member_id = #{ownerOnly}
           </if>
           <if test="visibleToMemberId != null">
-            AND (status IN ('APPROVED', 'EXECUTING', 'REVIEWING') OR owner_member_id = #{visibleToMemberId})
+            AND (status IN ('APPROVED', 'EXECUTING', 'REVIEWING')
+                 OR (status IN ('CANCELLED', 'ARCHIVED') AND confirmed_at IS NOT NULL)
+                 OR owner_member_id = #{visibleToMemberId})
           </if>
         ORDER BY updated_at DESC, id DESC
         LIMIT #{limit} OFFSET #{offset}
@@ -82,7 +84,9 @@
             AND owner_member_id = #{ownerOnly}
           </if>
           <if test="visibleToMemberId != null">
-            AND (status IN ('APPROVED', 'EXECUTING', 'REVIEWING') OR owner_member_id = #{visibleToMemberId})
+            AND (status IN ('APPROVED', 'EXECUTING', 'REVIEWING')
+                 OR (status IN ('CANCELLED', 'ARCHIVED') AND confirmed_at IS NOT NULL)
+                 OR owner_member_id = #{visibleToMemberId})
           </if>
     </select>
 
@@ -94,12 +98,13 @@
           AND org_id = #{orgId}
     </update>
 
-    <!-- S07-B：成员退出／移除前的活动职责清点；归档状态在 P6 引入，当前所有活动都属未归档 -->
+    <!-- 成员退出／移除只检查未归档职责，已归档活动保留历史负责人。 -->
     <select id="countOwnedByMember" resultType="int">
         SELECT COUNT(*)
         FROM activity
         WHERE org_id = #{orgId}
           AND owner_member_id = #{memberId}
+          AND status != 'ARCHIVED'
     </select>
 
     <!--
@@ -231,7 +236,7 @@
           AND version = #{version}
     </update>
 
-    <!-- 取消：已确认、执行中或复盘中，由组织负责人填写原因；报名开关同步关闭 -->
+    <!-- 取消：草稿、待确认、筹备、执行或复盘，由组织负责人填写原因；报名开关同步关闭 -->
     <update id="cancel">
         UPDATE activity
         SET status = 'CANCELLED',
@@ -241,7 +246,7 @@
             version = version + 1
         WHERE id = #{id}
           AND org_id = #{orgId}
-          AND status IN ('APPROVED', 'EXECUTING', 'REVIEWING')
+          AND status IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'EXECUTING', 'REVIEWING')
           AND version = #{version}
     </update>
 
@@ -252,6 +257,9 @@
         SET status = #{toStatus},
             reopen_reason = #{reason},
             reopen_count = reopen_count + 1,
+            summary_confirmed_at = NULL,
+            summary_confirmed_by = NULL,
+            summary_source_hash = NULL,
             version = version + 1
         WHERE id = #{id}
           AND org_id = #{orgId}
@@ -286,6 +294,30 @@
           AND status IN ('REVIEWING', 'CANCELLED')
     </update>
 
-    <!-- P6.5：归档后活动资料只读，删除等写操作由服务层按状态拒绝；此处提供状态查询用索引字段 -->
+    <!-- 仅追加；版本唯一键阻止同一次确认产生两份快照。确认时间与活动当前确认字段相同。 -->
+    <insert id="insertConfirmation">
+        INSERT INTO activity_confirmation
+            (activity_id, kind, content, activity_version, source_hash, confirmed_by, confirmed_at,
+             reopen_reason, reopen_count)
+        SELECT id, #{kind}, CASE WHEN #{kind} = 'PROPOSAL' THEN proposal ELSE summary END,
+               version, #{sourceHash},
+               CASE WHEN #{kind} = 'PROPOSAL' THEN confirmed_by ELSE summary_confirmed_by END,
+               CASE WHEN #{kind} = 'PROPOSAL' THEN confirmed_at ELSE summary_confirmed_at END,
+               reopen_reason, reopen_count
+        FROM activity WHERE id = #{activityId}
+    </insert>
+
+    <select id="listConfirmations" resultType="com.example.activity.modules.activity.ActivityService$ConfirmationItem">
+        SELECT c.id, c.kind, c.content, c.activity_version, c.source_hash, c.confirmed_by,
+               a.username AS confirmed_by_username, c.confirmed_at, c.reopen_reason, c.reopen_count
+        FROM activity_confirmation c JOIN account a ON a.id = c.confirmed_by
+        WHERE c.activity_id = #{activityId}
+        ORDER BY c.activity_version DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countConfirmations" resultType="long">
+        SELECT COUNT(*) FROM activity_confirmation WHERE activity_id = #{activityId}
+    </select>
 
 </mapper>

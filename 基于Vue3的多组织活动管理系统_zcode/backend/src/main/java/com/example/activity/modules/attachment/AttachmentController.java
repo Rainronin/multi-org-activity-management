@@ -112,6 +112,17 @@ public class AttachmentController {
     }
 
     /** S10：按任务列出资料。 */
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/attachments/by-request-key")
+    public ResponseEntity<AttachmentResponse> uploadResult(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @RequestParam("requestKey") String requestKey) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(toResponse(
+            attachmentService.getByRequestKey(principal.getAccountId(), orgId, activityId, requestKey)));
+    }
+
+    /** S10：按任务列出资料。 */
     @GetMapping("/api/organizations/{orgId}/activities/{activityId}/tasks/{taskId}/attachments")
     public ResponseEntity<AttachmentsResponse> listByTask(
         @AuthenticationPrincipal AccountUserDetails principal,

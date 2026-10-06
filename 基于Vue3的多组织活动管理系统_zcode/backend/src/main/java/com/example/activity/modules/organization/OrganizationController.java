@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -43,17 +44,17 @@ public class OrganizationController {
     @PostMapping("/api/organizations")
     public ResponseEntity<CreatedResponse> create(
         @AuthenticationPrincipal AccountUserDetails principal,
+        @RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody CreateOrganizationRequest request) {
         String description = request.description() == null || request.description().isBlank()
             ? null
             : request.description().trim();
         OrganizationService.OrganizationCreated created =
-            organizationService.create(principal.getAccountId(), request.name().trim(), description);
-        // 创建即加入：joinedAt 与创建同时发生，由查询侧返回；这里直接给出当前时间。
+            organizationService.create(principal.getAccountId(), request.name().trim(), description, requestKey);
         return ResponseEntity.status(HttpStatus.CREATED)
             .cacheControl(CacheControl.noStore())
             .body(new CreatedResponse(String.valueOf(created.orgId()), created.name(),
-                created.description(), created.role(), OffsetDateTime.now()));
+                created.description(), created.role(), created.joinedAt()));
     }
 
     @GetMapping("/api/me/organizations")

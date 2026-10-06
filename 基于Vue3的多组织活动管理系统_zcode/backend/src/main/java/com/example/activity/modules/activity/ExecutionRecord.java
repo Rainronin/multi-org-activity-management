@@ -23,6 +23,8 @@ public class ExecutionRecord {
     private String category;
     private String content;
     private Long recordedBy;
+    private String requestKey;
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
 
     public Long getId() {
@@ -75,6 +77,22 @@ public class ExecutionRecord {
 
     public OffsetDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public void setCreatedAt(OffsetDateTime createdAt) {

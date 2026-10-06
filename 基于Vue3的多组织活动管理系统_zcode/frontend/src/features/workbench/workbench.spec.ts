@@ -13,6 +13,7 @@ function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
     readAt: null,
     activityId: '10',
     activityName: '测试活动',
+    activityPath: '/org/1/activities/10',
     ...overrides,
   }
 }
@@ -57,7 +58,7 @@ describe('P7 工作台', () => {
 })
 
 describe('P7 站内提示', () => {
-  it('列表保留总数与未读数，条目含活动跳转所需的 id 与名称', async () => {
+  it('列表保留总数与未读数，条目含按当前权限生成的活动地址', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({
       items: [item()], page: 1, pageSize: 20, total: 1, unread: 1,
     }), { headers: { 'Content-Type': 'application/json' } }))
@@ -65,6 +66,7 @@ describe('P7 站内提示', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/me/notifications?page=1&pageSize=20')
     expect(page.unread).toBe(1)
     expect(page.items[0]?.activityName).toBe('测试活动')
+    expect(page.items[0]?.activityPath).toBe('/org/1/activities/10')
   })
 
   it('标记已读走本人端点，服务端返回空响应体也能正常结束', async () => {

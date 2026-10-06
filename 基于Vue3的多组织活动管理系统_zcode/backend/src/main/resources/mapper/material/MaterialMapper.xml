@@ -4,20 +4,29 @@
 
     <sql id="baseColumns">
         id, org_id, activity_id, name, quantity, unit, assignee_member_id, status, version, note,
-        created_by, created_at, updated_at
+        created_by, request_key, request_fingerprint, created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
         INSERT INTO material (org_id, activity_id, name, quantity, unit, assignee_member_id,
-                              status, note, created_by)
+                              status, note, created_by, request_key, request_fingerprint)
         VALUES (#{orgId}, #{activityId}, #{name}, #{quantity}, #{unit}, #{assigneeMemberId},
-                #{status}, #{note}, #{createdBy})
+                #{status}, #{note}, #{createdBy}, #{requestKey}, #{requestFingerprint})
     </insert>
 
     <select id="findById" resultType="com.example.activity.modules.material.Material">
         SELECT <include refid="baseColumns" />
         FROM material
         WHERE id = #{id}
+    </select>
+
+    <select id="findByRequestKey" resultType="com.example.activity.modules.material.Material">
+        SELECT <include refid="baseColumns" /> FROM material
+        WHERE org_id = #{orgId} AND request_key = #{requestKey}
+    </select>
+
+    <select id="findByIdForUpdate" resultType="com.example.activity.modules.material.Material">
+        SELECT <include refid="baseColumns" /> FROM material WHERE id = #{id} FOR UPDATE
     </select>
 
     <select id="listByActivity" resultType="com.example.activity.modules.material.Material">

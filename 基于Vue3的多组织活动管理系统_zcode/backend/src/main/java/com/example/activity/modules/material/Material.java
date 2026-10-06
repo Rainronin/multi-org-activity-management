@@ -22,6 +22,8 @@ public class Material {
     private Long version;
     private String note;
     private Long createdBy;
+    private String requestKey;
+    private String requestFingerprint;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
 
@@ -111,6 +113,22 @@ public class Material {
 
     public void setCreatedBy(Long createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public String getRequestKey() {
+        return requestKey;
+    }
+
+    public void setRequestKey(String requestKey) {
+        this.requestKey = requestKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
+    }
+
+    public void setRequestFingerprint(String requestFingerprint) {
+        this.requestFingerprint = requestFingerprint;
     }
 
     public OffsetDateTime getCreatedAt() {

@@ -12,8 +12,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -44,8 +42,6 @@ import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
-
-    private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     private final ObjectMapper objectMapper;
     private final AuthRateLimiter rateLimiter;
@@ -131,12 +127,6 @@ public class SecurityConfig {
                 "请求过于频繁", "登录尝试过于频繁，请稍后再试。");
             return;
         }
-        // 日志不含密码与完整凭据；外部文本去除控制字符（开发规范第三节）。
-        String loggedUsername = String.valueOf(request.getParameter("username"))
-            .replaceAll("\\p{Cntrl}", "");
-        log.warn("登录失败 username={} ip={} reason={}",
-            loggedUsername.substring(0, Math.min(loggedUsername.length(), 64)),
-            AuthRateLimitFilter.clientIp(request), exception.getClass().getSimpleName());
         ProblemResponses.write(response, objectMapper, request, 401, "AUTH_INVALID_CREDENTIALS",
             "登录失败", "账号或密码不正确。");
     }

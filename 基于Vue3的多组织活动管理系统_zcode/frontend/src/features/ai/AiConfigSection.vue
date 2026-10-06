@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -8,6 +8,7 @@ import {
   ElInput,
   ElInputNumber,
   ElMessage,
+  ElMessageBox,
   ElSkeleton,
   ElSkeletonItem,
   ElOption,
@@ -16,7 +17,8 @@ import {
   type FormInstance,
   type FormRules,
 } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
+import { newIdempotencyKey } from '../../shared/http/idempotency'
 import { useSessionStore } from '../../stores/session'
 import {
   aiConfigStateLabel,
@@ -24,6 +26,7 @@ import {
   aiProtocolLabel,
   clearAiConfigKey,
   fetchAiConfig,
+  fetchAiConfigTestByRequestKey,
   saveAiConfig,
   setAiConfigEnabled,
   testAiConfig,
@@ -42,8 +45,14 @@ const config = ref<AiConfig | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const pendingTest = ref<{ orgId: string; version: number; key: string; generation: number } | null>(null)
+const lastTestFailed = ref(false)
+const mutating = ref(false)
+const busy = computed(() => saving.value || testing.value || mutating.value)
 const errorText = ref('')
 const noticeText = ref('')
+let configRequestSeq = 0
+let loadedOrgId = ''
 
 const protocol = ref<AiProtocol>('OPENAI_CHAT_COMPLETIONS')
 const endpoint = ref('')
@@ -53,10 +62,35 @@ const apiKey = ref('')
 const maxOutputTokens = ref(1024)
 const outputLimitField = ref<AiOutputLimitField>('MAX_TOKENS')
 const timeoutSeconds = ref(20)
+const savedForm = ref('')
+const currentForm = computed(() => JSON.stringify([
+  protocol.value, endpoint.value, model.value, authScheme.value,
+  maxOutputTokens.value, outputLimitField.value, timeoutSeconds.value,
+]))
 
 const isOwner = computed(() => config.value?.viewerRole === 'OWNER')
 const hasApiKey = computed(() => config.value?.hasApiKey ?? false)
 const canClearKey = computed(() => isOwner.value && hasApiKey.value)
+const hasUnsaved = computed(() => isOwner.value && (currentForm.value !== savedForm.value || Boolean(apiKey.value)))
+
+async function confirmLeave(): Promise<boolean> {
+  if (busy.value) return false
+  if (!hasUnsaved.value && !pendingTest.value) return true
+  try {
+    await ElMessageBox.confirm(pendingTest.value ? '连接测试结果尚未确认。离开后请先核对配置测试状态，避免重复测试。确定离开？' : 'AI 配置还未保存，确定离开？', '未保存的修改', {
+      confirmButtonText: '离开', cancelButtonText: '继续编辑', type: 'warning',
+    })
+    return true
+  } catch { return false }
+}
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (hasUnsaved.value || busy.value || pendingTest.value) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 
 /**
  * 基础字段失焦校验（UI 规范 12.1）：地址必须是完整 HTTPS 端点，模型 ID 必填；
@@ -114,28 +148,43 @@ function applyConfig(value: AiConfig): void {
   outputLimitField.value = value.outputLimitField ?? 'MAX_TOKENS'
   timeoutSeconds.value = value.timeoutSeconds ?? 20
   apiKey.value = ''
+  savedForm.value = currentForm.value
 }
 
 async function load(): Promise<void> {
+  const targetOrgId = props.orgId
+  const requestSeq = ++configRequestSeq
+  if (targetOrgId !== loadedOrgId) {
+    loadedOrgId = targetOrgId
+    config.value = null
+    endpoint.value = ''
+    model.value = ''
+    apiKey.value = ''
+    noticeText.value = ''
+    pendingTest.value = null
+  }
   loading.value = true
   errorText.value = ''
   const gen = session.capture()
   try {
-    const loaded = await fetchAiConfig(props.orgId)
-    if (gen !== session.generation) {
+    const loaded = await fetchAiConfig(targetOrgId)
+    if (requestSeq !== configRequestSeq || targetOrgId !== props.orgId || gen !== session.generation) {
       return
     }
     applyConfig(loaded)
   } catch (error) {
+    if (requestSeq !== configRequestSeq || targetOrgId !== props.orgId || gen !== session.generation) {
+      return
+    }
     config.value = null
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '模型配置加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '模型配置加载失败，请重试。')
   } finally {
-    loading.value = false
+    if (requestSeq === configRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -151,18 +200,23 @@ function reportError(error: unknown, fallback: string, gen: number): void {
   errorText.value = fallback
 }
 
+function requireSavedConfig(): boolean {
+  if (!hasUnsaved.value) return true
+  errorText.value = '请先保存配置，再执行此操作。'
+  return false
+}
+
 /** 保存：密钥留空表示保留原密钥；协议或地址变化必须重新输入密钥。 */
 async function save(): Promise<void> {
-  const gen = session.capture()
-  // 整表校验：不能只相信用户已经触发过 blur（UI 规范 7.4）
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) {
-    return
-  }
+  if (busy.value) return
   saving.value = true
-  errorText.value = ''
-  noticeText.value = ''
+  const gen = session.capture()
   try {
+    // 校验期间也固定输入，不能只相信已触发的 blur（UI 规范 7.4）。
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid) return
+    errorText.value = ''
+    noticeText.value = ''
     const protocolChanged = config.value?.protocol !== protocol.value
     const endpointChanged = (config.value?.endpoint ?? '') !== endpoint.value.trim()
     if (config.value?.hasApiKey && (protocolChanged || endpointChanged) && !apiKey.value.trim()) {
@@ -190,47 +244,84 @@ async function save(): Promise<void> {
 }
 
 async function test(): Promise<void> {
+  if (busy.value) return
+  if (!pendingTest.value && lastTestFailed.value) {
+    try {
+      await ElMessageBox.confirm('上次测试已失败。重新发起会创建一次新的模型请求，可能再次消耗额度。确定重新发起？', '重新发起连接测试', {
+        confirmButtonText: '重新发起测试', cancelButtonText: '保留上次结果', type: 'warning',
+      })
+    } catch { return }
+    lastTestFailed.value = false
+  }
+  if (!pendingTest.value && !requireSavedConfig()) return
   if (config.value?.version === null || config.value?.version === undefined) {
     errorText.value = '请先保存配置再测试连接。'
     return
   }
   const gen = session.capture()
+  const checking = pendingTest.value !== null
+  pendingTest.value ??= { orgId: props.orgId, version: config.value.version, key: newIdempotencyKey(), generation: gen }
+  const pending = pendingTest.value
+  const isCurrent = () => pending.orgId === props.orgId && pending.generation === session.generation
   testing.value = true
   errorText.value = ''
   noticeText.value = ''
   try {
-    const result = await testAiConfig(props.orgId, config.value.version)
+    const result = checking
+      ? await fetchAiConfigTestByRequestKey(pending.orgId, pending.key)
+      : await testAiConfig(pending.orgId, pending.version, pending.key)
+    if (!isCurrent()) return
+    if (result.status === 'RUNNING' || result.status === 'UNKNOWN') {
+      noticeText.value = result.status === 'RUNNING' ? '连接测试仍在处理中，请稍后核对结果。' : '上游测试结果尚未确认，请继续核对原请求；不会再次调用模型。'
+      return
+    }
+    lastTestFailed.value = result.status === 'FAILED'
+    pendingTest.value = null
     noticeText.value = `${result.message}（已记录测试版本 r${result.testedRevision}，测试会消耗少量额度）`
-    applyConfig(await fetchAiConfig(props.orgId))
+    const refreshed = await fetchAiConfig(pending.orgId)
+    if (isCurrent()) applyConfig(refreshed)
   } catch (error) {
-    reportError(error, '连接测试失败，请核对地址、模型 ID 与密钥。', gen)
-    await load()
+    if (isCurrent()) {
+      if (!checking && error instanceof ApiError && !error.isTransportError && error.status < 500) pendingTest.value = null
+      reportError(error, '连接测试失败，请核对地址、模型 ID 与密钥。', gen)
+      if (pendingTest.value) errorText.value = '连接测试结果尚未确认，请使用原请求核对结果；当前配置暂不可修改。'
+    }
   } finally {
     testing.value = false
   }
 }
 
 async function toggleEnabled(enabled: boolean): Promise<void> {
+  if (busy.value) return
+  if (!requireSavedConfig()) return
   if (config.value?.version === null || config.value?.version === undefined) {
     return
   }
   const gen = session.capture()
+  mutating.value = true
   errorText.value = ''
   noticeText.value = ''
   try {
     applyConfig(await setAiConfigEnabled(props.orgId, config.value.version, enabled))
     noticeText.value = enabled ? '模型已启用，可在活动方案与复盘中生成草稿。' : '模型已停用，方案与总结仍可手工编写。'
   } catch (error) {
-    reportError(error, enabled ? '启用失败，请先对当前版本完成连接测试。' : '停用失败，请重试。', gen)
     await load()
+    if (gen === session.generation) {
+      reportError(error, enabled ? '启用失败，请先对当前版本完成连接测试。' : '停用失败，请重试。', gen)
+    }
+  } finally {
+    mutating.value = false
   }
 }
 
 async function clearKey(): Promise<void> {
+  if (busy.value) return
+  if (!requireSavedConfig()) return
   if (config.value?.version === null || config.value?.version === undefined) {
     return
   }
   const gen = session.capture()
+  mutating.value = true
   errorText.value = ''
   noticeText.value = ''
   try {
@@ -238,11 +329,13 @@ async function clearKey(): Promise<void> {
     ElMessage.success('密钥已清除，配置同时停用')
   } catch (error) {
     reportError(error, '清除密钥失败，请重试。', gen)
+  } finally {
+    mutating.value = false
   }
 }
 
-onMounted(load)
-defineExpose({ reload: load })
+watch(() => props.orgId, () => { void load() }, { immediate: true })
+defineExpose({ reload: load, confirmLeave })
 </script>
 
 <template>
@@ -304,10 +397,18 @@ defineExpose({ reload: load })
       <ElAlert
         v-if="noticeText"
         class="ai-config__notice"
-        type="success"
+        :type="pendingTest ? 'warning' : lastTestFailed ? 'error' : 'success'"
         :closable="false"
         :title="noticeText"
       />
+
+      <p
+        v-if="errorText"
+        class="ai-config__error"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
 
       <p
         v-if="!isOwner"
@@ -318,11 +419,28 @@ defineExpose({ reload: load })
         配置、测试、启用与密钥管理仅组织负责人可操作。
       </p>
 
+      <p
+        v-if="pendingTest && isOwner"
+        class="ai-config__note"
+        role="status"
+      >
+        原测试结果待核对；核对不会再次调用模型。
+        <ElButton
+          :loading="testing"
+          :disabled="busy"
+          data-ai-action="check-test"
+          @click="test"
+        >
+          核对测试结果
+        </ElButton>
+      </p>
+
       <ElForm
-        v-else
+        v-if="isOwner"
         ref="formRef"
         :model="formModel"
         :rules="formRules"
+        :disabled="busy || Boolean(pendingTest)"
         label-position="top"
         class="ai-config__form"
       >
@@ -364,7 +482,7 @@ defineExpose({ reload: load })
             class="ai-config__control"
             data-ai-field="model"
             :aria-invalid="invalidBy('model')"
-            placeholder="例如 deepseek-chat，按账号当前可用值填写"
+            placeholder="例如 deepseek-flash，按账号当前可用值填写"
           />
         </ElFormItem>
 
@@ -452,7 +570,7 @@ defineExpose({ reload: load })
           </ElButton>
           <ElButton
             :loading="testing"
-            :disabled="!hasApiKey"
+            :disabled="busy || !hasApiKey"
             data-ai-action="test"
             @click="test"
           >
@@ -462,7 +580,8 @@ defineExpose({ reload: load })
             v-if="!config.enabled"
             type="success"
             plain
-            :disabled="!config.testedForCurrentRevision || !hasApiKey"
+            :loading="mutating"
+            :disabled="busy || !config.testedForCurrentRevision || !hasApiKey"
             data-ai-action="enable"
             @click="toggleEnabled(true)"
           >
@@ -471,6 +590,7 @@ defineExpose({ reload: load })
           <ElButton
             v-else
             plain
+            :loading="mutating"
             data-ai-action="disable"
             @click="toggleEnabled(false)"
           >
@@ -480,6 +600,7 @@ defineExpose({ reload: load })
             v-if="canClearKey"
             type="danger"
             plain
+            :loading="mutating"
             data-ai-action="clear-key"
             @click="clearKey"
           >

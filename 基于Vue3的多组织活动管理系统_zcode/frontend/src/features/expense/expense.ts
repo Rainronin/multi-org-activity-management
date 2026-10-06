@@ -16,9 +16,9 @@ export interface ExpenseItem {
   handledNote: string | null
   noReceiptNote: string | null
   status: ExpenseStatus
-  submittedBy: number | null
+  submittedBy: string | null
   submittedAt: string | null
-  decidedBy: number | null
+  decidedBy: string | null
   decidedAt: string | null
   rejectReason: string | null
   overBudgetNote: string | null
@@ -167,13 +167,14 @@ export async function voidExpense(
   return response.data
 }
 
-/** 更正登记：原记录已确认或已作废时新建关联记录，重新提交与确认。 */
+/** 更正登记：原已确认记录须先作废，再新建关联记录，重新提交与确认。 */
 export async function createExpenseCorrection(
   orgId: string, activityId: string, expenseId: string, input: SaveExpenseInput,
+  idempotencyKey = newIdempotencyKey(),
 ): Promise<ExpenseItem> {
   const response = await request<ExpenseItem>(
     `${expensesUrl(orgId, activityId)}/${encodeURIComponent(expenseId)}/correction`,
-    { method: 'POST', json: input, headers: { 'Idempotency-Key': newIdempotencyKey() } },
+    { method: 'POST', json: input, headers: { 'Idempotency-Key': idempotencyKey } },
   )
   return response.data
 }

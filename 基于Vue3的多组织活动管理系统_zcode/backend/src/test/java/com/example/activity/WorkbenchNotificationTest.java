@@ -9,6 +9,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.activity.support.FlowTestSupport;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -25,6 +27,105 @@ class WorkbenchNotificationTest extends FlowTestSupport {
 
     private String workbenchPath(Long orgId) {
         return "/api/organizations/" + orgId + "/workbench";
+    }
+
+    @Test
+    void notificationLinksFollowCurrentMemberAndExternalAccess() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        TestSession external = registerAndLogin();
+        Long orgId = createOrg(owner);
+        inviteAndAccept(owner, member, orgId);
+        Long activityId = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()), "2027-09-05T14:00:00+08:00");
+        String endpoint = "/api/organizations/" + orgId + "/activities/" + activityId;
+        mockMvc.perform(post(endpoint + "/withdraw-approval").with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"reason\":\"公开招募\"}"))).andExpect(status().isOk());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(endpoint).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(versioned(activityId,
+                    "{\"registrationScope\":\"PUBLIC\",\"registrationStart\":\"2020-01-01T00:00:00+08:00\",\"registrationEnd\":\"2027-09-05T13:00:00+08:00\"}")))
+            .andExpect(status().isOk());
+        submitForApproval(owner, orgId, activityId);
+        openRegistration(owner, orgId, activityId);
+        mockMvc.perform(post(endpoint + "/tasks").with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"跳转核对任务\",\"assigneeMemberId\":" + memberIdOf(orgId, member.username()) + "}"))
+            .andExpect(status().isCreated());
+        String registrationId = readField(mockMvc.perform(post("/api/activities/" + activityId + "/registrations")
+                .with(csrf()).session(external.session()).contentType(MediaType.APPLICATION_JSON).content("{\"displayName\":\"外部参与者\"}"))
+            .andExpect(status().isCreated()).andReturn(), "$.registrationId");
+        mockMvc.perform(post(endpoint + "/registrations/" + registrationId + "/approve").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
+            .andExpect(status().isOk());
+        String internalPath = "/org/" + orgId + "/activities/" + activityId;
+        mockMvc.perform(get("/api/me/notifications").session(member.session())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].activityPath").value(internalPath));
+        mockMvc.perform(get("/api/me/notifications").session(external.session())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].activityPath").value("/public/activities/" + activityId));
+        mockMvc.perform(post(endpoint + "/cancel").with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                .content(versioned(activityId, "{\"reason\":\"场地关闭\"}"))).andExpect(status().isOk());
+        mockMvc.perform(get("/api/me/notifications").session(member.session())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].activityPath").value(internalPath));
+        mockMvc.perform(get("/api/me/notifications").session(external.session())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].activityPath").isEmpty())
+            .andExpect(jsonPath("$.items[0].payload").value(org.hamcrest.Matchers.containsString("场地关闭")));
+        mockMvc.perform(get("/api/public/activities/" + activityId)).andExpect(status().isNotFound());
+        mockMvc.perform(get(endpoint).session(member.session())).andExpect(status().isOk());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .delete("/api/organizations/" + orgId + "/members/" + memberIdOf(orgId, member.username()))
+                .with(csrf()).session(owner.session())).andExpect(status().isNoContent());
+        mockMvc.perform(get("/api/me/notifications").session(member.session())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(0)).andExpect(jsonPath("$.unread").value(0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"LEAVE", "REMOVE", "WITHDRAW_APPROVAL"})
+    void unreadCountMatchesAccessibleNotificationsAcrossPermissionChanges(String change) throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession member = registerAndLogin();
+        Long[] orgIds = {createOrg(owner), createOrg(owner)};
+        Long[] activityIds = new Long[2];
+        for (int i = 0; i < orgIds.length; i++) {
+            Long orgId = orgIds[i];
+            inviteAndAccept(owner, member, orgId);
+            activityIds[i] = createApprovedActivity(owner, orgId, memberIdOf(orgId, owner.username()), "2027-09-04T14:00:00+08:00");
+            String endpoint = "/api/organizations/" + orgId + "/activities/" + activityIds[i];
+            String taskId = readField(mockMvc.perform(post(endpoint + "/tasks").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"未读权限核对\",\"assigneeMemberId\":"
+                        + memberIdOf(orgId, member.username()) + "}"))
+                .andExpect(status().isCreated()).andReturn(), "$.taskId");
+            mockMvc.perform(post(endpoint + "/tasks/" + taskId + "/transition").with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"toStatus\":\"CANCELLED\"}"))
+                .andExpect(status().isOk());
+        }
+        mockMvc.perform(get("/api/me/notifications").session(member.session()).param("pageSize", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(2)).andExpect(jsonPath("$.unread").value(2))
+            .andExpect(jsonPath("$.items.length()").value(1));
+        if ("WITHDRAW_APPROVAL".equals(change)) {
+            mockMvc.perform(post("/api/organizations/" + orgIds[0] + "/activities/" + activityIds[0] + "/withdraw-approval")
+                    .with(csrf()).session(owner.session()).contentType(MediaType.APPLICATION_JSON)
+                    .content(versioned(activityIds[0], "{\"reason\":\"调整安排\"}"))).andExpect(status().isOk());
+        } else {
+            String memberPath = "LEAVE".equals(change) ? "me" : String.valueOf(memberIdOf(orgIds[0], member.username()));
+            mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .delete("/api/organizations/" + orgIds[0] + "/members/" + memberPath)
+                    .with(csrf()).session("LEAVE".equals(change) ? member.session() : owner.session()))
+                .andExpect(status().isNoContent());
+        }
+        mockMvc.perform(get("/api/me/notifications").session(member.session()).param("pageSize", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.unread").value(1))
+            .andExpect(jsonPath("$.items[0].activityId").value(String.valueOf(activityIds[1])));
+        if ("WITHDRAW_APPROVAL".equals(change)) {
+            submitForApproval(owner, orgIds[0], activityIds[0]);
+        } else {
+            inviteAndAccept(owner, member, orgIds[0]);
+        }
+        mockMvc.perform(get("/api/me/notifications").session(member.session()).param("page", "2").param("pageSize", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(2)).andExpect(jsonPath("$.unread").value(2));
+        Long notificationId = jdbcTemplate.queryForObject("SELECT id FROM notification WHERE activity_id = ? AND type = 'TASK_ASSIGNED'",
+            Long.class, activityIds[1]);
+        mockMvc.perform(post("/api/me/notifications/" + notificationId + "/read").with(csrf()).session(member.session()))
+            .andExpect(status().isNoContent());
+        mockMvc.perform(get("/api/me/notifications").session(member.session()).param("pageSize", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(2)).andExpect(jsonPath("$.unread").value(1));
     }
 
     private long versionOf(Long activityId) {
@@ -147,7 +248,8 @@ class WorkbenchNotificationTest extends FlowTestSupport {
             "SELECT id FROM registration WHERE activity_id = ?", Long.class, activityId);
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
         mockMvc.perform(get(workbenchPath(orgId)).session(owner.session()))
             .andExpect(jsonPath("$.todos[?(@.kind=='REGISTRATION_PENDING')]").isEmpty());
@@ -191,7 +293,8 @@ class WorkbenchNotificationTest extends FlowTestSupport {
         // 批准报名 → 报名人收到结果提示
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isOk());
 
         mockMvc.perform(get("/api/me/notifications").session(member.session()))
@@ -205,7 +308,8 @@ class WorkbenchNotificationTest extends FlowTestSupport {
         // 同来源操作重复写意图不产生第二条：再次批准同一报名（状态守卫拒绝）后再核对总数
         mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId
                 + "/registrations/" + registrationId + "/approve")
-                .with(csrf()).session(owner.session()))
+                .with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content(registrationVersioned(registrationId, "{}")))
             .andExpect(status().isConflict());
         mockMvc.perform(get("/api/me/notifications").session(member.session()))
             .andExpect(jsonPath("$.total").value(2));

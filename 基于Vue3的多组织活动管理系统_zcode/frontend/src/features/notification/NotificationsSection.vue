@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElButton, ElTag } from 'element-plus'
-import { ApiError } from '../../shared/http/error'
+import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { invalidateCsrfCredential, useSessionStore } from '../../stores/session'
 import {
   fetchNotifications, markAllNotificationsRead, markNotificationRead, notificationTypeLabel,
@@ -42,9 +42,7 @@ async function load(): Promise<void> {
     if (session.observeUnauthorized(error, gen)) {
       return
     }
-    errorText.value = error instanceof ApiError && error.isTransportError
-      ? '网络连接失败，请检查网络后重试。'
-      : '提示加载失败，请重试。'
+    errorText.value = readErrorMessage(error, '提示加载失败，请重试。')
   } finally {
     loading.value = false
   }
@@ -56,13 +54,15 @@ async function markRead(item: NotificationItem) {
   if (item.readAt) {
     return
   }
+  const gen = session.capture()
   acting.value = item.notificationId
   errorText.value = ''
   try {
     await markNotificationRead(item.notificationId)
+    if (gen !== session.generation) return
     await load()
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
+    if (session.observeUnauthorized(error, gen) || gen !== session.generation) {
       return
     }
     if (error instanceof ApiError && error.code === 'CSRF_INVALID') {
@@ -79,13 +79,15 @@ async function markRead(item: NotificationItem) {
 }
 
 async function markAll() {
+  const gen = session.capture()
   acting.value = 'all'
   errorText.value = ''
   try {
     await markAllNotificationsRead()
+    if (gen !== session.generation) return
     await load()
   } catch (error) {
-    if (session.observeUnauthorized(error, session.capture())) {
+    if (session.observeUnauthorized(error, gen) || gen !== session.generation) {
       return
     }
     errorText.value = error instanceof ApiError && !error.isTransportError
@@ -135,6 +137,12 @@ defineExpose({ reload: load })
       role="alert"
     >
       {{ errorText }}
+      <ElButton
+        text
+        @click="load"
+      >
+        重新加载
+      </ElButton>
     </p>
 
     <ul
@@ -154,9 +162,9 @@ defineExpose({ reload: load })
         </ElTag>
         <span class="notifications__payload">{{ item.payload }}</span>
         <RouterLink
-          v-if="item.activityId"
+          v-if="item.activityPath"
           class="notifications__link"
-          :to="`/public/activities/${item.activityId}`"
+          :to="item.activityPath"
         >
           {{ item.activityName ?? '查看活动' }}
         </RouterLink>

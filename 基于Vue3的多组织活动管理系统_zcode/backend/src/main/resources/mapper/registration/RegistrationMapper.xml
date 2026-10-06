@@ -4,7 +4,7 @@
 
     <sql id="baseColumns">
         id, org_id, activity_id, account_id, display_name, note, status,
-        decided_by, decided_at, cancel_reason, created_at, updated_at
+        decided_by, decided_at, cancel_reason, created_at, updated_at, version
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
@@ -57,9 +57,11 @@
         SET status = #{toStatus},
             decided_by = #{decidedBy},
             decided_at = CURRENT_TIMESTAMP(6),
-            cancel_reason = #{reason}
+            cancel_reason = #{reason},
+            version = version + 1
         WHERE id = #{id}
           AND status = 'PENDING'
+          AND version = #{version}
     </update>
 
     <select id="countApproved" resultType="int">
@@ -119,13 +121,14 @@
     -->
     <select id="listBlockingForLeave" resultType="com.example.activity.modules.registration.Registration">
         SELECT r.id, r.org_id, r.activity_id, r.account_id, r.display_name, r.note, r.status,
-               r.decided_by, r.decided_at, r.cancel_reason, r.created_at, r.updated_at
+               r.decided_by, r.decided_at, r.cancel_reason, r.created_at, r.updated_at, r.version
         FROM registration r
         JOIN activity a ON a.id = r.activity_id
         WHERE r.org_id = #{orgId}
           AND r.account_id = #{accountId}
           AND r.status IN ('PENDING', 'APPROVED')
           AND a.registration_scope = 'INTERNAL'
+          AND a.status NOT IN ('EXECUTING', 'REVIEWING', 'ARCHIVED')
           AND (a.start_time IS NULL OR a.start_time > CURRENT_TIMESTAMP(6))
         ORDER BY r.id ASC
     </select>
@@ -137,8 +140,11 @@
             status = 'PENDING',
             decided_by = NULL,
             decided_at = NULL,
-            cancel_reason = NULL
+            cancel_reason = NULL,
+            version = version + 1
         WHERE id = #{id}
+          AND version = #{version}
+          AND status NOT IN ('PENDING', 'APPROVED')
     </update>
 
     <update id="cancel">
@@ -146,9 +152,11 @@
         SET status = #{toStatus},
             decided_by = #{decidedBy},
             decided_at = CURRENT_TIMESTAMP(6),
-            cancel_reason = #{reason}
+            cancel_reason = #{reason},
+            version = version + 1
         WHERE id = #{id}
           AND status IN ('PENDING', 'APPROVED')
+          AND version = #{version}
     </update>
 
 </mapper>

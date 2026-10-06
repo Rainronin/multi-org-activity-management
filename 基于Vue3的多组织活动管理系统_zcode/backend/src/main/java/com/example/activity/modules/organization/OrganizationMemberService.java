@@ -93,8 +93,8 @@ public class OrganizationMemberService {
         if (memberMapper.updateStatus(member.getId(), "LEFT") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
-        auditService.record(accountId, "ORGANIZATION", "MEMBER_LEFT", "organization:" + orgId, null,
-            java.util.Map.of("memberId", member.getId()));
+        auditService.recordChange(accountId, "ORGANIZATION", "MEMBER_LEFT", "organization:" + orgId, null,
+            java.util.Map.of("memberId", member.getId()), auditState(member), auditState(memberMapper.findById(member.getId())));
     }
 
     @Transactional
@@ -120,8 +120,8 @@ public class OrganizationMemberService {
         if (memberMapper.updateStatus(target.getId(), "REMOVED") != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
-        auditService.record(actorAccountId, "ORGANIZATION", "MEMBER_REMOVED", "organization:" + orgId,
-            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()));
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "MEMBER_REMOVED", "organization:" + orgId,
+            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()), auditState(target), auditState(memberMapper.findById(target.getId())));
     }
 
     @Transactional
@@ -135,8 +135,8 @@ public class OrganizationMemberService {
         if (memberMapper.updateRole(target.getId(), OrganizationMember.ROLE_OWNER) != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
-        auditService.record(actorAccountId, "ORGANIZATION", "OWNER_PROMOTED", "organization:" + orgId,
-            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()));
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "OWNER_PROMOTED", "organization:" + orgId,
+            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()), auditState(target), auditState(memberMapper.findById(target.getId())));
         return new RoleChangeResult(target.getId(), OrganizationMember.ROLE_OWNER);
     }
 
@@ -152,8 +152,8 @@ public class OrganizationMemberService {
         if (memberMapper.updateRole(target.getId(), OrganizationMember.ROLE_MEMBER) != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
-        auditService.record(actorAccountId, "ORGANIZATION", "OWNER_REVOKED", "organization:" + orgId,
-            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()));
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "OWNER_REVOKED", "organization:" + orgId,
+            null, java.util.Map.of("memberId", target.getId(), "accountId", target.getAccountId()), auditState(target), auditState(memberMapper.findById(target.getId())));
         return new RoleChangeResult(target.getId(), OrganizationMember.ROLE_MEMBER);
     }
 
@@ -175,9 +175,15 @@ public class OrganizationMemberService {
             || memberMapper.updateRole(actor.getId(), OrganizationMember.ROLE_MEMBER) != 1) {
             throw conflict("MEMBER_STATE_CONFLICT", "成员状态已变化", "成员关系已被处理，请刷新后查看。");
         }
-        auditService.record(actorAccountId, "ORGANIZATION", "OWNERSHIP_TRANSFERRED", "organization:" + orgId,
-            null, java.util.Map.of("fromMemberId", actor.getId(), "toMemberId", target.getId()));
+        auditService.recordChange(actorAccountId, "ORGANIZATION", "OWNERSHIP_TRANSFERRED", "organization:" + orgId,
+            null, java.util.Map.of("fromMemberId", actor.getId(), "toMemberId", target.getId()), java.util.Map.of("from", auditState(actor), "to", auditState(target)), java.util.Map.of("from", auditState(memberMapper.findById(actor.getId())), "to", auditState(memberMapper.findById(target.getId()))));
         return new RoleChangeResult(actor.getId(), OrganizationMember.ROLE_MEMBER);
+    }
+
+    static record MemberState(Long memberId, Long accountId, String status, String role) { }
+
+    static MemberState auditState(OrganizationMember member) {
+        return member == null ? null : new MemberState(member.getId(), member.getAccountId(), member.getStatus(), member.getRole());
     }
 
     private OrganizationMember requireActiveMember(Long orgId, Long accountId) {
@@ -231,14 +237,16 @@ public class OrganizationMemberService {
         var affected = registrationMapper.listBlockingForLeave(orgId, memberAccountId);
         for (var registration : affected) {
             String reason = "成员退出组织，内部报名自动取消";
-            if (registrationMapper.cancel(registration.getId(), "CANCELLED_ORG", actorAccountId, reason) != 1) {
+            if (registrationMapper.cancel(registration.getId(), "CANCELLED_ORG", actorAccountId, reason, registration.getVersion()) != 1) {
                 // 并发下已被处理：不重复释放名额，也不重复写提示
                 continue;
             }
-            auditService.record(actorAccountId, "ORGANIZATION", "REGISTRATION_CANCELLED_ON_LEAVE",
+            auditService.recordChange(actorAccountId, "ORGANIZATION", "REGISTRATION_CANCELLED_ON_LEAVE",
                 "registration:" + registration.getId(), reason,
                 java.util.Map.of("activityId", registration.getActivityId(),
-                    "accountId", memberAccountId, "fromStatus", registration.getStatus()));
+                    "accountId", memberAccountId, "fromStatus", registration.getStatus()),
+                com.example.activity.modules.registration.RegistrationService.auditState(registration),
+                com.example.activity.modules.registration.RegistrationService.auditState(registrationMapper.findById(registration.getId())));
             notificationMapper.insert(memberAccountId, "REGISTRATION_CANCELLED",
                 registration.getActivityId(), "你已退出组织，1 条内部活动报名已取消：" + reason,
                 "registration:" + registration.getId() + ":leave");

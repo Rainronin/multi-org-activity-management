@@ -41,18 +41,43 @@ public class ActivityController {
 
     public record ActivityResponse(
         String id, String name, String description, String ownerMemberId, String ownerUsername,
-        String status, String proposal, String reviewNote, Long submittedBy, Long confirmedBy, String confirmType,
+        String status, String proposal, String reviewNote, String submittedBy, String confirmedBy, String confirmType,
         OffsetDateTime confirmedAt, OffsetDateTime startTime, OffsetDateTime endTime, String location,
         String budget, String registrationScope, Integer capacity, OffsetDateTime registrationStart,
         OffsetDateTime registrationEnd, boolean registrationOpen, Long version,
         // P6：执行、取消、归档与总结
         OffsetDateTime startedAt, OffsetDateTime endedAt, OffsetDateTime archivedAt, OffsetDateTime cancelledAt,
         String cancelReason, String reopenReason, Integer reopenCount,
-        String summary, OffsetDateTime summaryConfirmedAt, Long summaryConfirmedBy,
+        String summary, OffsetDateTime summaryConfirmedAt, String summaryConfirmedBy, boolean summaryNeedsReview,
         OffsetDateTime createdAt, OffsetDateTime updatedAt) {
     }
 
     public record ActivitiesResponse(List<ActivityResponse> items, int page, int pageSize, long total) {
+    }
+
+    public record ConfirmationResponse(String id, String kind, String content, Long activityVersion,
+        String sourceHash, String confirmedBy, String confirmedByUsername, OffsetDateTime confirmedAt,
+        String reopenReason, Integer reopenCount) {
+    }
+
+    public record ConfirmationsResponse(List<ConfirmationResponse> items, int page, int pageSize, long total) {
+    }
+
+    @GetMapping("/api/organizations/{orgId}/activities/{activityId}/confirmations")
+    public ResponseEntity<ConfirmationsResponse> confirmations(
+        @AuthenticationPrincipal AccountUserDetails principal,
+        @PathVariable("orgId") Long orgId,
+        @PathVariable("activityId") Long activityId,
+        @RequestParam(name = "page", defaultValue = "1") @Min(value = 1, message = "页码从 1 开始") int page,
+        @RequestParam(name = "pageSize", defaultValue = "20") @Min(value = 1, message = "每页至少 1 条")
+            @Max(value = 100, message = "每页最多 100 条") int pageSize) {
+        ActivityService.ConfirmationPage result = activityService.confirmations(
+            principal.getAccountId(), orgId, activityId, page, pageSize);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new ConfirmationsResponse(
+            result.items().stream().map(item -> new ConfirmationResponse(String.valueOf(item.id()), item.kind(),
+                item.content(), item.activityVersion(), item.sourceHash(), String.valueOf(item.confirmedBy()),
+                item.confirmedByUsername(), item.confirmedAt(), item.reopenReason(), item.reopenCount())).toList(),
+            result.page(), result.pageSize(), result.total()));
     }
 
     public record CreateActivityRequest(
@@ -283,7 +308,7 @@ public class ActivityController {
     }
 
     public record ExecutionRecordResponse(
-        String recordId, String category, String content, Long recordedBy, String recordedByUsername,
+        String recordId, String category, String content, String recordedBy, String recordedByUsername,
         java.time.OffsetDateTime createdAt) {
     }
 
@@ -376,7 +401,7 @@ public class ActivityController {
         List<ExecutionRecordResponse> items = activityService
             .listExecutionRecords(principal.getAccountId(), orgId, activityId).stream()
             .map(item -> new ExecutionRecordResponse(String.valueOf(item.recordId()), item.category(),
-                item.content(), item.recordedBy(), item.recordedByUsername(), item.createdAt()))
+                item.content(), String.valueOf(item.recordedBy()), item.recordedByUsername(), item.createdAt()))
             .toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new ExecutionRecordsResponse(items));
@@ -387,12 +412,13 @@ public class ActivityController {
         @AuthenticationPrincipal AccountUserDetails principal,
         @PathVariable("orgId") Long orgId,
         @PathVariable("activityId") Long activityId,
+        @RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
         @Valid @RequestBody ExecutionRecordRequest request) {
         ActivityService.ExecutionRecordItem item = activityService.addExecutionRecord(
-            principal.getAccountId(), orgId, activityId, request.category(), request.content());
+            principal.getAccountId(), orgId, activityId, request.category(), request.content(), requestKey);
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
             .body(new ExecutionRecordResponse(String.valueOf(item.recordId()), item.category(),
-                item.content(), item.recordedBy(), item.recordedByUsername(), item.createdAt()));
+                item.content(), String.valueOf(item.recordedBy()), item.recordedByUsername(), item.createdAt()));
     }
 
     @PatchMapping("/api/organizations/{orgId}/activities/{activityId}")
@@ -426,12 +452,15 @@ public class ActivityController {
         return new ActivityResponse(
             String.valueOf(item.activityId()), item.name(), item.description(), item.ownerMemberId(),
             item.ownerUsername(), item.status(), item.proposal(), item.reviewNote(),
-            item.submittedBy(), item.confirmedBy(), item.confirmType(),
+            item.submittedBy() == null ? null : String.valueOf(item.submittedBy()),
+            item.confirmedBy() == null ? null : String.valueOf(item.confirmedBy()), item.confirmType(),
             item.confirmedAt(), item.startTime(), item.endTime(), item.location(), item.budget(),
             item.registrationScope(), item.capacity(), item.registrationStart(), item.registrationEnd(),
             item.registrationOpen(), item.version(),
             item.startedAt(), item.endedAt(), item.archivedAt(), item.cancelledAt(), item.cancelReason(),
             item.reopenReason(), item.reopenCount(), item.summary(), item.summaryConfirmedAt(),
-            item.summaryConfirmedBy(), item.createdAt(), item.updatedAt());
+            item.summaryConfirmedBy() == null ? null : String.valueOf(item.summaryConfirmedBy()),
+            item.summaryNeedsReview(),
+            item.createdAt(), item.updatedAt());
     }
 }

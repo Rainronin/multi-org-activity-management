@@ -66,19 +66,20 @@ public class PublicActivityController {
 
     public record PublicFeedbackResponse(
         String feedbackId, Integer rating, String comment,
-        java.time.OffsetDateTime createdAt, java.time.OffsetDateTime updatedAt) {
+        java.time.OffsetDateTime createdAt, java.time.OffsetDateTime updatedAt, Long version) {
     }
 
     public record PublicFeedbackSummaryResponse(
         long count, String averageRating, boolean mineSubmitted, Integer myRating, String myComment,
-        boolean canSubmit, String submitBlockedReason) {
+        boolean canSubmit, String submitBlockedReason, Long myVersion) {
     }
 
     public record SubmitPublicFeedbackRequest(
         @jakarta.validation.constraints.NotNull(message = "请给出 1～5 分评分")
         @jakarta.validation.constraints.Min(value = 1, message = "评分最低 1 分")
         @jakarta.validation.constraints.Max(value = 5, message = "评分最高 5 分") Integer rating,
-        @jakarta.validation.constraints.Size(max = 2000, message = "文字建议不超过 2000 字符") String comment) {
+        @jakarta.validation.constraints.Size(max = 2000, message = "文字建议不超过 2000 字符") String comment,
+        @jakarta.validation.constraints.Min(value = 0, message = "版本不能为负数") Long version) {
     }
 
     /** 只返回汇总与本人一份，不向外部参与者暴露其他参与者的评分与文字。 */
@@ -93,7 +94,7 @@ public class PublicActivityController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new PublicFeedbackSummaryResponse(summary.count(), summary.averageRating(),
                 summary.mineSubmitted(), summary.myRating(), summary.myComment(),
-                summary.canSubmit(), summary.submitBlockedReason()));
+                summary.canSubmit(), summary.submitBlockedReason(), summary.myVersion()));
     }
 
     /** 提交或修改本人反馈：每账号每活动一份，需有资格依据（报名通过等）且活动处于复盘期。 */
@@ -107,10 +108,10 @@ public class PublicActivityController {
         Long orgId = publicActivityService.requirePublished(activityId).getOrgId();
         com.example.activity.modules.feedback.FeedbackService.FeedbackItem saved =
             feedbackService.submit(principal.getAccountId(), orgId, activityId, request.rating(),
-                request.comment() == null ? null : request.comment().trim());
+                request.comment() == null ? null : request.comment().trim(), request.version());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new PublicFeedbackResponse(String.valueOf(saved.feedbackId()), saved.rating(),
-                saved.comment(), saved.createdAt(), saved.updatedAt()));
+                saved.comment(), saved.createdAt(), saved.updatedAt(), saved.version()));
     }
 
     private void requireLogin(AccountUserDetails principal) {

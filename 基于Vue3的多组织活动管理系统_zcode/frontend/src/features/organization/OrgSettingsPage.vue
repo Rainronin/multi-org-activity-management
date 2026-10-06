@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, ref } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import AiConfigSection from '../ai/AiConfigSection.vue'
 
 // 组织设置（P8.1）：当前承载 AI 模型配置。配置数据归 modules/ai，
 // organization 模块不保存第二份密钥；权限由后端逐请求判定。
 const route = useRoute()
 const orgId = computed(() => String(route.params.orgId ?? ''))
+const aiConfig = ref<InstanceType<typeof AiConfigSection> | null>(null)
+async function confirmLeave(): Promise<boolean> {
+  return aiConfig.value ? aiConfig.value.confirmLeave() : true
+}
+onBeforeRouteLeave(confirmLeave)
+onBeforeRouteUpdate((to, from) => to.path === from.path ? true : confirmLeave())
 </script>
 
 <template>
@@ -25,7 +31,10 @@ const orgId = computed(() => String(route.params.orgId ?? ''))
         </p>
       </div>
     </div>
-    <AiConfigSection :org-id="orgId" />
+    <AiConfigSection
+      ref="aiConfig"
+      :org-id="orgId"
+    />
   </div>
 </template>
 

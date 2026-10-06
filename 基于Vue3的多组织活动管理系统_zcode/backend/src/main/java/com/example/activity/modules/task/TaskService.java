@@ -1,6 +1,7 @@
 package com.example.activity.modules.task;
 
 import com.example.activity.common.ApiException;
+import com.example.activity.common.RequestFingerprint;
 import com.example.activity.common.audit.AuditService;
 import com.example.activity.modules.activity.Activity;
 import com.example.activity.modules.activity.ActivityMapper;
@@ -9,6 +10,7 @@ import com.example.activity.modules.organization.OrganizationMemberMapper;
 import java.time.OffsetDateTime;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -82,15 +84,20 @@ public class TaskService {
      * 初始草稿、待确认与调整期都拒绝，避免从未确认的活动产生任务。
      */
     private void requirePreparationWritable(Context ctx) {
-        requireNotPendingReconfirmation(ctx);
+        requireTaskWritable(ctx);
         if (!ctx.activity().isPreparationWritable()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动尚未进入筹备",
                 "任务只能在活动确认后的筹备阶段创建。");
         }
     }
 
-    /** S07／计划书 6.1：调整期待确认期间任务只读，避免继续修改筹备数据。 */
-    private void requireNotPendingReconfirmation(Context ctx) {
+    /** 调整期待确认、取消及归档期间任务只读；创建的原键核对先返回已有结果。 */
+    private void requireTaskWritable(Context ctx) {
+        if (Activity.STATUS_ARCHIVED.equals(ctx.activity().getStatus())
+            || Activity.STATUS_CANCELLED.equals(ctx.activity().getStatus())) {
+            throw conflict("ACTIVITY_STATE_CONFLICT", "活动当前只读",
+                "归档或取消活动不能修改、推进或重新打开任务；归档更正请先重新打开活动。");
+        }
         if (ctx.activity().isPendingReconfirmation()) {
             throw new ApiException(HttpStatus.CONFLICT, "ACTIVITY_STATE_CONFLICT", "活动安排调整中",
                 "活动安排调整中，期间任务只读；重新确认后再修改。");
@@ -98,10 +105,22 @@ public class TaskService {
     }
 
     @Transactional
-    public TaskItem create(Long accountId, Long orgId, Long activityId, Task draft) {
+    public TaskItem create(Long accountId, Long orgId, Long activityId, Task draft, String requestKey) {
         Context ctx = requireWriteContext(accountId, orgId, activityId);
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以创建任务。");
+        }
+        if (draft.getPriority() == null) {
+            draft.setPriority("MEDIUM");
+        }
+        String key = normalizeRequestKey(requestKey);
+        String fingerprint = key == null ? null : RequestFingerprint.of(activityId, draft.getTitle(),
+            draft.getDescription(), draft.getAssigneeMemberId(), draft.getPriority(), draft.getDueAt());
+        if (key != null) {
+            Task existing = taskMapper.findByRequestKey(orgId, key);
+            if (existing != null) {
+                return replayCreate(existing, accountId, activityId, fingerprint);
+            }
         }
         // F02：新增筹备数据仅在已确认筹备期允许；初始草稿、待确认与调整期都拒绝
         requirePreparationWritable(ctx);
@@ -110,14 +129,35 @@ public class TaskService {
         draft.setActivityId(activityId);
         draft.setStatus(Task.STATUS_PENDING);
         draft.setCreatedBy(accountId);
-        if (draft.getPriority() == null) {
-            draft.setPriority("MEDIUM");
+        draft.setRequestKey(key);
+        draft.setRequestFingerprint(fingerprint);
+        try {
+            taskMapper.insert(draft);
+        } catch (DuplicateKeyException duplicate) {
+            throw conflict("REQUEST_IN_PROGRESS", "相同请求已被受理", "请保留原请求键核对创建结果。");
         }
-        taskMapper.insert(draft);
         notifyAssignment(orgId, activityId, draft);
-        auditService.record(accountId, "ACTIVITY", "TASK_CREATED", "task:" + draft.getId(),
-            null, java.util.Map.of("title", draft.getTitle(), "activityId", activityId));
-        return toItem(taskMapper.findById(draft.getId()));
+        Task created = taskMapper.findById(draft.getId());
+        recordTaskChange(accountId, "TASK_CREATED", null, created, java.util.Map.of("title", draft.getTitle()));
+        return toItem(created);
+    }
+
+    private String normalizeRequestKey(String requestKey) {
+        if (requestKey == null) return null; // 兼容既有脚本；正式页面始终携带键。
+        String key = requestKey.trim();
+        if (key.isEmpty() || key.length() > 64) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "输入无效",
+                "Idempotency-Key 必须为 1～64 字符。");
+        }
+        return key;
+    }
+
+    private TaskItem replayCreate(Task existing, Long accountId, Long activityId, String fingerprint) {
+        if (!existing.getActivityId().equals(activityId) || !existing.getCreatedBy().equals(accountId)
+            || !fingerprint.equals(existing.getRequestFingerprint())) {
+            throw conflict("IDEMPOTENCY_KEY_REUSED", "重复的防重键", "该请求键已用于不同的任务创建内容。");
+        }
+        return toItem(existing);
     }
 
     public List<TaskItem> listByActivity(Long accountId, Long orgId, Long activityId) {
@@ -139,7 +179,7 @@ public class TaskService {
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以编辑任务。");
         }
-        requireNotPendingReconfirmation(ctx);
+        requireTaskWritable(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         if (Task.STATUS_COMPLETED.equals(task.getStatus()) || Task.STATUS_CANCELLED.equals(task.getStatus())) {
             throw conflict("TASK_STATE_CONFLICT", "任务已完成或已取消", "如需调整请先重新打开任务。");
@@ -160,12 +200,12 @@ public class TaskService {
             throw conflict("EDIT_CONFLICT", "任务已被他人修改",
                 "该任务已由其他操作保存（当前版本 " + task.getVersion() + "），请刷新后重新编辑。");
         }
+        Task updated = taskMapper.findById(taskId);
         if (reassigned) {
-            notifyAssignment(orgId, activityId, taskMapper.findById(taskId));
+            notifyAssignment(orgId, activityId, updated);
         }
-        auditService.record(accountId, "ACTIVITY", "TASK_UPDATED", "task:" + taskId,
-            null, java.util.Map.of("activityId", activityId));
-        return toItem(taskMapper.findById(taskId));
+        recordTaskChange(accountId, "TASK_UPDATED", task, updated, null);
+        return toItem(updated);
     }
 
     /** 管理者状态操作：取消、重新打开及任意合法流转。 */
@@ -175,17 +215,16 @@ public class TaskService {
         if (!canManage(ctx)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "仅组织负责人或活动负责人可以取消或重新打开任务。");
         }
-        requireNotPendingReconfirmation(ctx);
+        requireTaskWritable(ctx);
         Task task = requireTask(orgId, activityId, taskId);
-        transition(task, toStatus, accountId);
-        return toItem(taskMapper.findById(taskId));
+        return toItem(transition(task, toStatus, accountId));
     }
 
     /** 普通成员推进本人任务：待处理→进行中／已完成，进行中→已完成（S05），不可取消或重开。 */
     @Transactional
     public TaskItem advanceOwn(Long accountId, Long orgId, Long activityId, Long taskId, String toStatus) {
         Context ctx = requireWriteContext(accountId, orgId, activityId);
-        requireNotPendingReconfirmation(ctx);
+        requireTaskWritable(ctx);
         Task task = requireTask(orgId, activityId, taskId);
         if (!task.getAssigneeMemberId().equals(ctx.actor().getId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问", "只能推进本人任务。");
@@ -198,11 +237,10 @@ public class TaskService {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_STATE_CONFLICT", "任务状态不允许此操作",
                 "普通成员只能把本人任务从待处理推进为进行中或已完成，再从进行中标记为已完成。");
         }
-        transition(task, toStatus, accountId);
-        return toItem(taskMapper.findById(taskId));
+        return toItem(transition(task, toStatus, accountId));
     }
 
-    private void transition(Task task, String toStatus, Long accountId) {
+    private Task transition(Task task, String toStatus, Long accountId) {
         String from = task.getStatus();
         boolean allowed = switch (toStatus) {
             case Task.STATUS_IN_PROGRESS -> Task.STATUS_PENDING.equals(from);
@@ -218,8 +256,9 @@ public class TaskService {
         if (taskMapper.transition(task.getId(), from, toStatus, Task.STATUS_COMPLETED.equals(toStatus)) != 1) {
             throw conflict("TASK_STATE_CONFLICT", "任务状态不允许此操作", "任务状态已变化，请刷新后查看。");
         }
-        auditService.record(accountId, "ACTIVITY", "TASK_STATUS_" + toStatus, "task:" + task.getId(),
-            null, java.util.Map.of("from", from, "activityId", task.getActivityId()));
+        Task updated = taskMapper.findById(task.getId());
+        recordTaskChange(accountId, "TASK_STATUS_" + toStatus, task, updated, java.util.Map.of("from", from));
+        return updated;
     }
 
     private void validateAssignee(Long orgId, Long assigneeMemberId) {
@@ -248,11 +287,26 @@ public class TaskService {
     }
 
     private Task requireTask(Long orgId, Long activityId, Long taskId) {
-        Task task = taskMapper.findById(taskId);
+        Task task = taskMapper.findByIdForUpdate(taskId);
         if (task == null || !task.getOrgId().equals(orgId) || !task.getActivityId().equals(activityId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在", "任务不存在或无权访问。");
         }
         return task;
+    }
+
+    private void recordTaskChange(Long accountId, String action, Task before, Task after, java.util.Map<String, ?> detail) {
+        java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
+        if (detail != null) entry.putAll(detail);
+        entry.put("orgId", after.getOrgId());
+        entry.put("activityId", after.getActivityId());
+        entry.put("before", auditState(before));
+        entry.put("after", auditState(after));
+        auditService.record(accountId, "ACTIVITY", action, "task:" + after.getId(), null, entry);
+    }
+
+    public static java.util.Map<String, Object> auditState(Task task) {
+        return task == null ? null : java.util.Map.of("status", task.getStatus(), "version", task.getVersion(),
+            "assigneeMemberId", task.getAssigneeMemberId(), "priority", task.getPriority(), "completed", task.getCompletedAt() != null);
     }
 
     private ApiException conflict(String code, String title, String detail) {

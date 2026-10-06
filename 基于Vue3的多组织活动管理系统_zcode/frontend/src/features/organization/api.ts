@@ -14,10 +14,11 @@ export async function fetchMyOrganizations(): Promise<OrganizationDirectoryItem[
   return response.data.items
 }
 
-export async function createOrganization(input: CreateOrganizationInput): Promise<OrganizationDirectoryItem> {
+export async function createOrganization(input: CreateOrganizationInput, requestKey: string): Promise<OrganizationDirectoryItem> {
   const response = await request<OrganizationDirectoryItem & { joinedAt: string }>('/api/organizations', {
     method: 'POST',
     json: input,
+    headers: { 'Idempotency-Key': requestKey },
   })
   return {
     id: response.data.id,
@@ -58,10 +59,12 @@ export async function fetchMembers(
 export async function createInvitation(
   orgId: string,
   input: { expiresInDays?: number; maxUses?: number },
+  requestKey: string,
 ): Promise<InvitationCreated> {
   const response = await request<InvitationCreated>(`/api/organizations/${encodeURIComponent(orgId)}/invitations`, {
     method: 'POST',
     json: input,
+    headers: { 'Idempotency-Key': requestKey },
   })
   return response.data
 }

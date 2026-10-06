@@ -73,6 +73,79 @@ class OrganizationFlowTest extends ActivityTestBase {
             result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8), "$.id"));
     }
 
+    private MvcResult createWithKey(TestSession actor, String key, String body) throws Exception {
+        return mockMvc.perform(post("/api/organizations").with(csrf()).session(actor.session())
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andReturn();
+    }
+
+    @Test
+    void creationKeyReplaysOriginalAndChecksCurrentMembership() throws Exception {
+        TestSession owner = registerAndLogin();
+        TestSession other = registerAndLogin();
+        String key = java.util.UUID.randomUUID().toString();
+        String body = "{\"name\":\"创建结果核对\",\"description\":\"原创建内容\"}";
+        MvcResult first = createWithKey(owner, key, body);
+        org.assertj.core.api.Assertions.assertThat(first.getResponse().getStatus()).isEqualTo(201);
+        JsonNode created = objectMapper.readTree(first.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        MvcResult replay = createWithKey(owner, key, body);
+        org.assertj.core.api.Assertions.assertThat(replay.getResponse().getStatus()).isEqualTo(201);
+        JsonNode replayed = objectMapper.readTree(replay.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        org.assertj.core.api.Assertions.assertThat(replayed.get("id")).isEqualTo(created.get("id"));
+        org.assertj.core.api.Assertions.assertThat(replayed.get("joinedAt")).isEqualTo(created.get("joinedAt"));
+        MvcResult reused = createWithKey(owner, key, "{\"name\":\"不同创建内容\"}");
+        org.assertj.core.api.Assertions.assertThat(reused.getResponse().getStatus()).isEqualTo(409);
+        org.assertj.core.api.Assertions.assertThat(reused.getResponse().getContentAsString()).contains("IDEMPOTENCY_KEY_REUSED");
+        JsonNode separate = objectMapper.readTree(createWithKey(other, key, body).getResponse()
+            .getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        org.assertj.core.api.Assertions.assertThat(separate.get("id")).isNotEqualTo(created.get("id"));
+        org.assertj.core.api.Assertions.assertThat(createWithKey(owner, " ", body).getResponse().getStatus()).isEqualTo(400);
+        org.assertj.core.api.Assertions.assertThat(createWithKey(owner, "x".repeat(65), body).getResponse().getStatus()).isEqualTo(400);
+
+        Long orgId = created.get("id").asLong();
+        Long creatorId = jdbcTemplate.queryForObject("SELECT id FROM account WHERE username = ?", Long.class, owner.username());
+        Long otherId = jdbcTemplate.queryForObject("SELECT id FROM account WHERE username = ?", Long.class, other.username());
+        // 仅准备测试库当前身份：核对接口须重新授权，不能重放旧 OWNER 视图。
+        jdbcTemplate.update("INSERT INTO organization_member (org_id, account_id, role, status) VALUES (?, ?, 'OWNER', 'ACTIVE')", orgId, otherId);
+        jdbcTemplate.update("UPDATE organization_member SET role = 'MEMBER' WHERE org_id = ? AND account_id = ?", orgId, creatorId);
+        JsonNode demoted = objectMapper.readTree(createWithKey(owner, key, body).getResponse()
+            .getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        org.assertj.core.api.Assertions.assertThat(demoted.get("role").asText()).isEqualTo("MEMBER");
+        jdbcTemplate.update("UPDATE organization_member SET status = 'REMOVED' WHERE org_id = ? AND account_id = ?", orgId, creatorId);
+        org.assertj.core.api.Assertions.assertThat(createWithKey(owner, key, body).getResponse().getStatus()).isEqualTo(404);
+        org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'ORGANIZATION_CREATED' AND target = ?", Integer.class, "organization:" + orgId)).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentCreationKeyCreatesOneOrganizationAndMembership() throws Exception {
+        TestSession owner = registerAndLogin();
+        String key = java.util.UUID.randomUUID().toString();
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(6)) {
+            var calls = new java.util.ArrayList<java.util.concurrent.Future<MvcResult>>();
+            for (int i = 0; i < 6; i++) calls.add(pool.submit(() -> {
+                gate.await();
+                return createWithKey(owner, key, "{\"name\":\"并发创建核对\"}");
+            }));
+            gate.countDown();
+            var ids = new java.util.HashSet<Long>();
+            for (var call : calls) {
+                MvcResult result = call.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                org.assertj.core.api.Assertions.assertThat(result.getResponse().getStatus()).isIn(201, 409);
+                if (result.getResponse().getStatus() == 201) ids.add(objectMapper.readTree(
+                    result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).get("id").asLong());
+                else org.assertj.core.api.Assertions.assertThat(result.getResponse().getContentAsString()).contains("REQUEST_IN_PROGRESS");
+            }
+            org.assertj.core.api.Assertions.assertThat(ids).hasSize(1);
+            Long orgId = ids.iterator().next();
+            org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM organization_member WHERE org_id = ?", Integer.class, orgId)).isEqualTo(1);
+            org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'ORGANIZATION_CREATED' AND target = ?", Integer.class, "organization:" + orgId)).isEqualTo(1);
+        }
+    }
+
     @Test
     void creatorBecomesOwnerAndDetailVisibleToMember() throws Exception {
         TestSession owner = registerAndLogin();

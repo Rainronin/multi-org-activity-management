@@ -13,5 +13,6 @@ public interface AuditMapper {
         @Param("action") String action,
         @Param("target") String target,
         @Param("reason") String reason,
-        @Param("detail") String detail);
+        @Param("detail") String detail,
+        @Param("requestId") String requestId);
 }
