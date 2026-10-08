@@ -149,19 +149,19 @@ public class AiConfigService {
         target.setOutputLimitField(outputLimitField);
         target.setTimeoutSeconds(timeoutSeconds);
         target.setOperatorAccountId(accountId);
+        // 保存即生效；无密钥或明确清除密钥时保持不可用，保存不调用厂商。
+        target.setEnabled(!command.clearApiKey() && (keyProvided || (existing != null && existing.hasApiKey())));
         if (keyProvided) {
             target.setApiKeyCipher(keyCipher.encrypt(orgId, command.apiKey().trim()));
             target.setApiKeyKeyId(keyCipher.currentKeyId());
         }
         if (existing == null) {
             target.setConnectionRevision(1);
-            target.setEnabled(false);
             configMapper.insert(target);
         } else {
             target.setVersion(existing.getVersion());
             target.setConnectionRevision(existing.getConnectionRevision() + (revisionChanged ? 1 : 0));
-            // 配置变化使旧测试失效：需要重新测试后才能启用，避免旧测试结果标记新配置
-            target.setEnabled(revisionChanged ? false : existing.isEnabled());
+            // 配置变化清空旧诊断结果，不能将旧测试标记到新配置。
             if (!revisionChanged) {
                 target.setTestedRevision(existing.getTestedRevision());
                 target.setTestedAt(existing.getTestedAt());
@@ -178,7 +178,7 @@ public class AiConfigService {
         return view(configMapper.findByOrgId(orgId), true);
     }
 
-    /** 启用：只接受当前配置版本的成功测试结果。 */
+    /** 恢复已停用配置：校验当前版本与密钥，连接测试为可选诊断。 */
     @Transactional
     public AiConfigView enable(Long accountId, Long orgId, Long version) {
         organizationMapper.lockOrganization(orgId);
@@ -186,11 +186,7 @@ public class AiConfigService {
         AiConfig config = requireConfig(orgId);
         requireVersion(config, version);
         if (!config.hasApiKey()) {
-            throw conflict("AI_KEY_MISSING", "尚未配置密钥", "请先保存密钥并测试连接，再启用模型。");
-        }
-        if (!config.isTestedForCurrentRevision()) {
-            throw conflict("AI_TEST_REQUIRED", "当前配置尚未通过连接测试",
-                "请先对当前版本执行连接测试，测试通过后才能启用。");
+            throw conflict("AI_KEY_MISSING", "尚未配置密钥", "请先填写并保存密钥。");
         }
         if (configMapper.setEnabled(orgId, true, accountId, version) != 1) {
             throw conflict("EDIT_CONFLICT", "配置已被他人修改", "配置版本已变化，请刷新后重试。");
@@ -241,19 +237,15 @@ public class AiConfigService {
         return config;
     }
 
-    /** 生成与连接测试的前置条件：已配置、已启用、有密钥且当前版本测试通过。 */
+    /** 生成的前置条件：已配置、已启用且有密钥；连接测试不作为开关。 */
     public AiConfig requireUsable(Long orgId) {
         AiConfig config = configMapper.findByOrgId(orgId);
         if (config == null) {
             throw conflict("AI_NOT_CONFIGURED", "尚未配置模型",
-                "请先在「组织设置 → AI 模型」保存并测试配置；方案与总结仍可手工编写。");
+                "请先在「组织设置 → AI 模型」保存配置；方案与总结仍可手工编写。");
         }
         if (!config.hasApiKey()) {
-            throw conflict("AI_KEY_MISSING", "尚未配置密钥", "请在组织设置中填写密钥并测试连接。");
-        }
-        if (!config.isTestedForCurrentRevision()) {
-            throw conflict("AI_TEST_REQUIRED", "当前配置尚未通过连接测试",
-                "请先测试当前配置版本，通过并启用后才能生成。");
+            throw conflict("AI_KEY_MISSING", "尚未配置密钥", "请在组织设置中填写并保存密钥。");
         }
         if (!config.isEnabled()) {
             throw conflict("AI_NOT_ENABLED", "模型配置未启用",
@@ -282,13 +274,11 @@ public class AiConfigService {
                 "尚未配置模型，方案与总结可手工编写", "NOT_CONFIGURED",
                 null, null, null, null, null, null, null, false, false, null, null, null, false, null, null);
         }
-        boolean available = config.isEnabled() && config.hasApiKey() && config.isTestedForCurrentRevision();
+        boolean available = config.isEnabled() && config.hasApiKey();
         String state = !config.hasApiKey() ? "NEEDS_KEY"
-            : !config.isTestedForCurrentRevision() ? "NEEDS_TEST"
             : config.isEnabled() ? "ENABLED" : "DISABLED";
         String hint = switch (state) {
             case "NEEDS_KEY" -> "尚未配置密钥";
-            case "NEEDS_TEST" -> "当前配置尚未通过连接测试";
             case "DISABLED" -> "模型配置已停用，可继续手工编写";
             default -> "可用：" + config.getModel();
         };

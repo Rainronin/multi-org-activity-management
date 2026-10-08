@@ -7,7 +7,7 @@ import java.time.OffsetDateTime;
  *
  * <p>{@code version} 用于全部保存与启停的乐观锁；{@code connectionRevision} 只在协议、端点、模型、
  * 认证方式、密钥与调用参数变化时递增，测试成功绑定该版本；{@code testedRevision} 与当前版本不一致时
- * 不能启用，也不是可生成状态。密钥只以 AES-GCM 密文保存，读取 DTO 不回显。
+ * 表示该配置尚无有效诊断结果，不阻止保存后生成。密钥只以 AES-GCM 密文保存，读取 DTO 不回显。
  */
 public class AiConfig {
 
@@ -48,7 +48,7 @@ public class AiConfig {
         return apiKeyCipher != null && apiKeyCipher.length > 0;
     }
 
-    /** 当前版本的测试是否通过（启用与生成的前置条件）。 */
+    /** 当前版本的连接诊断是否通过（不作为启用或生成的前置条件）。 */
     public boolean isTestedForCurrentRevision() {
         return testedRevision != null && testedRevision.equals(connectionRevision);
     }

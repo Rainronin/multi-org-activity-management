@@ -10,12 +10,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.activity.support.FlowTestSupport;
 import com.example.activity.support.StubModelServer;
+import com.example.activity.modules.ai.AiProperties;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -25,7 +27,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
- * P8.1 组织模型配置回归：密钥加密保存且不回显、版本与 connectionRevision 合同、测试与启用的先后关系、
+ * P8.1 组织模型配置回归：密钥加密保存且不回显、保存即生效、版本与 connectionRevision 合同、
  * 配置变化使旧测试失效，以及非负责人只读可用状态。
  */
 @SpringBootTest
@@ -38,6 +40,12 @@ class AiConfigFlowTest extends FlowTestSupport {
         .encodeToString("0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8));
 
     private static StubModelServer stub;
+
+    @Autowired
+    private AiProperties properties;
+
+    @Autowired
+    private com.example.activity.modules.ai.AiConfigService configService;
 
     @DynamicPropertySource
     static void aiProperties(DynamicPropertyRegistry registry) {
@@ -94,6 +102,64 @@ class AiConfigFlowTest extends FlowTestSupport {
     }
 
     @Test
+    void missingDeploymentMasterKeyExplainsAdministratorActionWithoutSaving() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String originalMasterKey = properties.getMasterKey();
+        try {
+            properties.setMasterKey("");
+            MvcResult result = mockMvc.perform(put(configPath(orgId)).with(csrf()).session(owner.session())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(saveBody("ANTHROPIC_MESSAGES", stub.baseUrl() + "/v1/messages", "X_API_KEY", API_KEY, null)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("AI_KEY_UNAVAILABLE"))
+                .andReturn();
+            assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_config WHERE org_id = ?", Long.class, orgId))
+                .isZero();
+            assertThat(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .contains("管理员", "ACTIVITY_AI_MASTER_KEY", "重启后端")
+                .doesNotContain("请重新配置组织密钥", API_KEY);
+        } finally {
+            properties.setMasterKey(originalMasterKey);
+        }
+        save(orgId, owner, "ANTHROPIC_MESSAGES", stub.baseUrl() + "/v1/messages", API_KEY, null);
+    }
+
+    @Test
+    void saveImmediatelyEnablesWithoutCallingOrRequiringConnectionTest() throws Exception {
+        TestSession owner = registerAndLogin();
+        Long orgId = createOrg(owner);
+        String endpoint = stub.baseUrl() + "/v1/messages";
+        save(orgId, owner, "ANTHROPIC_MESSAGES", endpoint, API_KEY, null);
+        mockMvc.perform(get(configPath(orgId)).session(owner.session()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.enabled").value(true))
+            .andExpect(jsonPath("$.available").value(true))
+            .andExpect(jsonPath("$.testedForCurrentRevision").value(false));
+        assertThat(configService.requireUsable(orgId).isEnabled()).isTrue();
+        assertThat(stub.callCount()).isZero();
+        long version = configVersion(orgId);
+        mockMvc.perform(post(configPath(orgId) + "/disable").with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version + "}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.available").value(false));
+        save(orgId, owner, "ANTHROPIC_MESSAGES", endpoint, null, configVersion(orgId));
+        assertThat(configService.requireUsable(orgId).isEnabled()).isTrue();
+        assertThat(stub.callCount()).isZero();
+        MvcResult created = mockMvc.perform(post("/api/organizations/" + orgId + "/activities")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(activityBody("即存即用活动", memberIdOf(orgId, owner.username()), "2027-09-06T14:00:00+08:00")))
+            .andExpect(status().isCreated()).andReturn();
+        String activityId = readField(created, "$.id");
+        mockMvc.perform(post("/api/organizations/" + orgId + "/activities/" + activityId + "/ai/generations")
+                .header("Idempotency-Key", newIdempotencyKey()).with(csrf()).session(owner.session())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"type\":\"ACTIVITY_PLAN\",\"conditions\":{\"topic\":\"即存即用活动\"}}"))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("SUCCEEDED"));
+        assertThat(stub.callCount()).isEqualTo(1);
+    }
+
+    @Test
     void configIsEncryptedSavedWithoutEchoAndGuardedByVersion() throws Exception {
         TestSession owner = registerAndLogin();
         Long orgId = createOrg(owner);
@@ -101,7 +167,7 @@ class AiConfigFlowTest extends FlowTestSupport {
 
         MvcResult saved = save(orgId, owner, "ANTHROPIC_MESSAGES", endpoint, API_KEY, null);
         String body = saved.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        assertThat(body).doesNotContain(API_KEY).contains("\"hasApiKey\":true", "\"enabled\":false",
+        assertThat(body).doesNotContain(API_KEY).contains("\"hasApiKey\":true", "\"enabled\":true",
             "\"connectionRevision\":1", "\"testedRevision\":null", "\"viewerRole\":\"OWNER\"");
         long version = configVersion(orgId);
 
@@ -136,11 +202,9 @@ class AiConfigFlowTest extends FlowTestSupport {
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.fieldErrors[0].field").value("version"));
 
-        // 未通过当前版本测试不能启用
-        mockMvc.perform(post(configPath(orgId) + "/enable").with(csrf()).session(owner.session())
-                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version + "}"))
-            .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.code").value("AI_TEST_REQUIRED"));
+        // 无连接测试也已生效；保存不会调用厂商。
+        assertThat(configService.requireUsable(orgId).isEnabled()).isTrue();
+        assertThat(stub.callCount()).isZero();
 
         // 修改协议或地址必须重新输入密钥，不允许把旧密钥静默发到新地址
         mockMvc.perform(put(configPath(orgId)).with(csrf()).session(owner.session())
@@ -208,7 +272,7 @@ class AiConfigFlowTest extends FlowTestSupport {
     }
 
     @Test
-    void connectionTestBindsRevisionThenEnablesAndSurvivesEnable() throws Exception {
+    void optionalConnectionTestBindsRevisionAndConfigurationChangesStayEnabled() throws Exception {
         TestSession owner = registerAndLogin();
         Long orgId = createOrg(owner);
         String endpoint = stub.baseUrl() + "/v1/messages";
@@ -238,7 +302,7 @@ class AiConfigFlowTest extends FlowTestSupport {
             .andReturn();
         long afterEnable = configVersion(orgId);
 
-        // 修改调用参数（输出上限）使 revision 递增、需要重新测试、并且不再可用
+        // 修改调用参数使 revision 递增、清空旧诊断，保存后仍立即生效。
         mockMvc.perform(put(configPath(orgId)).with(csrf()).session(owner.session())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(("{\"protocol\":\"ANTHROPIC_MESSAGES\",\"endpoint\":\"%s\",\"model\":\"stub-model\","
@@ -247,17 +311,14 @@ class AiConfigFlowTest extends FlowTestSupport {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.connectionRevision").value(2))
             .andExpect(jsonPath("$.testedRevision").value(org.hamcrest.Matchers.nullValue()))
-            .andExpect(jsonPath("$.enabled").value(false))
-            .andExpect(jsonPath("$.configState").value("NEEDS_TEST"));
+            .andExpect(jsonPath("$.enabled").value(true))
+            .andExpect(jsonPath("$.available").value(true))
+            .andExpect(jsonPath("$.configState").value("ENABLED"));
         long afterChange = configVersion(orgId);
 
-        // 旧版本测试通过不能标记新配置：直接启用仍被拒绝
-        mockMvc.perform(post(configPath(orgId) + "/enable").with(csrf()).session(owner.session())
-                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + afterChange + "}"))
-            .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.code").value("AI_TEST_REQUIRED"));
+        assertThat(configService.requireUsable(orgId).isTestedForCurrentRevision()).isFalse();
 
-        // 密钥沿用（未传 apiKey）：保留原密文，重新测试后即可再次启用
+        // 密钥沿用（未传 apiKey）：保留原密文，可选测试只更新对应修订的诊断记录。
         MvcResult retested = mockMvc.perform(post(configPath(orgId) + "/test").with(csrf())
                 .session(owner.session()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + afterChange + "}"))

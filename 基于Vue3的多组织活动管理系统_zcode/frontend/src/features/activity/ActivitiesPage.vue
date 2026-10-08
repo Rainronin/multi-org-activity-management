@@ -208,6 +208,13 @@ async function loadActivities(): Promise<void> {
     items.value = result.items
     total.value = result.total
     amOwner.value = organization.role === 'OWNER'
+    // 工作台的无草稿入口只打开现有表单；权限仍以本次组织读取结果为准。
+    if (route.query.create === '1') {
+      const query = { ...route.query }
+      delete query.create
+      void router.replace({ query })
+      if (amOwner.value) openCreate()
+    }
   } catch (error) {
     if (seq !== requestSeq || targetOrgId !== orgId.value || gen !== session.generation) {
       return

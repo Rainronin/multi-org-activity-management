@@ -50,14 +50,14 @@ public class AiKeyCipher {
         } catch (ApiException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw unavailable("密钥加密失败", ex);
+            throw unavailable("密钥加密失败，请联系管理员检查部署环境", ex);
         }
     }
 
     /** 解密：keyId 与密文不一致（主密钥轮换或换库）时报错并允许重新配置。 */
     public String decrypt(long orgId, byte[] sealed, String keyId) {
         if (sealed == null || sealed.length <= NONCE_LENGTH) {
-            throw unavailable("密钥密文不可用", null);
+            throw unavailable("密钥密文不可用，请重新配置组织密钥", null);
         }
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
@@ -69,7 +69,7 @@ public class AiKeyCipher {
         } catch (ApiException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw unavailable("密钥无法解密", ex);
+            throw unavailable("密钥无法解密，请由管理员核对主密钥与数据库是否匹配，恢复正确主密钥或重新配置组织密钥", ex);
         }
     }
 
@@ -85,23 +85,23 @@ public class AiKeyCipher {
     private SecretKey masterKey() {
         String configured = properties.getMasterKey();
         if (configured == null || configured.isBlank()) {
-            throw unavailable("部署环境未提供 AI 主密钥", null);
+            throw unavailable("部署环境未提供 AI 主密钥；请由管理员配置 ACTIVITY_AI_MASTER_KEY（或 app.ai.master-key）并重启后端", null);
         }
         byte[] decoded;
         try {
             decoded = Base64.getDecoder().decode(configured.trim());
         } catch (IllegalArgumentException ex) {
-            throw unavailable("AI 主密钥不是合法的 Base64", ex);
+            throw unavailable("AI 主密钥不是合法的 Base64，请由管理员修正部署配置并重启后端", ex);
         }
         if (decoded.length != 32) {
-            throw unavailable("AI 主密钥长度必须为 32 字节", null);
+            throw unavailable("AI 主密钥长度必须为 32 字节，请由管理员修正部署配置并重启后端", null);
         }
         return new SecretKeySpec(decoded, "AES");
     }
 
     private ApiException unavailable(String detail, Throwable cause) {
         ApiException exception = new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "AI_KEY_UNAVAILABLE",
-            "AI 密钥不可用", detail + "；请重新配置组织密钥，手工编写方案与总结不受影响。");
+            "AI 密钥不可用", detail + "；手工编写方案与总结不受影响。");
         if (cause != null) {
             exception.initCause(cause);
         }

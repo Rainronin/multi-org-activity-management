@@ -235,7 +235,9 @@ async function save(): Promise<void> {
       timeoutSeconds: timeoutSeconds.value,
       version: config.value?.version ?? null,
     }))
-    noticeText.value = '配置已保存。保存本身不调用模型；修改后需要重新测试才能启用。'
+    noticeText.value = config.value?.enabled
+      ? '配置已保存并生效，可在活动方案与复盘中使用 AI；测试连接为可选操作。'
+      : '配置已保存。请填写并保存密钥后使用 AI。'
   } catch (error) {
     reportError(error, '模型配置保存失败，请重试。', gen)
   } finally {
@@ -277,7 +279,8 @@ async function test(): Promise<void> {
     }
     lastTestFailed.value = result.status === 'FAILED'
     pendingTest.value = null
-    noticeText.value = `${result.message}（已记录测试版本 r${result.testedRevision}，测试会消耗少量额度）`
+    const revision = result.testedRevision === null ? '' : `已记录测试版本 r${result.testedRevision}，`
+    noticeText.value = `${result.message}（${revision}测试会消耗少量额度）`
     const refreshed = await fetchAiConfig(pending.orgId)
     if (isCurrent()) applyConfig(refreshed)
   } catch (error) {
@@ -307,7 +310,7 @@ async function toggleEnabled(enabled: boolean): Promise<void> {
   } catch (error) {
     await load()
     if (gen === session.generation) {
-      reportError(error, enabled ? '启用失败，请先对当前版本完成连接测试。' : '停用失败，请重试。', gen)
+      reportError(error, enabled ? '启用失败，请核对已保存配置与密钥。' : '停用失败，请重试。', gen)
     }
   } finally {
     mutating.value = false
@@ -354,8 +357,8 @@ defineExpose({ reload: load, confirmLeave })
       </ElTag>
     </div>
     <p class="ai-config__intro">
-      活动总结与方案生成共用本组织的一套模型配置。密钥只提交到本系统后端并加密保存，读取不回显；
-      未配置、停用或调用失败时，方案与总结仍可手工编写。
+      活动总结与方案生成共用本组织的一套模型配置，保存后立即生效，无需另行测试或启用。
+      密钥加密保存，读取不回显；未配置、停用或调用失败时，仍可手工编写。
     </p>
 
     <!-- 加载占位与真实表单同构：按字段给出标签与控件两行，不整段灰条（UI 规范第 10 节）。 -->
@@ -566,7 +569,7 @@ defineExpose({ reload: load, confirmLeave })
             data-ai-action="save"
             @click="save"
           >
-            保存配置
+            保存并生效
           </ElButton>
           <ElButton
             :loading="testing"
@@ -581,11 +584,11 @@ defineExpose({ reload: load, confirmLeave })
             type="success"
             plain
             :loading="mutating"
-            :disabled="busy || !config.testedForCurrentRevision || !hasApiKey"
+            :disabled="busy || !hasApiKey"
             data-ai-action="enable"
             @click="toggleEnabled(true)"
           >
-            启用
+            恢复启用
           </ElButton>
           <ElButton
             v-else
@@ -632,7 +635,7 @@ defineExpose({ reload: load, confirmLeave })
         </dl>
         <p class="ai-config__hint">
           测试只发送固定短文本，不发送组织资料，但可能消耗少量额度；测试通过只证明当次基础文本调用可用。
-          未通过当前修订的测试不能启用，启用后修改任何调用参数都需要重新测试。
+          保存不会调用模型或消耗额度；测试连接仅用于诊断，修改参数后可按需重新测试。
         </p>
       </ElForm>
     </template>

@@ -51,7 +51,7 @@ export interface SaveAiConfigPayload {
 export interface AiConnectionTestResult {
   status: string
   message: string
-  testedRevision: number
+  testedRevision: number | null
   requestId: string | null
   testedAt: string
 }

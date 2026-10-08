@@ -2,5 +2,5 @@
 # URL 由 ActivityTestBase 强制为 activity_test，此处只需提供测试库凭据。
 spring:
   datasource:
-    username: activity
+    username: activity_test
     password: "本机测试库密码"

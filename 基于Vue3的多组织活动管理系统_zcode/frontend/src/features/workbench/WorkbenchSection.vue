@@ -79,6 +79,9 @@ const aiCandidate = computed<ActivityItem | null>(() => {
 })
 const isManager = computed(() => workbench.value?.role !== 'MEMBER')
 const aiAvailable = computed(() => aiConfig.value?.available === true)
+const aiOpenLabel = computed(() => aiCandidate.value
+  ? `打开${aiMode.value === '总结' ? '复盘' : '方案'}编辑`
+  : aiMode.value === '方案' && workbench.value?.role === 'OWNER' ? '创建活动草稿' : '查看活动')
 
 function card(key: string): WorkbenchCard | undefined {
   const all = [...(workbench.value?.cards ?? []), ...(workbench.value?.myCards ?? [])]
@@ -212,6 +215,15 @@ function openActivity(activity: ActivityItem | null, tab?: 'proposal' | 'lifecyc
   if (activity) {
     const query = tab ? `?tab=${tab}` : ''
     void router.push(`/org/${orgId.value}/activities/${activity.id}${query}`)
+  }
+}
+
+function openAiEditor() {
+  if (aiCandidate.value) {
+    openActivity(aiCandidate.value, aiMode.value === '总结' ? 'lifecycle' : 'proposal')
+  } else {
+    const create = aiMode.value === '方案' && workbench.value?.role === 'OWNER'
+    open(`/org/${orgId.value}/activities${create ? '?create=1' : ''}`)
   }
 }
 
@@ -605,20 +617,29 @@ defineExpose({ reload: load })
             <span>{{ aiMode === '总结' ? '复盘，从已有记录开始' : '让想法，变成可讨论的方案' }}</span>
             <h3>{{ aiCandidate?.name ?? (aiMode === '总结' ? '暂无复盘中的活动' : '先创建一份活动草稿') }}</h3>
             <p>
-              {{ aiMode === '总结'
-                ? '汇总任务、报名与经费，补充真实反馈，形成可编辑的总结草稿。'
-                : '围绕活动目标整理流程、分工与注意事项，待确认的信息清楚标出。' }}
+              {{ !aiCandidate
+                ? aiMode === '总结' ? '活动进入复盘阶段后，可在这里编写总结或使用 AI 生成草稿。' : '先创建并保存活动草稿，再进入方案编辑使用 AI。活动草稿由组织负责人创建。'
+                : aiMode === '总结'
+                  ? '汇总任务、报名与经费，补充真实反馈，形成可编辑的总结草稿。'
+                  : '围绕活动目标整理流程、分工与注意事项，待确认的信息清楚标出。' }}
             </p>
           </div>
           <div class="assistant-card__bottom">
             <ElButton
-              :disabled="!aiCandidate"
               data-ai-open
-              @click="openActivity(aiCandidate, aiMode === '总结' ? 'lifecycle' : 'proposal')"
+              @click="openAiEditor"
             >
-              打开{{ aiMode === '总结' ? '复盘' : '方案' }}编辑<ArrowRight />
+              {{ aiOpenLabel }}<ArrowRight />
             </ElButton>
             <small>{{ aiConfig?.availabilityHint ?? '模型状态暂不可用，可前往编辑区手工编写' }}</small>
+            <ElButton
+              v-if="!aiAvailable && workbench.role === 'OWNER'"
+              link
+              data-ai-settings
+              @click="open(`/org/${orgId}/settings`)"
+            >
+              前往模型设置
+            </ElButton>
           </div>
           <ElTag
             v-if="aiAvailable && aiConfig?.model"

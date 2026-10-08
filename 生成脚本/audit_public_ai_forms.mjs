@@ -127,7 +127,7 @@ try {
         savedModel = input.model
         configVersion++
         await waitHeldConfigAction('save')
-        await route.fulfill({ json: config('1') })
+        await route.fulfill({ json: { ...config('1'), enabled: true, available: true, configState: 'ENABLED' } })
       }
       return
     }
@@ -280,7 +280,7 @@ try {
     await keyInput.fill('fixture-key-never-sent')
   }
   heldSave.release()
-  await page.getByText('配置已保存。', { exact: false }).waitFor()
+  await page.getByText('配置已保存并生效', { exact: false }).waitFor()
   console.log(JSON.stringify({ saveLocked,
     inputOverwritten: !saveLocked && await model.inputValue() === '未保存模型',
     newKeyCleared: !saveLocked && await keyInput.inputValue() === '' }))
