@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import StatusMark from '../../shared/motion/StatusMark.vue'
 import { ElAlert, ElButton, ElInput, ElInputNumber, ElTag } from 'element-plus'
 import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { newIdempotencyKey } from '../../shared/http/idempotency'
@@ -255,60 +256,65 @@ defineExpose({
             placeholder="例如 新成员与老成员"
           />
         </label>
-        <label
-          class="ai-draft__field"
-          for="ai-plan-participants"
-        >
-          <span>预计人数</span>
-          <ElInputNumber
-            id="ai-plan-participants"
-            v-model="localConditions.expectedParticipants"
-            :disabled="Boolean(pendingGeneration)"
-            :min="1"
-            :max="100000"
-            data-ai-field="expectedParticipants"
-          />
-        </label>
-        <label
-          class="ai-draft__field"
-          for="ai-plan-budget"
-        >
-          <span>预算条件</span>
-          <ElInput
-            id="ai-plan-budget"
-            v-model="localConditions.budget"
-            :disabled="Boolean(pendingGeneration)"
-            data-ai-field="budget"
-            placeholder="例如 不超过 3000 元"
-          />
-        </label>
-        <label
-          class="ai-draft__field"
-          for="ai-plan-time-place"
-        >
-          <span>时间地点条件</span>
-          <ElInput
-            id="ai-plan-time-place"
-            v-model="localConditions.timePlace"
-            :disabled="Boolean(pendingGeneration)"
-            data-ai-field="timePlace"
-            placeholder="例如 九月第一个周五晚上，礼堂"
-          />
-        </label>
-        <label
-          class="ai-draft__field"
-          for="ai-plan-constraints"
-        >
-          <span>补充限制</span>
-          <ElInput
-            id="ai-plan-constraints"
-            v-model="localConditions.constraints"
-            :disabled="Boolean(pendingGeneration)"
-            data-ai-field="constraints"
-            placeholder="例如 不使用明火"
-          />
-        </label>
       </div>
+      <details class="ai-draft__conditions">
+        <summary>补充人数、预算与限制（选填）</summary>
+        <div class="ai-draft__fields">
+          <label
+            class="ai-draft__field"
+            for="ai-plan-participants"
+          >
+            <span>预计人数</span>
+            <ElInputNumber
+              id="ai-plan-participants"
+              v-model="localConditions.expectedParticipants"
+              :disabled="Boolean(pendingGeneration)"
+              :min="1"
+              :max="100000"
+              data-ai-field="expectedParticipants"
+            />
+          </label>
+          <label
+            class="ai-draft__field"
+            for="ai-plan-budget"
+          >
+            <span>预算条件</span>
+            <ElInput
+              id="ai-plan-budget"
+              v-model="localConditions.budget"
+              :disabled="Boolean(pendingGeneration)"
+              data-ai-field="budget"
+              placeholder="例如 不超过 3000 元"
+            />
+          </label>
+          <label
+            class="ai-draft__field"
+            for="ai-plan-time-place"
+          >
+            <span>时间地点条件</span>
+            <ElInput
+              id="ai-plan-time-place"
+              v-model="localConditions.timePlace"
+              :disabled="Boolean(pendingGeneration)"
+              data-ai-field="timePlace"
+              placeholder="例如 九月第一个周五晚上，礼堂"
+            />
+          </label>
+          <label
+            class="ai-draft__field"
+            for="ai-plan-constraints"
+          >
+            <span>补充限制</span>
+            <ElInput
+              id="ai-plan-constraints"
+              v-model="localConditions.constraints"
+              :disabled="Boolean(pendingGeneration)"
+              data-ai-field="constraints"
+              placeholder="例如 不使用明火"
+            />
+          </label>
+        </div>
+      </details>
       <p class="ai-draft__hint">
         未填写的条件会由模型标注“假设”或“待补充”；费用建议只是估算，不代表报价或已批准预算。
       </p>
@@ -387,12 +393,20 @@ defineExpose({
       {{ errorText }}
     </p>
 
+    <StatusMark
+      v-if="generating || pendingGeneration"
+      :state="generating ? 'running' : 'unknown'"
+      :label="generating ? '正在处理，请稍候' : '结果待核对，不会重复生成'"
+    />
     <template v-if="generation">
       <p
         class="ai-draft__status"
         data-ai-status
       >
-        {{ statusText }}
+        <StatusMark
+          :state="generation.status === 'SUCCEEDED' ? 'done' : generation.status === 'FAILED' ? 'failed' : 'unknown'"
+          :label="statusText"
+        />
       </p>
       <p
         v-if="generation.sourceChanged"
@@ -428,17 +442,19 @@ defineExpose({
           {{ generation.adoptedAt ? '已采用' : '记录为已采用' }}
         </ElButton>
       </div>
-      <p class="ai-draft__hint">
+      <details class="ai-draft__hint">
+        <summary>生成详情</summary>
         模型：{{ generation.model ?? '—' }}｜协议：{{ generation.protocol ?? '—' }}
         <template v-if="generation.requestId">
           ｜请求标识：{{ generation.requestId }}
         </template>
-      </p>
+      </details>
     </template>
   </section>
 </template>
 
 <style scoped>
+.ai-draft__conditions[open] > summary { margin-bottom: var(--ui-space-3); }
 .ai-draft {
   display: flex;
   flex-direction: column;
@@ -446,7 +462,7 @@ defineExpose({
   padding: var(--ui-space-4);
   border: var(--ui-border-width) solid var(--ui-color-ai-border);
   border-radius: var(--ui-radius-card);
-  background: var(--ui-surface-ai);
+  background: var(--ui-color-surface-muted);
 }
 
 .ai-draft__head {
@@ -457,7 +473,7 @@ defineExpose({
 
 .ai-draft__head h3 {
   margin: 0;
-  font-size: var(--ui-font-size-card-title);
+  font-size: var(--ui-font-size-section);
 }
 
 .ai-draft__hint,
@@ -482,7 +498,7 @@ defineExpose({
 
 .ai-draft__fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(var(--ui-layout-card-min-width), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--ui-layout-card-min-width)), 1fr));
   gap: var(--ui-form-field-gap);
 }
 

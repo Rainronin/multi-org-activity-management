@@ -284,3 +284,24 @@ button, input, textarea { font-family: var(--ui-font-family-body); }
 .list-table .el-tag {
   border: none;
 }
+
+/* 正文优先，AI 辅助随可用宽度退为下一行；编辑器持续挂载以保留草稿。 */
+.document-workspace { display: grid; grid-template-columns: var(--ui-layout-editor-columns); align-items: start; gap: var(--ui-space-6); min-width: 0; }
+.document-workspace__main, .document-workspace > * { min-width: 0; }
+.document-workspace__main .el-textarea__inner { height: var(--ui-editor-height); line-height: var(--ui-line-height-prose); }
+.document-workspace__main { display: flex; flex-direction: column; gap: var(--ui-space-3); }
+summary { cursor: pointer; color: var(--ui-color-text-secondary); }
+summary:focus-visible { outline: var(--ui-focus-ring); }
+
+.desktop-list { display: var(--ui-list-desktop-display); }
+.mobile-list { display: var(--ui-list-mobile-display); flex-direction: column; gap: var(--ui-space-4); }
+.mobile-list__item { min-width: 0; padding-bottom: var(--ui-space-4); border-bottom: var(--ui-border-width) solid var(--ui-color-border); overflow-wrap: anywhere; }
+.mobile-list__item > p { margin-top: var(--ui-space-2); color: var(--ui-color-text-secondary); font-size: var(--ui-font-size-small); }
+.mobile-list__head, .mobile-list__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); }
+.mobile-list__head { justify-content: space-between; }
+.mobile-list__head .list-table__link { white-space: normal; }
+.mobile-list__actions { margin-top: var(--ui-space-3); }
+
+.sr-only { position: absolute; width: var(--ui-border-width); height: var(--ui-border-width); padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.draft-apply-feedback { padding: var(--ui-space-2) var(--ui-space-3); border-left: var(--ui-focus-width) solid var(--ui-color-action); background: var(--ui-color-selected-bg); color: var(--ui-color-selected-text); font-size: var(--ui-font-size-small); }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { OfficeBuilding, Calendar, Right, Lock } from '@element-plus/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessage, ElMessageBox, ElSkeleton, ElTag, type FormInstance, type FormRules } from 'element-plus'
@@ -271,11 +272,11 @@ async function handleLogout() {
     <div class="page-heading">
       <div class="page-heading__title">
         <p class="page-eyebrow">
-          账号
+          个人工作区
         </p>
         <h1>我的工作区</h1>
         <p class="page-description">
-          当前身份：<strong>{{ session.account?.username }}</strong>；这里管理你的组织、报名与账号安全。
+          <strong>{{ session.account?.username }}</strong>，欢迎回来。选择一个组织，继续你的活动协作。
         </p>
       </div>
       <div class="page-actions">
@@ -294,9 +295,21 @@ async function handleLogout() {
       </div>
     </div>
 
-    <section class="account-page__card">
+    <section class="account-page__card account-page__organizations">
       <div class="account-page__card-head">
-        <h2>我的组织</h2>
+        <div class="account-section-title">
+          <OfficeBuilding aria-hidden="true" /><div>
+            <h2>我的组织</h2><p class="account-page__hint">
+              进入组织，查看活动进展与待办任务
+            </p>
+          </div>
+        </div>
+        <ElTag
+          type="info"
+          effect="plain"
+        >
+          {{ directoryStore.items.length }} 个组织
+        </ElTag>
       </div>
       <p
         v-if="directoryError"
@@ -320,26 +333,35 @@ async function handleLogout() {
       />
       <ul
         v-else-if="directoryStore.items.length > 0"
-        class="account-page__orgs"
+        class="account-page__orgs account-page__directory"
       >
         <li
           v-for="org in directoryStore.items"
           :key="org.id"
         >
           <div>
-            <span class="account-page__org-name">{{ org.name }}</span>
-            <ElTag
-              :type="org.role === 'OWNER' ? 'success' : 'info'"
-              size="small"
-            >
-              {{ roleLabel(org.role) }}
-            </ElTag>
+            <span
+              class="account-page__org-avatar"
+              aria-hidden="true"
+            >{{ org.name.slice(0, 1) }}</span>
+            <div class="account-page__org-copy">
+              <span class="account-page__org-name">{{ org.name }}</span>
+              <ElTag
+                :type="org.role === 'OWNER' ? 'success' : 'info'"
+                size="small"
+              >
+                {{ roleLabel(org.role) }}
+              </ElTag>
+            </div>
           </div>
           <ElButton
             size="small"
             @click="enterOrganization(org)"
           >
-            进入工作区
+            进入工作区 <Right
+              class="account-action-icon"
+              aria-hidden="true"
+            />
           </ElButton>
         </li>
       </ul>
@@ -360,7 +382,13 @@ async function handleLogout() {
 
     <section class="account-page__card">
       <div class="account-page__card-head">
-        <h2>我的报名</h2>
+        <div class="account-section-title">
+          <Calendar aria-hidden="true" /><div>
+            <h2>我的报名</h2><p class="account-page__hint">
+              追踪参与活动与报名状态
+            </p>
+          </div>
+        </div>
         <ElButton
           plain
           @click="router.push('/public/activities')"
@@ -480,9 +508,15 @@ async function handleLogout() {
     <!-- P7.3 站内提示：账号维度，列表与跳转都由后端按当前权限复核 -->
     <NotificationsSection />
 
-    <section class="account-page__card">
+    <section class="account-page__card account-page__security">
       <div class="account-page__card-head">
-        <h2>账号安全</h2>
+        <div class="account-section-title">
+          <Lock aria-hidden="true" /><div>
+            <h2>账号安全</h2><p class="account-page__hint">
+              管理密码与账号恢复方式
+            </p>
+          </div>
+        </div>
       </div>
       <div class="account-page__actions">
         <ElButton
@@ -661,7 +695,8 @@ async function handleLogout() {
   display: grid;
   gap: var(--ui-layout-grid-gap);
   align-content: start;
-  max-width: var(--ui-form-max-width);
+  max-width: var(--ui-layout-content-max);
+  grid-template-columns: var(--ui-account-columns);
   margin: 0 auto;
   padding: var(--ui-layout-page-padding);
 }
@@ -789,4 +824,24 @@ async function handleLogout() {
   color: var(--ui-color-danger);
   font-size: var(--ui-font-size-small);
 }
+
+.page-heading, .account-page__organizations, .account-page__security { grid-column: 1 / -1; }
+.page-heading { padding: var(--ui-space-8); border-radius: var(--ui-radius-card); background: var(--ui-color-text); color: var(--ui-color-on-dark); align-items: center; }
+.page-heading .page-eyebrow { color: var(--ui-color-on-dark-accent); }
+.page-heading .page-description { color: var(--ui-color-on-dark-muted); }
+.account-page__card { min-width: 0; }
+.account-page__card-head { flex-wrap: wrap; }
+.account-section-title { display: flex; align-items: center; gap: var(--ui-space-3); }
+.account-section-title > svg { width: var(--ui-icon); height: var(--ui-icon); color: var(--ui-color-action); flex-shrink: 0; }
+.account-section-title .account-page__hint { margin-top: var(--ui-space-1); }
+.account-page__directory { grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--ui-org-card-min)), 1fr)); gap: var(--ui-space-4); }
+.account-page__directory li { flex-wrap: wrap; padding: var(--ui-space-5); background: var(--ui-color-canvas); border: var(--ui-border-width) solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.account-page__org-avatar { display: grid; place-items: center; width: var(--ui-space-12); height: var(--ui-space-12); flex-shrink: 0; background: var(--ui-color-selected-bg); color: var(--ui-color-selected-text); border-radius: var(--ui-radius-control); font-size: var(--ui-font-size-section); font-weight: var(--ui-font-weight-semibold); }
+.account-page__org-copy { display: grid; gap: var(--ui-space-2); justify-items: start; }
+.account-action-icon { width: var(--ui-icon-small); height: var(--ui-icon-small); margin-left: var(--ui-space-2); }
+.account-page__security { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-4); }
+.account-page__security .account-page__card-head { margin-bottom: 0; }
+.account-page__orgs li { flex-wrap: wrap; }
+.account-page__reg-main { align-items: flex-start; }
+.account-page__actions :deep(.el-button + .el-button), .page-actions :deep(.el-button + .el-button) { margin-left: 0; }
 </style>

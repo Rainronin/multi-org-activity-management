@@ -176,7 +176,6 @@ const emptyText = computed(() => (statusFilter.value
   <ListPage
     title="我的任务"
     panel-title="任务明细"
-    eyebrow="个人协作 / 我的任务"
     description="当前组织内分配给你的未完成任务；完成后由组织负责人汇总查看。"
     context="本人被分派 · 未完成"
     :error="errorText"
@@ -217,7 +216,7 @@ const emptyText = computed(() => (statusFilter.value
     </p>
 
     <ElTable
-      class="list-table"
+      class="list-table desktop-list"
       :data="visibleTasks"
     >
       <ElTableColumn
@@ -297,6 +296,43 @@ const emptyText = computed(() => (statusFilter.value
         </template>
       </ElTableColumn>
     </ElTable>
+    <div
+      class="mobile-list"
+      aria-label="任务列表"
+    >
+      <article
+        v-for="task in visibleTasks"
+        :key="task.taskId"
+        class="mobile-list__item"
+      >
+        <div class="mobile-list__head">
+          <strong>{{ task.title }}</strong><ElTag :type="priorityTag(task.priority)">
+            {{ priorityLabel[task.priority] ?? task.priority }}
+          </ElTag>
+        </div>
+        <p class="my-tasks__description">
+          {{ task.description }}
+        </p>
+        <p :class="{ 'my-tasks__overdue': task.overdue }">
+          {{ task.dueAt ? formatDue(task.dueAt) : '未设截止时间' }}{{ task.overdue ? '（已逾期）' : '' }}
+        </p>
+        <p>{{ statusLabel[task.status] ?? task.status }}</p>
+        <div class="mobile-list__actions">
+          <ElButton
+            v-if="nextStatus(task)"
+            type="primary"
+            plain
+            :loading="actingId === task.taskId"
+            @click="advance(task)"
+          >
+            {{ nextStatus(task) === 'IN_PROGRESS' ? '开始处理' : '标记完成' }}
+          </ElButton>
+          <ElButton @click="openActivity(task)">
+            查看活动
+          </ElButton>
+        </div>
+      </article>
+    </div>
   </ListPage>
 </template>
 

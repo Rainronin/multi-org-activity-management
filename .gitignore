@@ -49,7 +49,7 @@ uploads/
 *.pfx
 *.keystore
 
-# 本机 IDE 元数据；不忽略锁文件、Wrapper 或图示成果
+# 本机 IDE 元数据；保留业务工程锁文件与 Wrapper
 .idea/
 .vscode/
 *.iml
@@ -61,3 +61,25 @@ Thumbs.db
 
 # 验证截图：本地查看用产物，不进入版本库
 验证截图/
+
+# 远程只发布业务工程及根目录展示／仓库配置；其余资料保留本机。
+/*
+!/.gitignore
+!/.editorconfig
+!/README.md
+!/基于Vue3的多组织活动管理系统_zcode/
+
+# 本机身份凭据与敏感容器；无凭据的 application-*.example.yml 保留。
+.envrc
+.npmrc
+.pypirc
+.netrc
+credentials.json
+service-account*.json
+*.jks
+*.p8
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.orig

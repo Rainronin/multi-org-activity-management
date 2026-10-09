@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -97,12 +97,32 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
  * 协议是离散选择，选完即校验。域名与安全校验仍由后端负责，前端不冒充权威。
  */
 const formRef = ref<FormInstance>()
+const configRoot = ref<HTMLElement>()
+const advancedFields = ref<HTMLDetailsElement>()
+const serverFieldError = ref<{ field: string; message: string } | null>(null)
+const advancedNames = ['outputLimitField', 'maxOutputTokens', 'timeoutSeconds']
+watch(currentForm, () => { serverFieldError.value = null })
+async function revealInvalidField(field: string) {
+  const targetOrgId = props.orgId
+  if (advancedNames.includes(field) && advancedFields.value) advancedFields.value.open = true
+  await nextTick()
+  if (targetOrgId !== props.orgId) return
+  const control = configRoot.value?.querySelector<HTMLElement>(`[data-ai-field="${CSS.escape(field)}"]`)
+  const input = control?.matches('input') ? control : control?.querySelector<HTMLElement>('input')
+  if (!input?.isConnected) return
+  input.focus({ preventScroll: true })
+  input.scrollIntoView({ block: 'center', behavior: 'instant' })
+}
 /** ElForm 校验需要具名模型；字段仍是各自独立的 ref（接口按字段提交）。 */
 const formModel = computed(() => ({
   endpoint: endpoint.value,
   model: model.value,
+  maxOutputTokens: maxOutputTokens.value,
+  timeoutSeconds: timeoutSeconds.value,
 }))
 const formRules: FormRules = {
+  maxOutputTokens: [{ type: 'integer', required: true, min: 64, max: 4096, message: '输出上限须为64～4096之间的整数', trigger: 'change' }],
+  timeoutSeconds: [{ type: 'integer', required: true, min: 5, max: 60, message: '单次时限须为5～60之间的整数', trigger: 'change' }],
   endpoint: [
     { required: true, message: '请输入完整的 API 请求地址', trigger: 'blur' },
     {
@@ -137,6 +157,7 @@ function invalidBy(field: string): string {
 }
 
 function applyConfig(value: AiConfig): void {
+  serverFieldError.value = null
   config.value = value
   if (value.protocol) {
     protocol.value = value.protocol
@@ -195,6 +216,8 @@ function reportError(error: unknown, fallback: string, gen: number): void {
   if (error instanceof ApiError) {
     const field = error.fieldErrors[0]
     errorText.value = field ? `${field.message}` : error.detail
+    serverFieldError.value = field ?? null
+    if (field) void revealInvalidField(field.field)
     return
   }
   errorText.value = fallback
@@ -214,7 +237,13 @@ async function save(): Promise<void> {
   try {
     // 校验期间也固定输入，不能只相信已触发的 blur（UI 规范 7.4）。
     const valid = await formRef.value?.validate().catch(() => false)
-    if (!valid) return
+    if (!valid) {
+      const invalid = formRef.value?.fields.find(field => field.validateState === 'error')
+      saving.value = false
+      if (invalid?.prop) void revealInvalidField(String(invalid.prop))
+      return
+    }
+    serverFieldError.value = null
     errorText.value = ''
     noticeText.value = ''
     const protocolChanged = config.value?.protocol !== protocol.value
@@ -239,6 +268,7 @@ async function save(): Promise<void> {
       ? '配置已保存并生效，可在活动方案与复盘中使用 AI；测试连接为可选操作。'
       : '配置已保存。请填写并保存密钥后使用 AI。'
   } catch (error) {
+    saving.value = false
     reportError(error, '模型配置保存失败，请重试。', gen)
   } finally {
     saving.value = false
@@ -343,6 +373,7 @@ defineExpose({ reload: load, confirmLeave })
 
 <template>
   <section
+    ref="configRoot"
     class="ai-config"
     data-ai-config-panel
   >
@@ -491,7 +522,7 @@ defineExpose({ reload: load, confirmLeave })
 
         <!-- 字段分组：调用配置与连接参数分开，长说明不挤占主要操作（审核 N04）。 -->
         <h3 class="ai-config__group">
-          连接参数与额度
+          认证信息
         </h3>
         <ElFormItem
           v-if="protocol === 'ANTHROPIC_MESSAGES'"
@@ -526,42 +557,59 @@ defineExpose({ reload: load, confirmLeave })
             地址或协议变化必须重新输入密钥，旧密钥不会被静默发送到新地址。
           </p>
         </ElFormItem>
-        <ElFormItem label="输出上限字段">
-          <ElSelect
-            v-model="outputLimitField"
-            class="ai-config__control"
-            data-ai-field="outputLimitField"
+        <details
+          ref="advancedFields"
+          class="ai-config__advanced"
+        >
+          <summary>高级调用参数</summary>
+          <ElFormItem
+            label="输出上限字段"
+            prop="outputLimitField"
+            :error="serverFieldError?.field === 'outputLimitField' ? serverFieldError.message : undefined"
           >
-            <ElOption
-              v-for="(label, value) in aiOutputLimitLabel"
-              :key="value"
-              :label="label"
-              :value="value"
+            <ElSelect
+              v-model="outputLimitField"
+              class="ai-config__control"
+              data-ai-field="outputLimitField"
+            >
+              <ElOption
+                v-for="(label, value) in aiOutputLimitLabel"
+                :key="value"
+                :label="label"
+                :value="value"
+              />
+            </ElSelect>
+            <p class="ai-config__hint">
+              由本次真实测试确认目标模型接受的字段，不在失败后自动换参数重发。
+            </p>
+          </ElFormItem>
+          <ElFormItem
+            label="输出上限（tokens）"
+            prop="maxOutputTokens"
+            :error="serverFieldError?.field === 'maxOutputTokens' ? serverFieldError.message : undefined"
+          >
+            <ElInputNumber
+              v-model="maxOutputTokens"
+              :min="64"
+              :max="4096"
+              :step="64"
+              data-ai-field="maxOutputTokens"
             />
-          </ElSelect>
-          <p class="ai-config__hint">
-            由本次真实测试确认目标模型接受的字段，不在失败后自动换参数重发。
-          </p>
-        </ElFormItem>
-        <ElFormItem label="输出上限（tokens）">
-          <ElInputNumber
-            v-model="maxOutputTokens"
-            :min="64"
-            :max="4096"
-            :step="64"
-            data-ai-field="maxOutputTokens"
-          />
-        </ElFormItem>
-        <ElFormItem label="单次时限（秒）">
-          <ElInputNumber
-            v-model="timeoutSeconds"
-            :min="5"
-            :max="60"
-            :step="5"
-            data-ai-field="timeoutSeconds"
-          />
-        </ElFormItem>
-
+          </ElFormItem>
+          <ElFormItem
+            label="单次时限（秒）"
+            prop="timeoutSeconds"
+            :error="serverFieldError?.field === 'timeoutSeconds' ? serverFieldError.message : undefined"
+          >
+            <ElInputNumber
+              v-model="timeoutSeconds"
+              :min="5"
+              :max="60"
+              :step="5"
+              data-ai-field="timeoutSeconds"
+            />
+          </ElFormItem>
+        </details>
         <div class="ai-config__actions">
           <ElButton
             type="primary"
@@ -599,6 +647,12 @@ defineExpose({ reload: load, confirmLeave })
           >
             停用
           </ElButton>
+        </div>
+        <details class="ai-config__advanced">
+          <summary>密钥管理</summary>
+          <p class="ai-config__hint">
+            清除后配置将同时停用，再次使用需要重新填写密钥。
+          </p>
           <ElButton
             v-if="canClearKey"
             type="danger"
@@ -609,7 +663,7 @@ defineExpose({ reload: load, confirmLeave })
           >
             清除密钥
           </ElButton>
-        </div>
+        </details>
 
         <dl class="ai-config__state">
           <div>
@@ -643,6 +697,8 @@ defineExpose({ reload: load, confirmLeave })
 </template>
 
 <style scoped>
+.ai-config__advanced { margin-bottom: var(--ui-space-5); padding: var(--ui-space-4); border: var(--ui-border-width) solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.ai-config__advanced[open] > summary { margin-bottom: var(--ui-space-4); }
 /* 白色内容面板：与标准页的卡片结构一致，字段不再直接排在页面底色上（审核 N04）。 */
 .ai-config {
   display: flex;
@@ -725,7 +781,7 @@ defineExpose({ reload: load, confirmLeave })
 }
 
 .ai-config__control {
-  width: var(--ui-layout-card-min-width-wide);
+  width: 100%;
   max-width: 100%;
 }
 

@@ -254,4 +254,11 @@ defineExpose({ reload: load })
 .notifications__link {
   color: var(--ui-color-action);
 }
+
+.notifications { min-width: 0; }
+.notifications__head, .notifications__tools { flex-wrap: wrap; }
+.notifications__list li { padding: var(--ui-space-3); border-radius: var(--ui-radius-control); background: var(--ui-color-canvas); border-left: var(--ui-space-1) solid transparent; }
+.notifications__list .notifications__item--unread { border-left-color: var(--ui-color-action); }
+.notifications__payload { flex-basis: 100%; overflow-wrap: anywhere; line-height: var(--ui-line-height-body); }
+.notifications__head + .notifications__note { margin-top: var(--ui-space-5); }
 </style>

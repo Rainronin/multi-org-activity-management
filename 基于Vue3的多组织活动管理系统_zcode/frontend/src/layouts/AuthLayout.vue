@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import LoginAtmosphere from '../shared/motion/LoginAtmosphere.vue'
+defineProps<{ animated?: boolean }>()
+const formFocused = ref(false)
 // 登录、注册、恢复共用的分屏承载壳（UI 规范 5.4 / 6.2）；
 // 不含字段规则与接口逻辑，品牌区不展示任何虚构业务数据。
 // 品牌标语用 p 而非 h1：一页一个 h1，留给右侧表单标题（UI 规范 3.2）。
@@ -7,8 +11,13 @@
 <template>
   <main class="auth-page">
     <section class="auth-brand">
+      <LoginAtmosphere
+        v-if="animated"
+        :form-focused="formFocused"
+      />
       <!-- 环形装饰：对照 Demo 的登录左侧构图，纯装饰不进可访问树 -->
       <span
+        v-if="!animated"
         class="auth-decor"
         aria-hidden="true"
       />
@@ -54,7 +63,11 @@
         <span>ACTIVITY WORKSPACE</span>
       </footer>
     </section>
-    <section class="auth-panel">
+    <section
+      class="auth-panel"
+      @focusin="formFocused = true"
+      @focusout="formFocused = false"
+    >
       <div class="auth-content">
         <slot />
       </div>
@@ -143,6 +156,7 @@
 </style>
 
 <style scoped>
+.auth-brand-name, .auth-story, .auth-flow, .auth-brand footer { position: relative; }
 .auth-page {
   display: grid;
   grid-template-columns: var(--ui-layout-login-columns);

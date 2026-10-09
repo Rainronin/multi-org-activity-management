@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { Grid, Document, List, Tickets, Wallet, DataAnalysis } from '@element-plus/icons-vue'
+import DocumentReadView from './DocumentReadView.vue'
+import { focusDraftEditor } from '../../shared/utils/focusDraftEditor'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
@@ -90,6 +93,8 @@ const allowedTabs = computed(() => {
   return tabs
 })
 
+const proposalEditor = ref<HTMLElement>()
+const proposalApplied = ref(false)
 const proposalDraft = ref('')
 const proposalDirty = ref(false)
 let proposalVersion = 0
@@ -138,6 +143,7 @@ let alive = true
 const permissionGeneration = ref(0)
 
 function clearManagementDrafts(): void {
+  proposalApplied.value = false
   proposalDraft.value = ''
   proposalDirty.value = false
   editVisible.value = false
@@ -303,6 +309,8 @@ function onProposalInput() {
 function applyProposalDraft(draft: string) {
   proposalDraft.value = draft
   onProposalInput()
+  proposalApplied.value = true
+  void focusDraftEditor(proposalEditor.value)
 }
 
 async function saveProposalDraft() {
@@ -682,6 +690,9 @@ async function confirmDelete() {
           label="概览"
           name="overview"
         >
+          <template #label>
+            <span class="detail-tab-label"><Grid aria-hidden="true" />概览</span>
+          </template>
           <section class="detail-intro">
             <h2>活动安排</h2>
             <p>{{ activity.description || '暂无活动简介' }}</p>
@@ -699,6 +710,9 @@ async function confirmDelete() {
           label="方案"
           name="proposal"
         >
+          <template #label>
+            <span class="detail-tab-label"><Document aria-hidden="true" />方案</span>
+          </template>
           <section class="proposal-section">
             <div class="proposal-section__head">
               <h2>活动方案</h2>
@@ -713,31 +727,45 @@ async function confirmDelete() {
                 保存方案
               </ElButton>
             </div>
-            <ElInput
-              v-if="activity.status === 'DRAFT'"
-              v-model="proposalDraft"
-              type="textarea"
-              :rows="10"
-              :disabled="proposalSaving"
-              @input="onProposalInput"
-            />
-            <p
-              v-else
-              class="proposal-readonly"
+            <div
+              class="document-workspace"
+              :class="{ 'document-workspace--reading': activity.status !== 'DRAFT' }"
             >
-              {{ activity.proposal || '未填写方案' }}
-            </p>
-
-            <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
-            <AiDraftPanel
-              v-if="activity.status === 'DRAFT'"
-              ref="planAiPanel"
-              :org-id="orgId"
-              :activity-id="activityId"
-              type="ACTIVITY_PLAN"
-              :disabled="proposalSaving"
-              @apply="applyProposalDraft"
-            />
+              <div
+                ref="proposalEditor"
+                class="document-workspace__main"
+              >
+                <p
+                  v-if="proposalApplied"
+                  class="draft-apply-feedback"
+                  role="status"
+                >
+                  {{ proposalDirty ? 'AI 草稿已放入正文，请审阅并保存。' : '正文与已保存内容一致。' }}
+                </p>
+                <ElInput
+                  v-if="activity.status === 'DRAFT'"
+                  v-model="proposalDraft"
+                  type="textarea"
+                  :rows="10"
+                  :disabled="proposalSaving"
+                  @input="onProposalInput"
+                />
+                <DocumentReadView
+                  v-else
+                  :text="activity.proposal || ''"
+                />
+              </div>
+              <!-- P8.3：方案生成的草稿只进入上面的编辑区，保存与确认仍走原有流程 -->
+              <AiDraftPanel
+                v-if="activity.status === 'DRAFT'"
+                ref="planAiPanel"
+                :org-id="orgId"
+                :activity-id="activityId"
+                type="ACTIVITY_PLAN"
+                :disabled="proposalSaving"
+                @apply="applyProposalDraft"
+              />
+            </div>
           </section>
         </ElTabPane>
 
@@ -747,6 +775,9 @@ async function confirmDelete() {
           label="任务与物资"
           name="tasks"
         >
+          <template #label>
+            <span class="detail-tab-label"><List aria-hidden="true" />任务与物资</span>
+          </template>
           <ActivityP3Sections
             ref="p3Panel"
             :org-detail="activity"
@@ -761,6 +792,9 @@ async function confirmDelete() {
           label="报名"
           name="registration"
         >
+          <template #label>
+            <span class="detail-tab-label"><Tickets aria-hidden="true" />报名</span>
+          </template>
           <RegistrationPanel
             ref="registrationPanel"
             :org-detail="activity"
@@ -775,6 +809,9 @@ async function confirmDelete() {
           label="经费"
           name="expense"
         >
+          <template #label>
+            <span class="detail-tab-label"><Wallet aria-hidden="true" />经费</span>
+          </template>
           <ExpenseSection
             ref="expensePanel"
             :org-detail="activity"
@@ -789,6 +826,9 @@ async function confirmDelete() {
           label="执行与复盘"
           name="lifecycle"
         >
+          <template #label>
+            <span class="detail-tab-label"><DataAnalysis aria-hidden="true" />执行与复盘</span>
+          </template>
           <!-- P6：执行、取消、执行记录、反馈、总结与归档；P8.2 总结生成在总结区块内 -->
           <ActivityLifecyclePanel
             ref="lifecyclePanel"
@@ -1108,11 +1148,6 @@ async function confirmDelete() {
   font-weight: var(--ui-font-weight-semibold);
 }
 
-.proposal-readonly {
-  white-space: pre-wrap;
-  line-height: var(--ui-line-height-prose);
-  color: var(--ui-color-text);
-}
 
 .detail-tabs {
   margin-top: var(--ui-layout-grid-gap);
@@ -1163,4 +1198,15 @@ async function confirmDelete() {
   height: var(--ui-workbench-kpi-min-height);
 }
 
+
+.document-workspace--reading { grid-template-columns: minmax(0, 1fr); }
+.detail-tab-label { display: inline-flex; align-items: center; gap: var(--ui-space-2); }
+.detail-tab-label svg { width: var(--ui-icon-small); height: var(--ui-icon-small); }
+.detail-tabs :deep(.el-tabs__nav-wrap::after), .detail-tabs :deep(.el-tabs__active-bar) { display: none; }
+.detail-tabs :deep(.el-tabs__nav) { gap: var(--ui-space-2); }
+/* 覆盖 Element Plus 对首项／末项的零内边距，保证所有分区按钮留白一致。 */
+.detail-tabs.el-tabs--top :deep(.el-tabs__header .el-tabs__item.is-top) { padding: var(--ui-space-3) var(--ui-space-5); border-radius: var(--ui-radius-control); background: var(--ui-color-canvas); border: var(--ui-border-width) solid transparent; }
+.detail-tabs.el-tabs--top :deep(.el-tabs__header .el-tabs__item.is-top.is-active) { color: var(--ui-color-selected-text); border-color: var(--ui-color-action-tint-7); background: var(--ui-color-selected-bg); font-weight: var(--ui-font-weight-semibold); }
+.detail-tabs :deep(.el-tabs__content) { padding-top: var(--ui-space-2); }
+.detail-intro { padding: var(--ui-space-5); border-radius: var(--ui-radius-control); background: var(--ui-color-canvas); margin-bottom: var(--ui-space-6); }
 </style>

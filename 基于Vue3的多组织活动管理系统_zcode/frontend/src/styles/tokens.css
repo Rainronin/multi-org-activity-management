@@ -18,13 +18,13 @@
   --ui-table-col-260: 260px;
 
   /* 颜色：明亮橙负责强调，较深橙承载白色按钮文字。 */
-  --ui-color-canvas: #f3f3ef;
+  --ui-color-canvas: #f5f6f8;
   --ui-color-surface: #ffffff;
-  --ui-color-surface-muted: #f8f8f6;
-  --ui-color-text: #1a1814;
-  --ui-color-text-secondary: #55534e;
-  --ui-color-text-muted: #706e68;
-  --ui-color-border: #e8e7e4;
+  --ui-color-surface-muted: #f7f8fa;
+  --ui-color-text: #22252a;
+  --ui-color-text-secondary: #525963;
+  --ui-color-text-muted: #626b76;
+  --ui-color-border: #e3e6eb;
   --ui-color-control-border: #918c81;
   --ui-color-accent: #ff6b2c;
   --ui-color-action: #ce4313;
@@ -98,13 +98,15 @@
   --ui-color-glass-on-dark: #ffffff18;
   --ui-color-glass-edge-dark: #ffffff43;
   --ui-surface-glass: linear-gradient(135deg, var(--ui-color-glass-start), var(--ui-color-glass-end));
-  --ui-surface-navigation-glass: linear-gradient(115deg, #ffffffbd, #fff5ed8c);
+  --ui-surface-navigation-glass: var(--ui-color-surface);
   --ui-surface-spotlight: linear-gradient(125deg, var(--ui-color-spotlight-start), var(--ui-color-spotlight-end));
   --ui-surface-ai: linear-gradient(130deg, var(--ui-color-ai-start), var(--ui-color-ai-end));
   --ui-surface-glass-on-dark: linear-gradient(125deg, var(--ui-color-glass-on-dark), transparent);
   --ui-glass-blur: 16px;
   --ui-glass-saturation: 125%;
   --ui-opacity-disabled: 0.55;
+  --ui-brand-scene-opacity: 0.32;
+  --ui-editor-height: 420px;
 
   /* 图表不借用业务成功／失败色表达普通序列。 */
   --ui-color-chart-primary: var(--ui-color-action);
@@ -121,13 +123,13 @@
   --ui-font-family-body: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --ui-font-family-display: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --ui-font-family-data: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  --ui-font-size-caption: 0.75rem;
+  --ui-font-size-caption: 0.8125rem;
   --ui-font-size-small: 0.8125rem;
-  --ui-font-size-body: 0.875rem;
+  --ui-font-size-body: 0.9375rem;
   --ui-font-size-emphasis: 1rem;
   --ui-font-size-section: 1.125rem;
   --ui-font-size-card-title: 1.5rem;
-  --ui-font-size-page-title: 2rem;
+  --ui-font-size-page-title: 1.75rem;
   --ui-font-size-kpi: 1.75rem;
   --ui-font-size-brand: 4rem;
   --ui-font-size-input: var(--ui-font-size-body);
@@ -156,7 +158,7 @@
   --ui-space-16: 64px;
   --ui-radius-small: 4px;
   --ui-radius-control: 8px;
-  --ui-radius-card: 16px;
+  --ui-radius-card: 12px;
   --ui-radius-island: 20px;
   --ui-radius-pill: 999px;
   --ui-radius-circle: 50%;
@@ -165,8 +167,8 @@
   --ui-focus-offset: 3px;
   --ui-focus-ring: var(--ui-focus-width) solid var(--ui-color-focus);
   --ui-shadow-none: none;
-  --ui-shadow-glass: inset 0 1px 0 #ffffff, 0 5px 18px #2520150a;
-  --ui-shadow-hover: inset 0 1px 0 #ffffff, 0 14px 32px #30221414;
+  --ui-shadow-glass: 0 2px 8px #22252a05;
+  --ui-shadow-hover: 0 6px 16px #22252a0d;
   --ui-shadow-spotlight: inset 0 1px 0 #ffffff25, 0 10px 28px #201e1520;
   --ui-shadow-popover: 0 12px 35px #29221826;
   --ui-shadow-modal: 0 24px 64px #1a18142e;
@@ -207,10 +209,13 @@
   --ui-workbench-panel-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   --ui-detail-status-columns: minmax(0, 1fr) minmax(0, 2fr);
   --ui-detail-fact-min-width: 160px;
-  --ui-layout-focus-columns: minmax(280px, 1fr) minmax(0, 1.7fr);
+  --ui-layout-focus-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   --ui-layout-analysis-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   --ui-layout-kpi-columns: repeat(4, minmax(0, 1fr));
   --ui-layout-form-columns: repeat(2, minmax(0, 1fr));
+  --ui-layout-editor-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+  --ui-list-desktop-display: block;
+  --ui-list-mobile-display: none;
   /* F10：公开页卡片栅格的最小列宽（窄屏由 min(100%, …) 自动降为单列） */
   --ui-layout-card-min-width: 220px;
   --ui-layout-card-min-width-wide: 320px;
@@ -239,14 +244,15 @@
   --ui-z-navigation: 20;
   --ui-z-overlay-base: 2000;
 
-  /* CSS 用 ms；GSAP 读取后统一转换为秒。 */
+  /* CSS 用 ms；JavaScript 动效读取后按 API 单位换算。 */
+  --ui-motion-desktop-min: 1001px;
   --ui-motion-instant: 0ms;
   --ui-motion-fast: 160ms;
   --ui-motion-base: 240ms;
-  --ui-motion-enter: 600ms;
+  --ui-motion-enter: 360ms;
   --ui-motion-chart: 900ms;
   --ui-motion-stagger: 60ms;
-  --ui-motion-lift: -4px;
+  --ui-motion-lift: -2px;
   --ui-motion-enter-y: 16px;
   --ui-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --ui-motion-ease-gsap: power3.out;
@@ -267,7 +273,7 @@
   --ui-nav-label-display: block;
   --ui-nav-group-display: flex;
   --ui-nav-display: block;
-  --ui-nav-items-display: block;
+  --ui-nav-items-display: flex;
   --ui-nav-item-direction: row;
   --ui-nav-columns: none;
   --ui-nav-item-padding: var(--ui-space-3);
@@ -293,6 +299,7 @@
 @media (width <= 1250px) {
   :root {
     --ui-layout-focus-columns: minmax(0, 1fr);
+    --ui-layout-editor-columns: minmax(0, 1fr);
     --ui-layout-analysis-columns: minmax(0, 1fr);
     --ui-layout-kpi-columns: repeat(2, minmax(0, 1fr));
   }
@@ -313,6 +320,9 @@
     --ui-layout-card-padding: var(--ui-space-5);
     --ui-layout-grid-gap: var(--ui-space-3);
     --ui-layout-topbar-display: none;
+    --ui-editor-height: 280px;
+    --ui-list-desktop-display: none;
+    --ui-list-mobile-display: flex;
     --ui-layout-login-columns: minmax(0, 1fr);
     --ui-font-size-page-title: 1.5rem;
     --ui-font-size-card-title: 1.25rem;
@@ -372,4 +382,13 @@
     --ui-motion-lift: 0px;
     --ui-motion-enter-y: 0px;
   }
+}
+
+:root {
+  --ui-account-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  --ui-org-card-min: 280px;
+  --ui-document-reading-width: 900px;
+}
+@media (width <= 900px) {
+  :root { --ui-account-columns: minmax(0, 1fr); }
 }

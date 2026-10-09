@@ -697,7 +697,11 @@ defineExpose({
 
     <section class="p3-block">
       <div class="p3-block__head">
-        <h2>任务</h2>
+        <div>
+          <h2>任务</h2><p class="p3-note">
+            明确分工，跟进每项任务的完成状态
+          </p>
+        </div>
         <ElButton
           v-if="canManage"
           size="small"
@@ -841,7 +845,11 @@ defineExpose({
 
     <section class="p3-block">
       <div class="p3-block__head">
-        <h2>物资</h2>
+        <div>
+          <h2>物资</h2><p class="p3-note">
+            核对数量、负责人和准备进度
+          </p>
+        </div>
         <ElButton
           v-if="canManage"
           size="small"
@@ -951,7 +959,11 @@ defineExpose({
 
     <section class="p3-block">
       <div class="p3-block__head">
-        <h2>资料</h2>
+        <div>
+          <h2>资料</h2><p class="p3-note">
+            集中查看活动文件与协作资料
+          </p>
+        </div>
         <ElButton
           v-if="canManage"
           size="small"
@@ -1440,9 +1452,12 @@ defineExpose({
   font-size: var(--ui-font-size-small);
 }
 
-.p3-block {
-  margin-top: var(--ui-space-10);
-}
+.p3-sections { display: grid; gap: var(--ui-space-6); min-width: 0; }
+.p3-block { min-width: 0; padding: var(--ui-space-5); border: var(--ui-border-width) solid var(--ui-color-border); border-radius: var(--ui-radius-card); background: var(--ui-color-surface); }
+.p3-block__head { padding-bottom: var(--ui-space-4); border-bottom: var(--ui-border-width) solid var(--ui-color-border); flex-wrap: wrap; }
+.p3-block__head .p3-note { margin-top: var(--ui-space-1); }
+.p3-block :deep(.el-table__header th) { background: var(--ui-color-canvas); }
+.p3-block :deep(.el-table__cell) { padding-top: var(--ui-space-4); padding-bottom: var(--ui-space-4); }
 
 .p3-block__head {
   display: flex;

@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElButton,
-  ElEmpty,
   ElSkeleton,
   ElSkeletonItem,
   ElTag,
@@ -18,6 +17,10 @@ import {
   TrendCharts,
   Wallet,
 } from '@element-plus/icons-vue'
+import SpotlightCard from '../../shared/motion/SpotlightCard.vue'
+import CountUp from '../../shared/motion/CountUp.vue'
+import RubberSegment from '../../shared/motion/RubberSegment.vue'
+import StatusMark from '../../shared/motion/StatusMark.vue'
 import { readErrorMessage } from '../../shared/http/error'
 import { useSessionStore } from '../../stores/session'
 import { fetchActivities } from '../activity/api'
@@ -345,10 +348,11 @@ defineExpose({ reload: load })
       <!-- 先处理待办，再查看重点活动；AI 入口下移到辅助区。 -->
       <div
         class="focus-board"
-        :class="{ 'focus-board--member': !isManager }"
+        :class="{ 'focus-board--member': !isManager, 'focus-board--quiet': !focusActivity }"
       >
         <section
           class="panel panel--todos"
+          :class="{ 'panel--quiet': todos.length === 0 }"
           data-todo-panel
         >
           <div class="panel__head">
@@ -383,10 +387,13 @@ defineExpose({ reload: load })
             v-else
             class="panel__empty"
           >
-            暂无待处理事项。
+            <StatusMark
+              state="done"
+              label="暂无待处理事项，可以安排下一步。"
+            />
           </p>
         </section>
-        <article
+        <SpotlightCard
           v-if="focusActivity"
           class="spotlight"
           data-focus-activity
@@ -449,13 +456,16 @@ defineExpose({ reload: load })
               查看活动<ArrowRight />
             </ElButton>
           </div>
-        </article>
+        </SpotlightCard>
         <article
           v-else
-          class="spotlight spotlight--empty"
+          class="focus-guide"
           data-focus-activity
         >
-          <ElEmpty description="暂无筹备或执行中的活动" />
+          <div>
+            <h2>下一场活动，从这里开始</h2>
+            <p>暂无筹备或执行中的活动。查看已有草稿，或为组织安排新的活动。</p>
+          </div>
           <ElButton @click="open(`/org/${orgId}/activities`)">
             前往活动管理
           </ElButton>
@@ -482,7 +492,11 @@ defineExpose({ reload: load })
           </span>
           <span class="kpi-card__label">{{ kpi.label }}</span>
           <span class="kpi-card__value">
-            {{ kpi.value }}<small>{{ kpi.unit }}</small>
+            <CountUp
+              v-if="kpi.unit !== '元'"
+              :value="String(kpi.value)"
+              :scope-key="`${orgId}-${kpi.key}`"
+            /><template v-else>{{ kpi.value }}</template><small>{{ kpi.unit }}</small>
           </span>
           <span
             class="kpi-card__note"
@@ -587,6 +601,7 @@ defineExpose({ reload: load })
         <aside
           v-if="isManager"
           class="assistant-card"
+          :class="{ 'assistant-card--quiet': !aiCandidate }"
           data-ai-card
         >
           <header class="assistant-card__head">
@@ -597,22 +612,12 @@ defineExpose({ reload: load })
             </div>
             <span class="assistant-card__label">AI</span>
           </header>
-          <div
-            class="assistant-card__modes"
-            role="group"
-            aria-label="AI 文稿类型"
-          >
-            <button
-              v-for="item in (['总结', '方案'] as const)"
-              :key="item"
-              type="button"
-              :class="{ selected: aiMode === item }"
-              :aria-pressed="aiMode === item"
-              @click="aiMode = item"
-            >
-              活动{{ item }}
-            </button>
-          </div>
+          <RubberSegment
+            :model-value="aiMode"
+            :items="[{ value: '总结', label: '活动总结' }, { value: '方案', label: '活动方案' }]"
+            label="AI 文稿类型"
+            @update:model-value="aiMode = $event as '总结' | '方案'"
+          />
           <div class="assistant-card__paper">
             <span>{{ aiMode === '总结' ? '复盘，从已有记录开始' : '让想法，变成可讨论的方案' }}</span>
             <h3>{{ aiCandidate?.name ?? (aiMode === '总结' ? '暂无复盘中的活动' : '先创建一份活动草稿') }}</h3>
@@ -641,13 +646,6 @@ defineExpose({ reload: load })
               前往模型设置
             </ElButton>
           </div>
-          <ElTag
-            v-if="aiAvailable && aiConfig?.model"
-            class="assistant-card__model"
-            size="small"
-          >
-            {{ aiConfig.model }}
-          </ElTag>
         </aside>
         <section
           class="panel panel--wide"
@@ -845,7 +843,7 @@ defineExpose({ reload: load })
   display: grid;
   grid-template-columns: var(--ui-layout-focus-columns);
   gap: var(--ui-layout-grid-gap);
-  align-items: stretch;
+  align-items: start;
 }
 
 .spotlight {
@@ -860,10 +858,6 @@ defineExpose({ reload: load })
   transition: transform var(--ui-motion-base) var(--ui-motion-ease);
 }
 
-.spotlight--empty {
-  align-items: center;
-  justify-content: center;
-}
 
 .spotlight__top {
   display: flex;
@@ -988,11 +982,6 @@ defineExpose({ reload: load })
   font-size: var(--ui-font-size-caption);
 }
 
-.assistant-card__modes button.selected {
-  background: var(--ui-color-ai-start);
-  color: var(--ui-color-ai-text);
-  font-weight: var(--ui-font-weight-medium);
-}
 
 .assistant-card__paper span {
   color: var(--ui-color-ai-muted);
@@ -1012,9 +1001,6 @@ defineExpose({ reload: load })
   line-height: var(--ui-line-height-body);
 }
 
-.assistant-card__model {
-  align-self: flex-start;
-}
 
 /* ---------- KPI 带 ---------- */
 
@@ -1366,7 +1352,7 @@ defineExpose({ reload: load })
   flex-shrink: 0;
 }
 
-.spotlight, .assistant-card {
+.spotlight {
   min-height: var(--ui-workbench-focus-min-height);
   border: var(--ui-border-width) solid var(--ui-color-glass-edge-dark);
 }
@@ -1466,26 +1452,7 @@ defineExpose({ reload: load })
   border-color: var(--ui-color-ai-border);
 }
 
-.assistant-card__modes {
-  display: flex;
-  background: var(--ui-color-ai-end);
-  border: var(--ui-border-width) solid var(--ui-color-ai-border);
-  border-radius: var(--ui-radius-control);
-  padding: var(--ui-space-1);
-  gap: 0;
-}
 
-.assistant-card__modes button {
-  padding: var(--ui-space-1) var(--ui-space-3);
-  background: transparent;
-  color: var(--ui-color-ai-text);
-  font-size: var(--ui-font-size-small);
-  cursor: pointer;
-  flex: 1;
-  border: 0;
-  border-radius: var(--ui-radius-control);
-  min-height: var(--ui-control-height);
-}
 
 .assistant-card__paper {
   display: flex;
@@ -1502,7 +1469,7 @@ defineExpose({ reload: load })
   flex-wrap: wrap;
   margin-top: auto;
   flex-direction: column;
-  align-items: stretch;
+  align-items: start;
   gap: var(--ui-space-2);
 }
 
@@ -1560,5 +1527,13 @@ defineExpose({ reload: load })
 
 
 
-.focus-board--member { grid-template-columns: minmax(0, 1fr); }
+.focus-board--member, .focus-board--quiet { grid-template-columns: minmax(0, 1fr); }
+.focus-guide { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-4); padding: var(--ui-layout-card-padding); border: var(--ui-border-width) solid var(--ui-color-border); border-radius: var(--ui-radius-card); background: var(--ui-color-surface); }
+.focus-guide h2 { font-size: var(--ui-font-size-section); }
+.focus-guide p { margin-top: var(--ui-space-2); color: var(--ui-color-text-secondary); }
+.panel--quiet { align-self: start; }
+.assistant-card--quiet { background: var(--ui-color-surface); }
+.assistant-card--quiet .assistant-card__paper { padding: 0; border: none; background: transparent; }
+.assistant-card--quiet .assistant-card__paper > span { display: none; }
+
 </style>

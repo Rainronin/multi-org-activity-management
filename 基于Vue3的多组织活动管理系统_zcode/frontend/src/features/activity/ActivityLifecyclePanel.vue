@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { focusDraftEditor } from '../../shared/utils/focusDraftEditor'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -66,6 +67,8 @@ const feedbackSubmitting = ref(false)
 const feedbackDirty = computed(() => rating.value !== (feedback.value?.myRating ?? 0)
   || comment.value !== (feedback.value?.myComment ?? ''))
 
+const summaryEditor = ref<HTMLElement>()
+const summaryApplied = ref(false)
 const summaryDraft = ref('')
 const summaryDirty = ref(false)
 let summaryVersion = 0
@@ -134,6 +137,7 @@ watch([historyOpen, historyPage, () => props.orgDetail?.version], () => {
   if (historyOpen.value.length > 0) void loadHistory()
 })
 watch([orgId, activityId], () => {
+  summaryApplied.value = false
   historyRequestSeq++
   history.value = null
   historyError.value = ''
@@ -390,6 +394,8 @@ function confirmSummaryDraft() {
 function applySummaryDraft(draft: string) {
   summaryDraft.value = draft
   summaryDirty.value = draft !== (props.orgDetail?.summary ?? '')
+  summaryApplied.value = true
+  void focusDraftEditor(summaryEditor.value)
 }
 
 function archive() {
@@ -498,16 +504,6 @@ defineExpose({
         结束执行
       </ElButton>
       <ElButton
-        v-if="canFinalize && status !== 'CANCELLED' && status !== 'ARCHIVED'"
-        type="danger"
-        size="small"
-        plain
-        :loading="acting"
-        @click="cancel"
-      >
-        取消活动
-      </ElButton>
-      <ElButton
         v-if="canFinalize && isArchivable(status)"
         type="primary"
         size="small"
@@ -516,14 +512,32 @@ defineExpose({
       >
         归档活动
       </ElButton>
-      <ElButton
-        v-if="canFinalize && (status === 'ARCHIVED' || status === 'CANCELLED')"
-        size="small"
-        :loading="acting"
-        @click="reopen"
+      <details
+        v-if="canFinalize"
+        class="lifecycle-secondary"
       >
-        重新打开
-      </ElButton>
+        <summary>更多管理操作</summary>
+        <div class="lifecycle-actions">
+          <ElButton
+            v-if="canFinalize && status !== 'CANCELLED' && status !== 'ARCHIVED'"
+            type="danger"
+            size="small"
+            plain
+            :loading="acting"
+            @click="cancel"
+          >
+            取消活动
+          </ElButton>
+          <ElButton
+            v-if="canFinalize && (status === 'ARCHIVED' || status === 'CANCELLED')"
+            size="small"
+            :loading="acting"
+            @click="reopen"
+          >
+            重新打开
+          </ElButton>
+        </div>
+      </details>
     </div>
 
     <p
@@ -540,8 +554,24 @@ defineExpose({
       重新打开不恢复报名与反馈入口。
     </p>
 
+    <nav
+      class="lifecycle-index"
+      aria-label="执行与复盘区段"
+    >
+      <a :href="`#records-${activityId}`">执行记录</a>
+      <a :href="`#feedback-${activityId}`">反馈</a>
+      <a
+        v-if="canManage"
+        :href="`#summary-${activityId}`"
+      >{{ orgDetail?.cancelledAt ? '取消说明' : '总结编辑' }}</a>
+    </nav>
     <section class="lifecycle-block">
-      <h3>执行记录</h3>
+      <h3
+        :id="`records-${activityId}`"
+        tabindex="-1"
+      >
+        执行记录
+      </h3>
       <p
         v-if="loading"
         class="lifecycle-note"
@@ -564,7 +594,7 @@ defineExpose({
             {{ executionCategoryLabel[record.category] ?? record.category }}
           </ElTag>
           <span>{{ record.content }}</span>
-          <span class="lifecycle-note">{{ record.recordedByUsername }} · {{ record.createdAt }}</span>
+          <span class="lifecycle-note">{{ record.recordedByUsername }} · {{ formatDateTime(record.createdAt) }}</span>
         </li>
       </ul>
       <p
@@ -616,7 +646,12 @@ defineExpose({
     </section>
 
     <section class="lifecycle-block">
-      <h3>反馈</h3>
+      <h3
+        :id="`feedback-${activityId}`"
+        tabindex="-1"
+      >
+        反馈
+      </h3>
       <p
         v-if="!loading && !errorText && feedback"
         class="lifecycle-note"
@@ -689,59 +724,77 @@ defineExpose({
       v-if="canManage"
       class="lifecycle-block"
     >
-      <h3>{{ orgDetail?.cancelledAt ? '取消说明' : '总结' }}</h3>
-      <ElInput
-        v-model="summaryDraft"
-        type="textarea"
-        :rows="4"
-        :disabled="!summaryEditable || summarySubmitting"
-        placeholder="目标、执行概况、任务与报名汇总、经费、反馈要点、问题及改进项（处理人与后续安排）"
-        @input="summaryDirty = summaryDraft !== (orgDetail?.summary ?? '')"
-      />
-      <p class="lifecycle-note">
-        <template v-if="orgDetail?.summaryConfirmedAt">
-          已确认：{{ orgDetail.summaryConfirmedAt }}
-          <template v-if="orgDetail.summaryNeedsReview">
-            ；来源已变化，需要重新核对并确认
-          </template>
-          <template v-if="summaryDirty">
-            ；当前草稿已修改，确认后归档才算有效
-          </template>
-        </template>
-        <template v-else>
-          尚未确认；归档要求先确认总结
-        </template>
-      </p>
-      <div class="lifecycle-actions">
-        <ElButton
-          size="small"
-          :loading="summarySubmitting"
-          :disabled="!summaryEditable"
-          @click="saveSummaryDraft"
+      <h3
+        :id="`summary-${activityId}`"
+        tabindex="-1"
+      >
+        {{ orgDetail?.cancelledAt ? '取消说明' : '总结' }}
+      </h3>
+      <div class="document-workspace">
+        <div
+          ref="summaryEditor"
+          class="document-workspace__main"
         >
-          保存总结
-        </ElButton>
-        <ElButton
-          size="small"
-          type="primary"
-          plain
-          :disabled="!summaryEditable || !orgDetail?.summary || summaryDirty || summarySubmitting || acting"
-          :loading="acting"
-          @click="confirmSummaryDraft"
-        >
-          确认总结
-        </ElButton>
+          <p
+            v-if="summaryApplied"
+            class="draft-apply-feedback"
+            role="status"
+          >
+            {{ summaryDirty ? 'AI 草稿已放入正文，请审阅并保存。' : '正文与已保存内容一致。' }}
+          </p>
+          <ElInput
+            v-model="summaryDraft"
+            type="textarea"
+            :rows="10"
+            :disabled="!summaryEditable || summarySubmitting"
+            placeholder="目标、执行概况、任务与报名汇总、经费、反馈要点、问题及改进项（处理人与后续安排）"
+            @input="summaryDirty = summaryDraft !== (orgDetail?.summary ?? '')"
+          />
+          <p class="lifecycle-note">
+            <template v-if="orgDetail?.summaryConfirmedAt">
+              已确认：{{ formatDateTime(orgDetail.summaryConfirmedAt) }}
+              <template v-if="orgDetail.summaryNeedsReview">
+                ；来源已变化，需要重新核对并确认
+              </template>
+              <template v-if="summaryDirty">
+                ；当前草稿已修改，确认后归档才算有效
+              </template>
+            </template>
+            <template v-else>
+              尚未确认；归档要求先确认总结
+            </template>
+          </p>
+          <div class="lifecycle-actions">
+            <ElButton
+              size="small"
+              :loading="summarySubmitting"
+              :disabled="!summaryEditable"
+              @click="saveSummaryDraft"
+            >
+              保存总结
+            </ElButton>
+            <ElButton
+              size="small"
+              type="primary"
+              plain
+              :disabled="!summaryEditable || !orgDetail?.summary || summaryDirty || summarySubmitting || acting"
+              :loading="acting"
+              @click="confirmSummaryDraft"
+            >
+              确认总结
+            </ElButton>
+          </div>
+        </div>
+        <!-- P8.2：总结生成；草稿只进入上面的输入框，确认与归档仍走原有流程 -->
+        <AiDraftPanel
+          ref="summaryAiPanel"
+          :org-id="orgId"
+          :activity-id="activityId"
+          type="ACTIVITY_SUMMARY"
+          :disabled="!summaryWritable || summarySubmitting"
+          @apply="applySummaryDraft"
+        />
       </div>
-
-      <!-- P8.2：总结生成；草稿只进入上面的输入框，确认与归档仍走原有流程 -->
-      <AiDraftPanel
-        ref="summaryAiPanel"
-        :org-id="orgId"
-        :activity-id="activityId"
-        type="ACTIVITY_SUMMARY"
-        :disabled="!summaryWritable || summarySubmitting"
-        @apply="applySummaryDraft"
-      />
     </section>
 
     <ElCollapse
@@ -811,6 +864,12 @@ defineExpose({
 </template>
 
 <style scoped>
+.lifecycle-secondary { flex-basis: 100%; margin-top: var(--ui-space-2); }
+.lifecycle-secondary summary { width: fit-content; padding: var(--ui-space-2) 0; font-size: var(--ui-font-size-small); }
+.lifecycle-index { display: flex; flex-wrap: wrap; gap: var(--ui-space-3); margin-top: var(--ui-space-5); padding-bottom: var(--ui-space-3); border-bottom: var(--ui-border-width) solid var(--ui-color-border); }
+.lifecycle-index a { padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-control); background: var(--ui-color-surface-muted); color: var(--ui-color-action); text-decoration: none; }
+.lifecycle-block h3[id] { scroll-margin-top: calc(var(--ui-layout-topbar-height) + var(--ui-space-12)); }
+
 .lifecycle-section {
   padding: var(--ui-layout-card-padding);
   border: var(--ui-border-width) solid var(--ui-color-border);
@@ -875,7 +934,9 @@ defineExpose({
 .lifecycle-records li,
 .lifecycle-feedback-list li {
   display: flex;
-  align-items: center;
+  align-items: baseline;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
   gap: var(--ui-space-2);
   font-size: var(--ui-font-size-small);
 }

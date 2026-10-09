@@ -61,7 +61,7 @@ async function submit() {
 </script>
 
 <template>
-  <AuthLayout>
+  <AuthLayout animated>
     <p class="auth-eyebrow">
       欢迎回来
     </p>

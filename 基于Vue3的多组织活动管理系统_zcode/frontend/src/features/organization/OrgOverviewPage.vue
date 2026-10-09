@@ -63,11 +63,12 @@ const isOwner = computed(() => props.orgDetail?.role === 'OWNER')
     <!-- 工作台先显示待办与重点活动，统计和文稿辅助随后展示。 -->
     <WorkbenchSection v-if="state === 'ready' && orgDetail" />
 
-    <section
+    <details
       v-if="state === 'ready' && orgDetail"
       class="org-meta"
       aria-label="组织资料"
     >
+      <summary>组织资料</summary>
       <dl class="org-meta__list">
         <div>
           <dt>成员数</dt>
@@ -91,7 +92,7 @@ const isOwner = computed(() => props.orgDetail?.role === 'OWNER')
       <p class="org-meta__note">
         成员邀请与成员管理在「成员管理」，模型配置在「组织设置」；工作台指标均来自真实业务记录。
       </p>
-    </section>
+    </details>
 
     <section
       v-else-if="state !== 'loading'"

@@ -631,11 +631,11 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   transform: rotate(180deg);
 }
 
-/* 子项容器：宽屏为块级列表，窄屏 token 变为 contents，让各项进入导航网格 */
+/* 宽屏 flex 让菜单间距生效，窄屏 contents 让各项进入导航网格。 */
 .unified-sidebar .u-subitems {
   display: var(--ui-nav-items-display);
   flex-direction: column;
-  gap: var(--ui-space-1);
+  gap: var(--ui-space-2);
 }
 
 .unified-sidebar .u-item {
@@ -736,13 +736,6 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
   gap: var(--ui-space-3);
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-@supports (backdrop-filter: blur(0)) {
-  .topbar {
-    background: var(--ui-surface-navigation-glass);
-    backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
-  }
 }
 
 .topbar strong {

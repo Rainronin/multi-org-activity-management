@@ -19,7 +19,7 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus'
-import { Calendar, Tickets } from '@element-plus/icons-vue'
+import { Calendar } from '@element-plus/icons-vue'
 import ListPage from '../../shared/components/ListPage.vue'
 import { ApiError, readErrorMessage } from '../../shared/http/error'
 import { newIdempotencyKey } from '../../shared/http/idempotency'
@@ -501,7 +501,7 @@ async function submitCreate() {
     </template>
 
     <ElTable
-      class="list-table"
+      class="list-table desktop-list"
       :data="items"
     >
       <ElTableColumn
@@ -514,8 +514,7 @@ async function submitCreate() {
               class="list-table__icon"
               aria-hidden="true"
             >
-              <Tickets v-if="row.id % 2" />
-              <Calendar v-else />
+              <Calendar />
             </span>
             <div>
               <button
@@ -590,6 +589,34 @@ async function submitCreate() {
       </ElTableColumn>
     </ElTable>
 
+    <div
+      class="mobile-list"
+      aria-label="活动列表"
+    >
+      <article
+        v-for="item in items"
+        :key="item.id"
+        class="mobile-list__item"
+      >
+        <div class="mobile-list__head">
+          <button
+            type="button"
+            class="list-table__link"
+            @click="openDetail(item)"
+          >
+            {{ item.name }}
+          </button>
+          <ElTag :type="statusTagType(item.status)">
+            {{ statusLabel[item.status] ?? item.status }}
+          </ElTag>
+        </div>
+        <p class="list-table__secondary">
+          {{ item.description || '暂无活动说明' }}
+        </p>
+        <p>{{ dateOf(item.startTime) }} {{ timeOf(item.startTime) }} · {{ item.ownerUsername }}</p>
+        <p>{{ scopeLabel(item.registrationScope) }} · 预算 {{ item.budget }} 元</p>
+      </article>
+    </div>
     <template #footer>
       <ElPagination
         v-if="total > PAGE_SIZE"
