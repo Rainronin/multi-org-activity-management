@@ -29,7 +29,7 @@ application-private.yml
 application-private.yaml
 /.local/
 /runtime/
-/基于Vue3的多组织活动管理系统_zcode/backend/config/
+/基于Vue3的多组织活动管理系统/backend/config/
 # 上传目录：按目录名忽略任意层级，避免源码树内残留附件进入版本库
 uploads/
 /backups/
@@ -67,7 +67,7 @@ Thumbs.db
 !/.gitignore
 !/.editorconfig
 !/README.md
-!/基于Vue3的多组织活动管理系统_zcode/
+!/基于Vue3的多组织活动管理系统/
 
 # 本机身份凭据与敏感容器；无凭据的 application-*.example.yml 保留。
 .envrc

@@ -40,7 +40,7 @@
 ## 项目结构
 
 ```text
-基于Vue3的多组织活动管理系统_zcode/
+基于Vue3的多组织活动管理系统/
 ├── frontend/    Vue 前端应用
 └── backend/     Spring Boot 后端服务
 ```
@@ -49,4 +49,4 @@
 
 ## 第三方许可
 
-部分视觉组件基于 Vue Bits 源码适配，相关来源与许可条件见[第三方许可声明](基于Vue3的多组织活动管理系统_zcode/frontend/THIRD_PARTY_NOTICES.md)。其他依赖遵循各自许可。
+部分视觉组件基于 Vue Bits 源码适配，相关来源与许可条件见[第三方许可声明](基于Vue3的多组织活动管理系统/frontend/THIRD_PARTY_NOTICES.md)。其他依赖遵循各自许可。
